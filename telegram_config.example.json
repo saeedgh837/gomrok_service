@@ -1,0 +1,5 @@
+{
+  "api_base": "https://api.telegram.org",
+  "bot_token": "<bot-token-az-BotFather>",
+  "chat_ids": ["<chat-id-1>"]
+}

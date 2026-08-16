@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>سایت دوم گمرک — طراحی جدید</title>
+<style>
+*{box-sizing:border-box}
+:root{--bg:#0b1220;--card:#121d31;--card2:#18263d;--line:#2b3b5d;--text:#edf4ff;--muted:#9caccc;--brand:#7184ff;--ok:#18b77b;--danger:#ef5b6b}
+body{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 80% -10%,#24386b 0,transparent 65%),var(--bg);color:var(--text);font-family:Tahoma,"Segoe UI",sans-serif}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1420px;margin:auto;padding:24px 30px 8px}.topbar h1{margin:0;font-size:25px}.back{color:var(--muted);text-decoration:none;border:1px solid var(--line);padding:9px 13px;border-radius:10px}.back:hover{color:var(--text);border-color:var(--brand)}
+.dashboard-grid{display:grid;grid-template-columns:minmax(320px,.82fr) minmax(420px,1.18fr);gap:22px;padding:22px 30px 40px;max-width:1420px;margin:auto}.card{background:linear-gradient(180deg,var(--card),#0f192b);border:1px solid var(--line);border-radius:20px;padding:24px;box-shadow:0 20px 60px #0005}.card h2{font-size:21px;margin:0 0 5px}.hint{color:var(--muted);font-size:12px;line-height:1.8;margin:0 0 18px}.form-section{margin-top:18px}label{display:block;margin:13px 0 5px;color:var(--muted);font-size:13px}input{background:#0d1729;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:11px 12px;width:100%;outline:0}input:focus{border-color:var(--brand);box-shadow:0 0 0 3px #7184ff22}input[type="text"]{direction:ltr;text-align:left}.imei-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.save{background:linear-gradient(135deg,var(--brand),#9b68e8);color:white;border:0;padding:12px 18px;border-radius:10px;cursor:pointer;font:inherit;font-weight:bold;margin-top:17px;width:100%}.save:hover{filter:brightness(1.1)}.toolbar{display:flex;gap:9px;margin:16px 0}.toolbar input{flex:1}.toolbar button{background:var(--card2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:0 14px;cursor:pointer}.profile-list{max-height:620px;overflow:auto;padding-left:2px}.profile{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:15px;margin:10px 0}.profile-head{display:flex;align-items:center;gap:10px}.profile-title{font-weight:bold;flex:1;min-width:0}.profile-meta{color:var(--muted);font-size:11px;direction:ltr;text-align:right;margin-top:7px}.status{font-size:11px;color:var(--muted);margin-top:8px}.status.busy{color:#f5bf5b}.status.success{color:var(--ok)}.status.blocked{color:var(--danger);font-weight:bold}.profile-error{color:#ff8995;font-size:11px;line-height:1.7;margin-top:5px}.profile-actions{display:flex;gap:7px;margin-top:12px}.profile-actions button{flex:1;border:0;border-radius:8px;padding:9px;cursor:pointer;font:inherit;font-size:12px}.start{background:var(--ok);color:#fff}.stop{background:var(--danger);color:#fff}.disabled{background:#4a5365;color:#aeb7c8;cursor:not-allowed!important}.empty{text-align:center;color:var(--muted);padding:35px}.toast{min-height:20px;text-align:center;color:var(--ok);font-size:13px;margin-top:12px}.danger-text{color:var(--danger)}
+@media(max-width:850px){.dashboard-grid{grid-template-columns:1fr;padding:15px}.topbar{padding:18px 15px}.imei-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header class="topbar"><div><h1>سایت دوم گمرک</h1><div class="hint">مدیریت پروفایل‌ها در نسخه جدید</div></div><a class="back" href="/">بازگشت به انتخاب سامانه</a></header>
+
+<main class="dashboard-grid">
+  <section class="card">
+    <h2>ساخت پروفایل</h2>
+    <p class="hint">اطلاعات اولیه پرونده را ثبت کنید.</p>
+    <form id="profile-form" class="form-section" onsubmit="createProfile(event)">
+      <label>عنوان پروفایل</label><input name="title" type="text" dir="rtl" placeholder="مثلاً عایشه زارعی" required>
+      <label>کد ملی</label><input name="national" type="text" inputmode="numeric" placeholder="۱۰ رقم" required>
+      <label>تاریخ تولد</label><input name="birth" type="text" placeholder="۱۳۶۶/۱۰/۱" required>
+      <label>شماره موبایل</label><input name="mobile" type="text" inputmode="tel" placeholder="۰۹۱۲...">
+      <div class="imei-grid"><div><label>IMEI اول</label><input name="imei1" type="text" inputmode="numeric" placeholder="۱۵ رقم" required></div><div><label>IMEI دوم</label><input name="imei2" type="text" inputmode="numeric" placeholder="اختیاری"></div></div>
+      <label><input name="manual_manage" type="checkbox" style="width:auto;margin-left:7px">مدیریت دستی</label>
+      <button class="save" type="submit">ذخیره پروفایل</button>
+      <div id="form-message" class="toast" role="status"></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>پروفایل‌ها <span id="profile-count" class="hint"></span></h2>
+    <div class="toolbar"><input id="profile-search" type="search" dir="rtl" placeholder="جستجو با نام، کد ملی، موبایل یا IMEI" oninput="renderProfiles()"><button type="button" onclick="refreshList()">بروزرسانی</button></div>
+    <div id="profile-list" class="profile-list"></div>
+  </section>
+</main>
+
+<script>
+let STORE={profiles:[]};
+const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const normalize=s=>String(s||'').toLowerCase().replace(/[۰-۹]/g,c=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(c)).replace(/[٠-٩]/g,c=>'٠١٢٣٤٥٦٧٨٩'.indexOf(c));
+
+async function request(url,options){
+  const response=await fetch(url,options);
+  const data=await response.json();
+  if(!response.ok) throw new Error((data.error||'خطای پنل')+(data.missing?' — '+data.missing.join('، '):''));
+  return data;
+}
+
+async function createProfile(event){
+  event.preventDefault();
+  const form=event.currentTarget;
+  const message=document.getElementById('form-message');
+  const imeis=[form.imei1.value.trim(),form.imei2.value.trim()].filter(Boolean);
+  const payload={title:form.title.value.trim(),national:form.national.value.trim(),birth:form.birth.value.trim(),mobile:form.mobile.value.trim(),imeis:imeis,manual_manage:form.manual_manage.checked};
+  try{
+    STORE=await request('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    form.reset(); message.className='toast'; message.textContent='✓ پروفایل ذخیره شد'; renderProfiles();
+  }catch(error){message.className='toast danger-text';message.textContent=error.message;}
+}
+
+async function refreshList(){
+  try{STORE=await request('/state');renderProfiles();}
+  catch(error){document.getElementById('profile-list').innerHTML='<div class="empty danger-text">'+esc(error.message)+'</div>';}
+}
+
+function renderProfiles(){
+  const query=normalize(document.getElementById('profile-search').value.trim());
+  const profiles=STORE.profiles.slice().reverse().filter(p=>!query||[p.title,p.national,p.mobile].concat(p.imeis||[]).some(v=>normalize(v).includes(query)));
+  document.getElementById('profile-count').textContent='('+profiles.length+' از '+STORE.profiles.length+')';
+  const list=document.getElementById('profile-list');
+  if(!profiles.length){list.innerHTML='<div class="empty">پروفایلی پیدا نشد</div>';return;}
+  list.innerHTML=profiles.map(p=>{
+    let status='<div class="status">آماده اجرا</div>';
+    if(p.run_status==='busy')status='<div class="status busy">● ربات در حال اجراست</div>';
+    else if(p.registration_status==='success')status='<div class="status success">✓ ثبت موفق — مرحله پرداخت</div>';
+    else if(p.registration_status==='blocked')status='<div class="status blocked">⛔ این پرونده قابل تلاش مجدد نیست</div>';
+    else if(!p.enabled)status='<div class="status">○ پروفایل غیرفعال است</div>';
+    let action=p.run_status==='busy'?'<button class="stop" onclick="stopProfile(\''+p.id+'\')">توقف ربات</button>':
+      p.registration_status==='blocked'||p.registration_status==='success'?'<button class="disabled" disabled>غیرقابل اجرا</button>':'<button class="start" onclick="startProfile(\''+p.id+'\')">شروع ربات</button>';
+    return '<article class="profile" data-profile-id="'+esc(p.id)+'"><div class="profile-head"><div class="profile-title">'+esc(p.title||p.national||'بدون عنوان')+'</div>'+action+'</div><div class="profile-meta">'+esc(p.national||'—')+(p.imeis&&p.imeis.length?' · '+esc(p.imeis.join(' · ')):'')+'</div>'+status+(p.registration_status==='blocked'?'<div class="profile-error">'+esc(p.runtime_error||'برای جزئیات، لاگ‌ها را بررسی کنید.')+'</div>':'')+'</article>';
+  }).join('');
+}
+
+async function startProfile(id){
+  try{STORE=await request('/start2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});renderProfiles();}
+  catch(error){alert(error.message);}
+}
+async function stopProfile(id){
+  try{STORE=await request('/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});renderProfiles();}
+  catch(error){alert(error.message);}
+}
+refreshList();
+setInterval(refreshList,5000);
+</script>
+</body>
+</html>

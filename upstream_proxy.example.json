@@ -1,0 +1,6 @@
+{
+  "host": "<socks5-host>",
+  "port": 1080,
+  "username": "<user>",
+  "password": "<pass>"
+}

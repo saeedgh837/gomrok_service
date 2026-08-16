@@ -1,0 +1,10 @@
+# Runtime dependencies for the IRICA bot, panel, CAPTCHA collector, and OCR solver
+selenium>=4.10.0
+Pillow>=10.0.0
+requests>=2.31.0
+torch>=2.0
+numpy>=1.24
+opencv-python>=4.8
+pandas>=2.0
+tqdm>=4.65
+python-Levenshtein>=0.21

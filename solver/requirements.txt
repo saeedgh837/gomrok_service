@@ -1,0 +1,7 @@
+torch>=2.0
+numpy
+opencv-python
+pillow
+pandas
+tqdm
+python-Levenshtein

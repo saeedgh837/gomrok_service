@@ -1,0 +1,78 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# ---- SECRETS: hargez be git nemiravand ----
+# NOTE: .gitignore comment-e HAM-KHAT nadarad — har pattern bayad tanha dar khat-e khodash bashad.
+# telegram_config.json = bot_token + chat_ids
+telegram_config.json
+# upstream_proxy.json = SOCKS5 user/pass
+upstream_proxy.json
+# relay_config.json = basic-auth panel
+relay_config.json
+# secrets/ = cloudflared credentials (tunnel json + cert.pem)
+secrets/
+# runtime health snapshot
+telegram_health.json
+
+# ---- runtime / state (mahalli, ghabel-e sakht-e dobare) ----
+profiles.json
+profiles.json.lock
+inputs.json
+estelam_store.json
+logs.jsonl
+estelam_logs.jsonl
+hamta_logs.jsonl
+site2_notif.json
+exitban_errors.jsonl
+*_worker.log
+*_stdout.log
+*.log
+cloudflare_public_url.txt
+
+# ---- debug / movaqat (bayad tamiz bemanad) ----
+_after_*.png
+_after_*.html
+_after_*.json
+_dbg_*
+_last_captcha_*.png
+_scs_fast.js
+_tmp_*
+hermes-verify-*.py
+_verify_*.py
+screenshots/
+_dbg_site2/
+
+# ---- binary-haye bozorg (dar git nemiravand) ----
+.tools/
+*.exe
+*.rar
+*.zip
+solver/checkpoints/
+*.pt
+
+# ---- chrome profile-haye mahalli (hajm-e bala + cookie/session) ----
+.exitban-chrome-profile/
+*-chrome-profile/
+.claude/
+.hermes/
+
+# ---- lab (khoruji-haye tasviri-ye test) ----
+lab/final/
+lab/*.png
+lab/data/
+lab/research/
+# fixture-haye hamrah-e daade-ye shakhsi-ye vaghei (NAT/IMEI/mobile) — hargez commit nashavand
+lab/scripts/diag_imei.py
+lab/scripts/diag_imei2.py
+lab/tests/page.html
+
+# ---- OS ----
+Thumbs.db
+desktop.ini
+.DS_Store
