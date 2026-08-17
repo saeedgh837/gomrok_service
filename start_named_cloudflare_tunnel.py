@@ -6,7 +6,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PYTHON = r"C:\Program Files\Python310\python.exe"
 CLOUDFLARED = os.path.join(HERE, ".tools", "cloudflared.exe")
 AUTH_RELAY = os.path.join(HERE, "cloudflare_auth_relay.py")
-TELEGRAM_RELAY = os.path.join(HERE, "telegram_api_relay.py")
 CONFIG = os.path.join(HERE, "cloudflare_named_tunnel.yml")
 LOG = os.path.join(HERE, "cloudflare_named_tunnel.log")
 
@@ -34,10 +33,6 @@ def wait_auth_relay(timeout=15):
     return wait_relay("http://127.0.0.1:8751/", 401, timeout)
 
 
-def wait_telegram_relay(timeout=15):
-    return wait_relay("http://127.0.0.1:8752/", 404, timeout)
-
-
 def start_hidden(command):
     return subprocess.Popen(
         command,
@@ -59,22 +54,17 @@ def terminate(process):
 
 
 def main():
-    for path in (PYTHON, CLOUDFLARED, AUTH_RELAY, TELEGRAM_RELAY, CONFIG):
+    for path in (PYTHON, CLOUDFLARED, AUTH_RELAY, CONFIG):
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
 
-    relay = telegram_relay = None
+    relay = None
     tunnel = None
     try:
         if not wait_auth_relay(timeout=1):
             relay = start_hidden([PYTHON, "-u", AUTH_RELAY])
             if not wait_auth_relay():
                 raise RuntimeError("authenticated relay did not start")
-        if not wait_telegram_relay(timeout=1):
-            telegram_relay = start_hidden([PYTHON, "-u", TELEGRAM_RELAY])
-            if not wait_telegram_relay():
-                raise RuntimeError("telegram API relay did not start")
-
         env = os.environ.copy()
         env["TUNNEL_PROTOCOL"] = "http2"
         with open(LOG, "w", encoding="utf-8") as log:
@@ -88,7 +78,6 @@ def main():
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             print("Panel URL: https://register.techbysaeed.ir", flush=True)
-            print("Telegram API Base: https://telegram.techbysaeed.ir", flush=True)
             print("Panel credentials: relay_config.json", flush=True)
             print("Stop: Ctrl+C", flush=True)
             tunnel.wait()
@@ -96,7 +85,6 @@ def main():
         pass
     finally:
         terminate(tunnel)
-        terminate(telegram_relay)
         terminate(relay)
 
 

@@ -5,6 +5,4 @@ protocol: http2
 ingress:
   - hostname: register.techbysaeed.ir
     service: http://127.0.0.1:8751
-  - hostname: telegram.techbysaeed.ir
-    service: http://127.0.0.1:8752
   - service: http_status:404

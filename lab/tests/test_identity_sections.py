@@ -27,15 +27,28 @@ class IdentitySectionsTests(unittest.TestCase):
             self.assertIn(value, html)
     def test_identity_view_wraps_only_identity_fields(self):
         source = panel.PAGE_JS
-        identity_start = source.index("'<div id=\"view-identity\"")
+        form_start = source.index("function buildForm")
+        identity_start = source.index("'<div id=\"view-identity\"", form_start)
         identity_end = source.index("'<div id=\"view-profile-inquiries\"", identity_start)
         identity_view = source[identity_start:identity_end]
         self.assertIn("اطلاعات هویتی", identity_view)
         self.assertIn("name=\"first_name\"", identity_view)
         self.assertNotIn("class=\"switch\"", identity_view)
-        base_start = source.index("'<div id=\"view-base\"")
+        base_start = source.index("'<div id=\"view-base\"", form_start)
         self.assertNotIn("name=\"first_name\"", source[base_start:identity_start])
         self.assertNotIn("name=\"first_name\"", source[identity_end:source.index("'<button type=\"submit\"", identity_end)])
+
+    def test_readonly_identity_view_has_no_editable_inputs(self):
+        source = panel.PAGE_JS
+        overview_start = source.index("function buildProfileOverview")
+        form_start = source.index("function buildForm", overview_start)
+        overview = source[overview_start:form_start]
+        identity_start = overview.index("'<div id=\"view-identity\"")
+        identity_end = overview.index("'<div id=\"view-profile-inquiries\"", identity_start)
+        identity_view = overview[identity_start:identity_end]
+        self.assertIn("readonly-grid", identity_view)
+        self.assertIn("p.first_name", identity_view)
+        self.assertNotIn("<input", identity_view)
 
     def test_exitban_inquiry_sends_currently_selected_profile_id(self):
         source = panel.PAGE_JS

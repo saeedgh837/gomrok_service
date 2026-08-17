@@ -96,6 +96,17 @@ PROFILE_DEFAULTS = {
     "exitban_status": "not_checked",
     "exitban_result": "",
     "exitban_checked_at": "",
+    "device_inquiry_pid": 0,
+    "device_inquiry_service": "",
+    "device_inquiry_started_at": "",
+    "gomrok_inquiry_status": "not_checked",
+    "gomrok_inquiry_results": [],
+    "gomrok_inquiry_error": "",
+    "gomrok_inquiry_checked_at": "",
+    "hamta_inquiry_status": "not_checked",
+    "hamta_inquiry_results": [],
+    "hamta_inquiry_error": "",
+    "hamta_inquiry_checked_at": "",
 }
 
 
@@ -112,8 +123,13 @@ def _clean_profile(p):
               "last_name", "father_name", "birth_certificate_no", "registration_status",
               "success_at", "payment_link", "runtime_error", "run_status", "runner_id", "busy_since",
               "receipt_screenshot", "payment_screenshot", "heartbeat_at", "exitban_status",
-              "exitban_result", "exitban_checked_at"):
+              "exitban_result", "exitban_checked_at", "device_inquiry_service",
+              "device_inquiry_started_at", "gomrok_inquiry_status", "gomrok_inquiry_error",
+              "gomrok_inquiry_checked_at", "hamta_inquiry_status", "hamta_inquiry_error",
+              "hamta_inquiry_checked_at"):
         out[k] = str(out.get(k) or "").strip()
+    for key in ("gomrok_inquiry_results", "hamta_inquiry_results"):
+        out[key] = list(out.get(key) or [])
     imeis = out.get("imeis") or []
     if not isinstance(imeis, list):
         imeis = [str(imeis)]
@@ -132,6 +148,10 @@ def _clean_profile(p):
         out["runner_pid"] = int(out.get("runner_pid") or 0)
     except (TypeError, ValueError):
         out["runner_pid"] = 0
+    try:
+        out["device_inquiry_pid"] = int(out.get("device_inquiry_pid") or 0)
+    except (TypeError, ValueError):
+        out["device_inquiry_pid"] = 0
     # title-e hushmand: agar khali bud -> kod-e melli ya 'profile-e no'
     if not out["title"]:
         out["title"] = out["national"] or "پروفایل جدید"
@@ -178,6 +198,51 @@ def record_exitban_result(profile_id, text, status=""):
             profile["exitban_checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             save_store(store)
             return True
+    return False
+
+
+_DEVICE_INQUIRY_SERVICES = {"hamta", "gomrok", "all"}
+_DEVICE_INQUIRY_FINAL = {"healthy", "problem", "advanced", "good", "registered", "blocked"}
+
+
+def _device_inquiry_summary(results, error=""):
+    if error:
+        return "error"
+    statuses = {str(item.get("status") or "error") for item in results}
+    if not statuses:
+        return "error"
+    return "complete" if statuses <= _DEVICE_INQUIRY_FINAL else "error"
+
+
+def record_profile_device_inquiry(profile_id, service, results, error=""):
+    service = str(service or "").strip().lower()
+    if service not in ("hamta", "gomrok") or not isinstance(results, list):
+        return False
+    clean = []
+    for item in results:
+        if isinstance(item, dict):
+            clean.append({"serial": str(item.get("serial") or "").strip(),
+                          "status": str(item.get("status") or "error").strip(),
+                          "result": str(item.get("result") or "").strip(),
+                          "checked_at": str(item.get("checked_at") or "").strip()})
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _locked_store():
+        store = load_store()
+        profile = next((p for p in store.get("profiles", [])
+                        if p.get("id") == str(profile_id or "")), None)
+        if not profile:
+            return False
+        profile[f"{service}_inquiry_results"] = clean
+        profile[f"{service}_inquiry_status"] = _device_inquiry_summary(clean, error)
+        profile[f"{service}_inquiry_error"] = str(error or "").strip()
+        profile[f"{service}_inquiry_checked_at"] = now
+        requested = str(profile.get("device_inquiry_service") or "")
+        if requested == service or (requested == "all" and
+                all(profile.get(f"{name}_inquiry_status") not in ("running", "not_checked")
+                    for name in ("gomrok", "hamta"))):
+            profile["device_inquiry_pid"] = 0
+        save_store(store)
+        return True
     return False
 
 
@@ -368,7 +433,12 @@ def clone_profile(profile_id):
             "registration_status": "pending", "success_at": "", "payment_link": "",
             "run_status": "idle", "runner_id": "", "busy_since": "", "runner_pid": 0,
             "heartbeat_at": "", "exitban_status": "not_checked", "exitban_result": "",
-            "exitban_checked_at": "",
+            "exitban_checked_at": "", "device_inquiry_pid": 0, "device_inquiry_service": "",
+            "device_inquiry_started_at": "", "gomrok_inquiry_status": "not_checked",
+            "gomrok_inquiry_results": [], "gomrok_inquiry_error": "",
+            "gomrok_inquiry_checked_at": "", "hamta_inquiry_status": "not_checked",
+            "hamta_inquiry_results": [], "hamta_inquiry_error": "",
+            "hamta_inquiry_checked_at": "",
             "receipt_screenshot": "", "payment_screenshot": "",
         })
         clone = _clean_profile(clone)
@@ -508,6 +578,59 @@ def start_profile(profile_id):
         return 500, {"error": "شروع ربات انجام نشد"}
     set_profile_runtime(profile_id, runtime["pid"])
     return 200, {"ok": True, "profile_id": profile_id, "pid": runtime["pid"]}
+
+
+def start_profile_device_inquiry(profile_id, service):
+    profile_id = str(profile_id or "").strip()
+    service = str(service or "").strip().lower()
+    if service not in _DEVICE_INQUIRY_SERVICES:
+        return 400, {"error": "نوع استعلام نامعتبر است"}
+    with _locked_store():
+        store = load_store()
+        profile = next((p for p in store.get("profiles", []) if p.get("id") == profile_id), None)
+        if not profile:
+            return 404, {"error": "پروفایل پیدا نشد"}
+        missing = []
+        if not profile.get("imeis"):
+            missing.append("سریال / IMEI")
+        if service in ("gomrok", "all"):
+            if not profile.get("national"):
+                missing.append("کد ملی")
+            if not profile.get("birth"):
+                missing.append("تاریخ تولد")
+        if missing:
+            return 422, {"error": "اطلاعات پروفایل ناقص است", "missing": missing}
+        old_pid = int(profile.get("device_inquiry_pid") or 0)
+        if old_pid and _pid_alive(old_pid):
+            return 409, {"error": "یک استعلام برای این پروفایل در حال اجرا است"}
+
+    command = [ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable,
+               os.path.join(HERE, "profile_inquiry.py"), "--profile-id", profile_id,
+               "--service", service]
+    child_env = os.environ.copy()
+    child_env.pop("PYTHONPATH", None)
+    child_env.pop("VIRTUAL_ENV", None)
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(command, cwd=HERE, env=child_env,
+                                   stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
+    except OSError:
+        return 500, {"error": "شروع ربات استعلام انجام نشد"}
+    finally:
+        log_file.close()
+    with _locked_store():
+        store = load_store()
+        profile = next(p for p in store["profiles"] if p["id"] == profile_id)
+        profile["device_inquiry_pid"] = process.pid
+        profile["device_inquiry_service"] = service
+        profile["device_inquiry_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        for name in (("gomrok", "hamta") if service == "all" else (service,)):
+            profile[f"{name}_inquiry_status"] = "running"
+            profile[f"{name}_inquiry_error"] = ""
+        save_store(store)
+    return 200, {"ok": True, "profile_id": profile_id, "service": service, "pid": process.pid}
 
 
 def start_exitban_process(profile_id):
@@ -744,7 +867,7 @@ def test_telegram_api(attempts=3):
         return result
 
     last_message = result["message"]
-    for attempt in range(1, max(1, int(attempts)) + 1):
+    for attempt in range(1, max(1, int(attempts)) +1):
         try:
             response = requests.get(f"{base}/bot{token}/getMe", timeout=20)
             payload = response.json()
@@ -845,7 +968,7 @@ def load_logs(limit=200):
 
 
 def log_site2_success(national=""):
-    """Rvidaad-e movaffaghiat-e vorud-e site2: yek log dar logs.jsonl + yek
+    """Rvidaad-e movaffaghiat-e vorud-e site2: yek log dar logs.jsonl +yek
     notif-e jadid baraye panel-e site2 (dashboard-new.html an-ra flash mikonad)."""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     national = str(national or "").strip()
@@ -879,7 +1002,7 @@ def load_site2_notif():
 
 
 # ---------------- servis-e ESTELAM-e dastgah (jaygozin-e site-2) ----------------
-ESTELAM_PATH = os.path.join(HERE, "estelam_store.json")
+ESTELAM_PATH = os.environ.get("IRICA_ESTELAM_STORE") or os.path.join(HERE, "estelam_store.json")
 ESTELAM_LOGS_PATH = os.path.join(HERE, "estelam_logs.jsonl")
 _ESTELAM_LOCK = threading.RLock()
 
@@ -1085,7 +1208,7 @@ ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه 
 def start_estelam_process(device_id=None, service="gomrok"):
     python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
     script, base_args = ESTELAM_SERVICES.get(service, ESTELAM_SERVICES["gomrok"])
-    command = [python_executable, os.path.join(HERE, script)] + list(base_args)
+    command = [python_executable, os.path.join(HERE, script)] +list(base_args)
     if device_id:
         command += ["--device-id", str(device_id)]
     child_env = os.environ.copy()
@@ -1112,7 +1235,7 @@ def estelam_start(device_id=None, service="gomrok"):
     # HAMTA faghat serial mikhahad (bedun-e login), pas etela'at-e shakhs lazem nist;
     # gomrok/all be kod-e melli va tarikh-e tavallod niaz darand.
     if errors and service != "hamta":
-        return {"ok": False, "errors": ["اطلاعات شخص برای استعلام را پر کنید"] + errors}
+        return {"ok": False, "errors": ["اطلاعات شخص برای استعلام را پر کنید"] +errors}
     if estelam_is_running():
         return {"ok": False, "errors": ["یک اجرای استعلام در حال انجام است — ابتدا آن را متوقف کنید"]}
     targets = data.get("devices") or []
@@ -1157,9 +1280,9 @@ def estelam_runtime():
     hamta_counts = {}
     for device in devices:
         key = str(device.get("status") or "pending")
-        counts[key] = counts.get(key, 0) + 1
+        counts[key] = counts.get(key, 0) +1
         hkey = str(device.get("hamta_status") or "pending")
-        hamta_counts[hkey] = hamta_counts.get(hkey, 0) + 1
+        hamta_counts[hkey] = hamta_counts.get(hkey, 0) +1
     service = str(data.get("run_service") or "gomrok")
     return {
         "running": estelam_is_running(),
@@ -1197,7 +1320,7 @@ def estelam_stop():
 
 
 def estelam_restart():
-    """Stop + start-e dobare (hamun scope-e ejra-ye ghabli)."""
+    """Stop +start-e dobare (hamun scope-e ejra-ye ghabli)."""
     prev = estelam_load()
     previous = prev.get("run_device_id") or ""
     service = prev.get("run_service") or "gomrok"
@@ -1209,7 +1332,7 @@ def estelam_restart():
 
 
 def estelam_log(status, message, step="", serial="", device_id=""):
-    """Yek rvidaad-e servis-e estelam (panel + robot har do minevisand)."""
+    """Yek rvidaad-e servis-e estelam (panel +robot har do minevisand)."""
     record = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "status": status,
@@ -1372,11 +1495,11 @@ PAGE_HEAD = """<!DOCTYPE html>
   .ibtn.on { color:var(--ok); border-color:var(--ok); background:color-mix(in srgb,var(--ok) 12%,var(--input)); }
   .ibtn.danger:hover { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d92f45,#f05b6b); }
   .ibtn.warn:hover { color:#20160a; border-color:transparent; background:var(--warn,#f6b94b); }
-  .ibtn::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); right:50%;
+  .ibtn::after { content:attr(data-tip); position:absolute; bottom:calc(100% +7px); right:50%;
     transform:translate(50%,4px); white-space:nowrap; font-size:11px; font-weight:700;
     padding:5px 9px; border-radius:8px; background:#111827; color:#fff; opacity:0;
     pointer-events:none; transition:.16s; z-index:40; box-shadow:0 8px 20px rgba(0,0,0,.28); }
-  .ibtn::before { content:''; position:absolute; bottom:calc(100% + 2px); right:50%;
+  .ibtn::before { content:''; position:absolute; bottom:calc(100% +2px); right:50%;
     transform:translateX(50%); border:5px solid transparent; border-top-color:#111827;
     opacity:0; pointer-events:none; transition:.16s; z-index:40; }
   .ibtn:hover::after,.ibtn:focus-visible::after { opacity:1; transform:translate(50%,0); }
@@ -1482,9 +1605,9 @@ PAGE_HEAD = """<!DOCTYPE html>
   .track { position:absolute; inset:0; background:#c9cee4; border-radius:20px; cursor:pointer; transition:.2s; }
   .track:before { content:""; position:absolute; width:20px; height:20px; border-radius:50%;
     background:#fff; top:3px; right:3px; transition:.2s; }
-  .toggle input:checked + .track { background:linear-gradient(135deg,var(--brand),var(--brand2)); }
-  .toggle input:checked + .track:before { right:23px; }
-  .toggle.danger input:checked + .track { background:linear-gradient(135deg,#ff6b7a,#ff9166); }
+  .toggle input:checked +.track { background:linear-gradient(135deg,var(--brand),var(--brand2)); }
+  .toggle input:checked +.track:before { right:23px; }
+  .toggle.danger input:checked +.track { background:linear-gradient(135deg,#ff6b7a,#ff9166); }
   .save { margin-top:22px; width:100%; padding:14px; border:none; border-radius:14px;
     background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; font-size:15.5px;
     font-weight:bold; cursor:pointer; font-family:inherit; transition:.15s; }
@@ -1529,6 +1652,19 @@ PAGE_HEAD = """<!DOCTYPE html>
   .exitban-result-time { margin-top:8px; font-size:11px; opacity:.75; direction:ltr; text-align:right; }
   .settings-section,.inquiry-card { background:var(--card2);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0; }
   .settings-section h3,.inquiry-card h3 { margin:0 0 8px; }
+  .inquiry-picker { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin:14px 0; }
+  .inquiry-picker button { min-height:42px; border:1px solid var(--line); background:var(--input); color:var(--txt); border-radius:9px; cursor:pointer; font:700 12px inherit; }
+  .inquiry-picker button.active { background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; border-color:transparent; }
+  .device-results { display:grid; gap:10px; margin:12px 0 16px; }
+  .device-result { border:1px solid var(--line); border-inline-start:4px solid var(--muted); background:var(--card); border-radius:8px; padding:12px; }
+  .device-result.good { border-inline-start-color:var(--ok); }
+  .device-result.bad { border-inline-start-color:var(--danger); }
+  .device-result.running { border-inline-start-color:var(--warn); }
+  .device-result-head { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+  .device-result-head .serial { direction:ltr; font:700 12px Consolas,monospace; }
+  .device-result-text { color:var(--muted); font-size:12px; line-height:1.8; white-space:pre-line; word-break:break-word; margin-top:7px; }
+  .device-result-time { font-size:10.5px; color:var(--muted); direction:ltr; margin-top:6px; }
+  @media(max-width:620px){.inquiry-picker{grid-template-columns:1fr}.device-result-head{align-items:flex-start;flex-direction:column}}
   .soon { display:inline-block;color:var(--warn);background:#fff4df;border-radius:20px;padding:5px 10px;font-size:11px; }
   /* --- back-to-home button --- */
   .home-btn { position:absolute; right:0; top:0; border:1px solid var(--line); background:var(--input); color:var(--txt);
@@ -1617,7 +1753,7 @@ PAGE_HEAD = """<!DOCTYPE html>
   .nav-tabs { gap:4px; margin:0 0 18px; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--card); }
   .nav-tab { position:relative; min-height:38px; display:flex; align-items:center; justify-content:center; padding:8px 10px; border:0; border-radius:7px; background:transparent; font-size:12.5px; font-weight:600; }
   .nav-tab:hover { color:var(--txt); background:color-mix(in srgb,var(--brand) 10%,transparent); }
-  /* tab-e ENTEKHAB-SHODE: rang-e brand-e por + noar-e paeen -> ja-ye fe'li roshan ast */
+  /* tab-e ENTEKHAB-SHODE: rang-e brand-e por +noar-e paeen -> ja-ye fe'li roshan ast */
   .nav-tab.active {
     color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2));
     box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent);
@@ -1627,11 +1763,26 @@ PAGE_HEAD = """<!DOCTYPE html>
     content:""; position:absolute; inset-inline:22%; bottom:-5px; height:3px;
     border-radius:3px; background:var(--brand);
   }
-  #view-form,#view-logs,#view-inquiries,#view-telegram { padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow); }
+  #view-form,#view-logs,#view-telegram { padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow); }
   .profile-editor-empty { min-height:360px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:40px; text-align:center; color:var(--muted); }
   .profile-editor-empty .empty-icon { width:46px; height:46px; display:grid; place-items:center; margin-bottom:4px; border:1px solid var(--line); border-radius:12px; background:var(--card2); color:var(--brand); font-size:22px; }
   .profile-editor-empty strong { color:var(--txt); font-size:16px; font-weight:650; }
   .profile-editor-empty p { max-width:420px; margin:0; font-size:12.5px; line-height:1.8; }
+  .profile-overview { display:grid; gap:18px; }
+  .profile-overview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--card2); }
+  .profile-overview-title { margin:0; font-size:20px; }
+  .profile-overview-meta { margin-top:5px; color:var(--muted); font-size:12px; }
+  .profile-overview-edit { border:1px solid var(--brand); background:transparent; color:var(--brand); border-radius:8px; padding:9px 13px; cursor:pointer; font:700 12px inherit; white-space:nowrap; }
+  .readonly-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .readonly-field { min-height:76px; padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card2); }
+  .readonly-field.wide { grid-column:1/-1; }
+  .readonly-label { display:block; color:var(--muted); font-size:10.5px; margin-bottom:7px; }
+  .readonly-value { display:block; color:var(--txt); font-size:14px; font-weight:700; line-height:1.7; word-break:break-word; }
+  .readonly-value.ltr { direction:ltr; text-align:right; font-family:Consolas,monospace; letter-spacing:0; }
+  .readonly-imeis { display:flex; flex-wrap:wrap; gap:7px; }
+  .readonly-imei { direction:ltr; padding:7px 10px; border:1px solid var(--line); border-radius:7px; background:var(--input); color:var(--txt); font:700 12px Consolas,monospace; }
+  .readonly-flags { display:flex; flex-wrap:wrap; gap:7px; margin-top:2px; }
+  .readonly-flag { padding:6px 9px; border-radius:7px; border:1px solid var(--line); color:var(--muted); font-size:11px; }
   .section-title { margin:0 0 14px; padding:0; border:0; background:none; color:var(--txt); font-size:17px; }
   .profile-tabs { max-width:520px; gap:4px; margin:0 0 22px; padding:4px; border-radius:9px; background:var(--card2); }
   .profile-tab { padding:8px 12px; border:0; border-radius:7px; background:transparent; font-size:12px; font-weight:600; }
@@ -1668,8 +1819,8 @@ PAGE_HEAD = """<!DOCTYPE html>
   }
   @media(max-width:640px){
     .panel-title{font-size:20px}.stats{grid-template-columns:repeat(2,1fr)}.stats .stat:first-child{grid-column:1/-1}
-    #view-form,#view-logs,#view-inquiries,#view-telegram{padding:16px}.nav-tabs{overflow-x:auto;flex-wrap:nowrap}.nav-tab{min-width:120px}
-    #view-base,#view-identity{grid-template-columns:1fr}.switches{grid-template-columns:1fr}.home-btn span{display:none}
+    #view-form,#view-logs,#view-telegram{padding:16px}.nav-tabs{overflow-x:auto;flex-wrap:nowrap}.nav-tab{min-width:120px}
+    #view-base,#view-identity{grid-template-columns:1fr}.readonly-grid{grid-template-columns:1fr}.readonly-field.wide{grid-column:auto}.profile-overview-head{flex-direction:column}.switches{grid-template-columns:1fr}.home-btn span{display:none}
   }
 </style>
 </head>
@@ -1706,20 +1857,18 @@ PAGE_HEAD = """<!DOCTYPE html>
         <div class="stat s-blocked" data-filter="blocked" title="فیلتر مسدود"><div class="n" id="st-blocked">۰</div><div class="l">مسدود</div></div>
       </div>
       <div class="nav-tabs" id="main-tabs" role="tablist">
-        <div class="nav-tab active" id="tab-form" onclick="showView('form')">✏️ ویرایش پروفایل</div>
+        <div class="nav-tab active" id="tab-form" onclick="viewProfile(activeId)">پروفایل انتخاب‌شده</div>
         <div class="nav-tab" id="tab-logs" onclick="showView('logs')">📋 لاگ‌ها</div>
-        <div class="nav-tab" id="tab-inquiries" onclick="showView('inquiries')">🔎 استعلامات</div>
         <div class="nav-tab" id="tab-telegram" onclick="showView('telegram')">⚙️ تنظیمات کلی</div>
       </div>
       <div id="view-form"></div>
       <div id="view-logs" class="hidden"></div>
-      <div id="view-inquiries" class="hidden"></div>
       <div id="view-telegram" class="hidden"></div>
     </div>
   </div>
   <div class="sidebar">
     <div class="side-sec-title"><span>پروفایل‌ها</span><span id="profile-count"></span></div>
-    <button class="add-prof" onclick="newProfile()">+ پروفایل جدید</button>
+    <button class="add-prof" onclick="newProfile()">+پروفایل جدید</button>
     <div class="profile-search-wrap">
       <span class="profile-search-icon">🔎</span>
       <input id="profile-search" type="search" autocomplete="off" placeholder="جستجو: نام، کد ملی، موبایل یا سریال" oninput="filterProfiles(this.value)">
@@ -1836,7 +1985,7 @@ function renderProfiles(){
     var node=document.getElementById(pair[0]); if(node)node.textContent=toFa(pair[1]);
   });
   document.querySelectorAll('#stats .stat').forEach(function(s){s.classList.toggle('active',s.getAttribute('data-filter')===statusFilter);});
-  // ---- filter (status + search) ----
+  // ---- filter (status +search) ----
   var profiles=STORE.profiles.slice().reverse().filter(function(p){
     if(statusFilter!=='all' && statusOf(p).key!==statusFilter) return false;
     return profileMatchesSearch(p,query);
@@ -1851,7 +2000,7 @@ function renderProfiles(){
     d.className='prof-item'+(isActive?' active':'');
     d.setAttribute('data-profile-id',p.id);
     d.innerHTML='<div class="prof-title"><span class="profile-number">'+profileNumber+'</span>'+(isActive?'<span style="color:var(--ok)">●</span> ':'')+
-      '<span class="prof-title-text">'+escHtml(p.title||p.national||'بدون عنوان')+'</span>'+
+      '<span class="prof-title-text" onclick="viewProfile(\''+p.id+'\')">'+escHtml(p.title||p.national||'بدون عنوان')+'</span>'+
       '<span class="p-badge '+st.cls+'"><span class="d"></span>'+st.label+'</span>'+profileRunButton(p,'profile-run-primary')+'</div>'+
       '<div class="prof-meta">'+escHtml(p.national||'—')+(p.mobile?' • '+escHtml(p.mobile):'')+'</div>'+
       (p.registration_status==='blocked'?'<div class="prof-blocked">⛔ غیرقابل ورود — تلاش متوقف شد</div><div class="prof-blocked-detail">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div>':'')+
@@ -1867,6 +2016,7 @@ function renderProfiles(){
           'onclick="toggleProfile(\''+p.id+'\','+(!p.enabled)+')">'+(p.enabled?'🟢':'⚪')+'</button>'+
         '<button class="ibtn'+(isActive?' on':'')+'" data-tip="'+(isActive?'پروفایل فعال جاری':'انتخاب به‌عنوان پروفایل فعال')+'" '+
           'onclick="activateProfile(\''+p.id+'\')">'+(isActive?'📌':'🎯')+'</button>'+
+        '<button class="ibtn" data-tip="مشاهده اطلاعات پروفایل" onclick="viewProfile(\''+p.id+'\')">◉</button>'+
         '<button class="ibtn" data-tip="ویرایش اطلاعات پروفایل" onclick="editProfile(\''+p.id+'\')">✏️</button>'+
         '<button class="ibtn" data-tip="کپی گرفتن از این پروفایل" onclick="cloneProfile(\''+p.id+'\')">📋</button>'+
         '<button class="ibtn danger" data-tip="حذف کامل این پروفایل" onclick="deleteProfile(\''+p.id+'\')">🗑</button>'+
@@ -1948,15 +2098,49 @@ function renderProfileEditorEmpty(){
   if(subtitle)subtitle.textContent='برای شروع، یک پروفایل را انتخاب کنید';
 }
 
+function readonlyField(label,value,cls,wide){
+  return '<div class="readonly-field'+(wide?' wide':'')+'"><span class="readonly-label">'+escHtml(label)+'</span><span class="readonly-value '+(cls||'')+'">'+escHtml(value||'ثبت نشده')+'</span></div>';
+}
+function buildProfileOverview(p){
+  var imeis=(p.imeis||[]).map(function(v){return '<span class="readonly-imei">'+escHtml(v)+'</span>';}).join('')||'<span class="readonly-value">سریالی ثبت نشده است</span>';
+  return '<div class="profile-overview">'+
+    '<div class="profile-overview-head"><div><h2 class="profile-overview-title">'+escHtml(p.title||p.national||'بدون عنوان')+'</h2><div class="profile-overview-meta">نمایش اطلاعات ثبت‌شده این پروفایل</div></div><button type="button" class="profile-overview-edit" onclick="editProfile(\''+p.id+'\')">✏️ ویرایش اطلاعات</button></div>'+
+    '<div class="profile-tabs">'+
+      '<button type="button" aria-label="تب اطلاعات پایه" class="profile-tab active" onclick="showProfileSection(\'base\')">اطلاعات پایه</button>'+
+      '<button type="button" aria-label="تب اطلاعات هویتی" class="profile-tab" onclick="showProfileSection(\'identity\')">اطلاعات هویتی</button>'+
+      '<button type="button" aria-label="تب استعلامات" class="profile-tab" onclick="showProfileSection(\'inquiries\')">استعلامات</button>'+
+    '</div>'+
+    '<div id="view-base"><div class="readonly-grid">'+
+      readonlyField('عنوان پروفایل',p.title||'')+readonlyField('کد ملی',p.national||'','ltr')+
+      readonlyField('تاریخ تولد',p.birth||'','ltr')+readonlyField('شماره موبایل',p.mobile||'','ltr')+
+      '<div class="readonly-field wide"><span class="readonly-label">سریال‌های IMEI</span><div class="readonly-imeis">'+imeis+'</div></div>'+
+    '</div><div class="readonly-flags"><span class="readonly-flag">'+(p.no_confirm_check?'تأیید خودکار خاموش':'تأیید خودکار روشن')+'</span><span class="readonly-flag">'+(p.debugging?'حالت دیباگ روشن':'حالت دیباگ خاموش')+'</span><span class="readonly-flag">'+(p.manual_manage?'مدیریت دستی روشن':'مدیریت دستی خاموش')+'</span></div></div>'+
+    '<div id="view-identity" class="hidden"><div class="section-title">اطلاعات هویتی</div><div class="readonly-grid">'+
+      readonlyField('نام',p.first_name||'')+readonlyField('نام خانوادگی',p.last_name||'')+
+      readonlyField('نام پدر',p.father_name||'')+readonlyField('شماره شناسنامه',p.birth_certificate_no||'','ltr')+
+      readonlyField('کد ملی',p.national||'','ltr')+readonlyField('تاریخ تولد',p.birth||'','ltr')+
+    '</div></div>'+
+    '<div id="view-profile-inquiries" class="hidden">'+buildDeviceInquiryPanel(p)+'<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div><div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div></div>'+
+  '</div>';
+}
+function viewProfile(id){
+  activeId=id;
+  var p=getProf(id); if(!p){renderProfileEditorEmpty();return;}
+  document.getElementById('view-form').innerHTML=buildProfileOverview(p);
+  setActiveBanner(p,'پروفایل انتخاب‌شده');
+  renderProfiles();
+  showView('form');
+}
+
 function buildForm(p){
   var imeis=(p.imeis&&p.imeis.length)?p.imeis:[''];
   return '<form id="f" onsubmit="saveProfile(event)">'+
     '<div class="section-title">اطلاعات پایه</div>'+
     '<div class="profile-tabs">'+
-      '<button type="button" aria-label="تب اطلاعات پایه" class="profile-tab active" onclick="showProfileSection(\'base\')">اطلاعات پایه</button>'+ 
-      '<button type="button" aria-label="تب اطلاعات هویتی" class="profile-tab" onclick="showProfileSection(\'identity\')">اطلاعات هویتی</button>'+ 
-      '<button type="button" aria-label="تب استعلامات" class="profile-tab" onclick="showProfileSection(\'inquiries\')">استعلامات</button>'+ 
-    '</div>'+ 
+      '<button type="button" aria-label="تب اطلاعات پایه" class="profile-tab active" onclick="showProfileSection(\'base\')">اطلاعات پایه</button>'+
+      '<button type="button" aria-label="تب اطلاعات هویتی" class="profile-tab" onclick="showProfileSection(\'identity\')">اطلاعات هویتی</button>'+
+      '<button type="button" aria-label="تب استعلامات" class="profile-tab" onclick="showProfileSection(\'inquiries\')">استعلامات</button>'+
+    '</div>'+
     '<div id="view-base">'+
     withPaste('<input type="text" name="title" value="'+escHtml(p.title||'')+'" placeholder="مثلاً علی رضایی">')+
     '<label>کد ملی</label>'+
@@ -1967,7 +2151,7 @@ function buildForm(p){
     withPaste('<input type="text" name="mobile" class="ltr" value="'+escHtml(p.mobile||'')+'" placeholder="۰۹۱۴...">')+
     '<label>کدهای IMEI</label>'+
     '<div id="imeis"></div>'+
-    '<button type="button" class="add-btn" onclick="addImei(\'\')">+ افزودن IMEI</button>'+ 
+    '<button type="button" class="add-btn" onclick="addImei(\'\')">+افزودن IMEI</button>'+
     '<div class="switches">'+
       '<div class="switch"><div><div class="t">زدن تیک «قبول دارم»</div><div class="d">اگر خاموش باشد تیک زده نمی‌شود</div></div>'+
         '<label class="toggle"><input type="checkbox" id="confirm_on"'+(p.no_confirm_check?'':' checked')+'><span class="track"></span></label></div>'+
@@ -1975,8 +2159,8 @@ function buildForm(p){
         '<label class="toggle"><input type="checkbox" id="debug_on"'+(p.debugging?' checked':'')+'><span class="track"></span></label></div>'+
       '<div class="switch"><div><div class="t">✋ مدیریت دستی</div><div class="d">صفحه اول باز می‌شود؛ خودت تا کد ۴رقمی برو، تیک بزن، دکمه بالای صفحه را بزن → brute-force</div></div>'+
         '<label class="toggle"><input type="checkbox" id="manual_on"'+(p.manual_manage?' checked':'')+'><span class="track"></span></label></div>'+
-    '</div>'+ 
-    '</div>'+ 
+    '</div>'+
+    '</div>'+
     '<div id="view-identity" class="hidden">'+
     '<div class="section-title">اطلاعات هویتی</div>'+
     '<label>نام</label>'+withPaste('<input type="text" name="first_name" value="'+escHtml(p.first_name||'')+'">')+
@@ -1985,11 +2169,12 @@ function buildForm(p){
     '<label>تاریخ تولد</label>'+withPaste('<input type="text" name="identity_birth" class="ltr" value="'+escHtml(p.birth||'')+'" oninput="syncSharedField(\'birth\',this.value)">')+
     '<label>شماره شناسنامه</label>'+withPaste('<input type="text" name="birth_certificate_no" class="ltr" value="'+escHtml(p.birth_certificate_no||'')+'">')+
     '<label>کد ملی</label>'+withPaste('<input type="text" name="identity_national" class="ltr" value="'+escHtml(p.national||'')+'" oninput="syncSharedField(\'national\',this.value)">')+
-    '</div>'+ 
+    '</div>'+
     '<div id="view-profile-inquiries" class="hidden">'+
-      '<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div>'+ 
-      '<div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div>'+ 
-    '</div>'+ 
+      buildDeviceInquiryPanel(p)+
+      '<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div>'+
+      '<div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div>'+
+    '</div>'+
     '<button type="submit" class="save">💾 ذخیره پروفایل</button>'+
     '<div class="toast" id="toast"></div>'+
   '</form>';
@@ -2040,7 +2225,7 @@ function activateProfile(id){
     STORE=res; activeId=res.active_id;
     renderProfiles();
     var p=getProf(activeId);
-    if(p) setActiveBanner(p);
+    if(p) viewProfile(activeId);
   });
 }
 
@@ -2074,7 +2259,7 @@ function deleteProfile(id){
   .then(function(res){
     STORE=res; activeId=res.active_id;
     renderProfiles();
-    if(id===activeId||!getProf(activeId)) editProfile(res.active_id);
+    if(id===activeId||!getProf(activeId)) viewProfile(res.active_id);
   });
 }
 
@@ -2214,9 +2399,60 @@ function pushLogNotif(l){
   },9000);
 }
 
-function renderInquiries(){
+var PROFILE_INQUIRY_SERVICE='hamta';
+var PROFILE_INQUIRY_FA={hamta:'استعلام همتا',gomrok:'استعلام گمرک',all:'استعلام گمرک و همتا'};
+var PROFILE_RESULT_FA={not_checked:'انجام نشده',running:'در حال استعلام',complete:'تکمیل شده',error:'نیازمند بررسی',healthy:'قابل ثبت در گمرک',good:'فاقد ثبت قانونی در شبکه',registered:'قانونی ثبت شده',problem:'مسدود/خطر',advanced:'مسدود/خطر',blocked:'مسدود/خطر'};
+
+function profileResultClass(status){
+  if(status==='running'||status==='not_checked')return 'running';
+  return ['healthy','good','registered','complete'].indexOf(status)>=0?'good':'bad';
+}
+function buildServiceResults(p,service){
+  var state=p[service+'_inquiry_status']||'not_checked';
+  var rows=p[service+'_inquiry_results']||[];
+  var error=p[service+'_inquiry_error']||'';
+  if(state==='not_checked'&&!rows.length)return '<div class="device-result running"><strong>'+(service==='hamta'?'همتا':'گمرک')+'</strong><div class="device-result-text">هنوز استعلامی برای سریال‌های این پروفایل ثبت نشده است.</div></div>';
+  if(state==='running'&&!rows.length)return '<div class="device-result running"><strong>در حال استعلام '+(service==='hamta'?'همتا':'گمرک')+'</strong><div class="device-result-text">نتیجه هر سریال پس از پایان ربات در همین بخش نمایش داده می‌شود.</div></div>';
+  var html=rows.map(function(row){
+    var st=row.status||'error';
+    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+escHtml(row.serial||'--')+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
+  }).join('');
+  if(error)html+='<div class="device-result bad"><strong>خطای اجرا</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
+  return html;
+}
+function buildDeviceInquiryPanel(p){
+  var service=PROFILE_INQUIRY_SERVICE;
+  var results=service==='all'?buildServiceResults(p,'gomrok')+buildServiceResults(p,'hamta'):buildServiceResults(p,service);
+  var running=p.device_inquiry_pid&&((p.gomrok_inquiry_status==='running')||(p.hamta_inquiry_status==='running'));
+  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><div id="profile-inquiry-status" class="hint"></div></div>';
+}
+function selectProfileInquiry(service){
+  PROFILE_INQUIRY_SERVICE=service;
   var p=getProf(activeId)||{};
-  document.getElementById('view-inquiries').innerHTML='<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3><p class="hint">بررسی وضعیت ممنوع‌الخروجی پروفایل انتخاب‌شده</p>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div><div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div>';
+  var card=document.getElementById('device-inquiry-card');
+  if(card){var wrap=document.createElement('div');wrap.innerHTML=buildDeviceInquiryPanel(p);card.replaceWith(wrap.firstChild);}
+}
+
+function refreshProfileDeviceInquiry(id,startedAt){
+  fetch('/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(store){
+    if(store.error)return;
+    STORE=store; var p=getProf(id); if(!p)return;
+    var card=document.getElementById('device-inquiry-card');
+    if(card){var wrap=document.createElement('div');wrap.innerHTML=buildDeviceInquiryPanel(p);card.replaceWith(wrap.firstChild);}
+    var running=p.device_inquiry_pid&&((p.gomrok_inquiry_status==='running')||(p.hamta_inquiry_status==='running'));
+    if(running&&Date.now()-startedAt<900000)setTimeout(function(){refreshProfileDeviceInquiry(id,startedAt);},1500);
+  }).catch(function(){if(Date.now()-startedAt<900000)setTimeout(function(){refreshProfileDeviceInquiry(id,startedAt);},2500);});
+}
+function runProfileDeviceInquiry(id){
+  var status=document.getElementById('profile-inquiry-status');
+  if(status)status.textContent='در حال آماده‌سازی استعلام سریال‌های پروفایل…';
+  fetch('/profile-device-inquiry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,service:PROFILE_INQUIRY_SERVICE})})
+    .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data};});})
+    .then(function(res){
+      if(!res.ok){if(status)status.textContent=(res.data.error||'شروع استعلام انجام نشد')+(res.data.missing?' — '+res.data.missing.join('، '):'');return;}
+      if(status)status.textContent='استعلام شروع شد؛ نتایج در همین بخش به‌روز می‌شوند.';
+      refreshProfileDeviceInquiry(id,Date.now());
+    }).catch(function(){if(status)status.textContent='خطا در ارتباط با پنل';});
 }
 
 function refreshExitbanResult(id, startedAt){
@@ -2290,15 +2526,12 @@ function saveTelegram(){
 function showView(v){
   document.getElementById('view-form').classList.toggle('hidden',v!=='form');
   document.getElementById('view-logs').classList.toggle('hidden',v!=='logs');
-  document.getElementById('view-inquiries').classList.toggle('hidden',v!=='inquiries');
   document.getElementById('view-telegram').classList.toggle('hidden',v!=='telegram');
   document.getElementById('tab-form').classList.toggle('active',v==='form');
   document.getElementById('tab-logs').classList.toggle('active',v==='logs');
-  document.getElementById('tab-inquiries').classList.toggle('active',v==='inquiries');
   document.getElementById('tab-telegram').classList.toggle('active',v==='telegram');
   if(v==='logs') renderLogs();
   if(v==='telegram') renderTelegram();
-  if(v==='inquiries') renderInquiries();
 }
 
 // init
@@ -2309,7 +2542,7 @@ if(statsBar) statsBar.addEventListener('click',function(e){
 renderProfiles();
 updateThemeButton();
 refreshApiHealth(false);
-renderProfileEditorEmpty();
+if(getProf(activeId)) viewProfile(activeId); else renderProfileEditorEmpty();
 updateNotifToggle();
 notifyNewLogs(LOGS);   // baseline: hame-ye log-haye avvaliye seen mishavand
 """
@@ -2327,7 +2560,7 @@ def render_page():
     js = js.replace("__STORE_JSON__", json.dumps(store, ensure_ascii=False))
     js = js.replace("__LOGS_JSON__", json.dumps(logs, ensure_ascii=False))
     js = js.replace("__TELEGRAM_JSON__", json.dumps(public_telegram_config(), ensure_ascii=False))
-    html = PAGE_HEAD + js + PAGE_TAIL
+    html = PAGE_HEAD +js +PAGE_TAIL
     return html.encode("utf-8")
 
 
@@ -2451,7 +2684,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
                  transition:background .15s,height .15s}
   .wgrip:hover::before,.wgrip.drag::before{background:var(--brand);height:96px}
   body.wresize{cursor:ew-resize;user-select:none}
-  /* nav-e arz: dokme-haye amade + reset */
+  /* nav-e arz: dokme-haye amade +reset */
   .wbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .wbar .wlab{color:var(--muted);font-size:12px}
   .wbar .wbtn{background:var(--card2);border:1px solid var(--line);color:var(--muted);
@@ -2533,7 +2766,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
                  border-radius:10px;padding:7px 13px;font-size:12.5px;font-weight:700;
                  cursor:pointer;font-family:inherit}
   .svc-btns .svc:hover{color:var(--txt);background:color-mix(in srgb,var(--brand) 10%,transparent)}
-  /* gozine-ye ENTEKHAB-SHODE: rang-e brand-e por + noar-e paeen (mesl-e tab-haye digar) */
+  /* gozine-ye ENTEKHAB-SHODE: rang-e brand-e por +noar-e paeen (mesl-e tab-haye digar) */
   .svc-btns .svc.on{position:relative;background:linear-gradient(135deg,var(--brand),var(--brand2));
                     border-color:transparent;color:#fff;
                     box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent)}
@@ -2627,7 +2860,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .tbtn{background:var(--card2);border:1px solid var(--line);color:var(--muted);
         border-radius:9px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit}
   .tbtn:hover{color:var(--txt);border-color:var(--brand)}
-  /* --- sotoon-e natije: kholase + modal-e motn-e kamel --- */
+  /* --- sotoon-e natije: kholase +modal-e motn-e kamel --- */
   .res-short{white-space:pre-line;line-height:1.6;word-break:break-word}
   .res-more{margin-top:6px;background:transparent;border:1px solid var(--line);
             color:var(--brand);border-radius:9px;padding:4px 10px;font-size:11.5px;
@@ -2704,7 +2937,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   <div class="colmain">
   <div class="card">
     <h2>اطلاعات دستگاه</h2>
-    <p class="hint">نام دستگاه + سریال ۱۵ رقمی. سریال دوم اختیاری است (دو سیم‌کارت).</p>
+    <p class="hint">نام دستگاه +سریال ۱۵ رقمی. سریال دوم اختیاری است (دو سیم‌کارت).</p>
     <div class="row">
       <button onclick="startSingle()">➕ افزودن دستگاه</button>
       <button class="ghost" onclick="startBulk()">📦 افزودن عمده</button>
@@ -2822,14 +3055,14 @@ function renderDevices(){
            (d.serial2?'<div class="mono sn2">'+esc(d.serial2)+'</div>':'');
     var nm='<div class="dev-name">'+esc(d.name||'—')+'</div>';
     var gs=d.status||'pending', hs=d.hamta_status||'pending';
-    // badge-e gomrok KUTAH (مجاز/مسدود) mesl-e hamta; motn-e kamel dar tooltip + sotoon-e natije
+    // badge-e gomrok KUTAH (مجاز/مسدود) mesl-e hamta; motn-e kamel dar tooltip +sotoon-e natije
     var gb='<span class="badge b-'+esc(gs)+'" title="'+esc(FA_STATUS[gs]||gs)+'">'+
            esc(BADGE_FA[gs]||FA_STATUS[gs]||gs)+'</span>';
     var hb='<span class="badge b-'+esc(hs)+'" title="'+esc(HAMTA_FA[hs]||hs)+'">'+
            esc(HAMTA_FA[hs]||hs)+'</span>';
     // zir-sotoon-e DOVVOM-e vaziat: zaman-e estelam ('--' agar anjam nashode)
     var ht=fmtWhen(d.hamta_at), gt=fmtWhen(d.gomrok_at);
-    // sotoon-e natije: 80 character-e aval + dokme-ye «مشاهده کامل» (modal).
+    // sotoon-e natije: 80 character-e aval +dokme-ye «مشاهده کامل» (modal).
     // (natije-ye HAMTA momken ast sad-ha character bashad va jadval ra bekeshad)
     var res;
     if(SVC==='hamta') res=resCell(d,'hamta');
@@ -2872,14 +3105,14 @@ function refresh(){
     .then(function(s){STATE=s;renderDevices();renderRuntime(s.runtime||{});return s;});
 }
 
-/* --- sotoon-e natije: kholase-ye 80-character + modal-e motn-e kamel ------- */
+/* --- sotoon-e natije: kholase-ye 80-character +modal-e motn-e kamel ------- */
 var RES_LIMIT=80;
 function resText(d,svc){return (svc==='hamta'?d.hamta_result:d.result)||'';}
 function resCell(d,svc,prefix){
   prefix=prefix||'';
   var full=resText(d,svc);
   if(!full) return esc(prefix)+'—';
-  // faghat khat-e aval-e ma'nadar + kutah-shode be 80 character
+  // faghat khat-e aval-e ma'nadar +kutah-shode be 80 character
   var flat=full.replace(/\s+/g,' ').trim();
   if(flat.length<=RES_LIMIT) return '<span class="res-short">'+esc(prefix+flat)+'</span>';
   var head=esc(prefix+flat.slice(0,RES_LIMIT))+'…';
@@ -3087,7 +3320,7 @@ function pickSvc(s){
   renderRuntime((STATE.runtime)||{});
 }
 
-/* --- arz-e INTERACTIVE-e kadr-e asli (drag + preset + localStorage) --------
+/* --- arz-e INTERACTIVE-e kadr-e asli (drag +preset +localStorage) --------
    Chera: natije-ye HAMTA chand-khati va tolani ast; kadr-e 1080px faza-ye khali-ye
    ziad dar chap/rast migozasht. Pishfarz 1620px (50% bishtar). */
 var WMIN=900, WMAX=3000, WKEY='estelam_wrap_w';
@@ -3168,7 +3401,7 @@ function checkApiHealth(){
   }).catch(function(){});
 }
 
-/* ---------------- log-e interactive (kadr-e sabet + scroll) ---------------- */
+/* ---------------- log-e interactive (kadr-e sabet +scroll) ---------------- */
 var LOGS=[];
 var LOG_FILTER='all';
 var LOG_OPEN={};
@@ -3452,6 +3685,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": True, "pid": runtime["pid"]})
 
+        elif self.path == "/profile-device-inquiry":
+            data = self._read_json()
+            status, payload = start_profile_device_inquiry(
+                str(data.get("id") or ""), str(data.get("service") or ""))
+            self._json(payload, status)
+
         elif self.path == "/exitban-inquiry":
             data = self._read_json()
             profile_id = str(data.get("id") or "").strip()
@@ -3606,7 +3845,7 @@ def clean_project_root():
 def main():
     url = f"http://{HOST}:{PORT}"
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    load_store()  # motmaen sho profiles.json + inputs.json sakhte/sync shode-and
+    load_store()  # motmaen sho profiles.json +inputs.json sakhte/sync shode-and
     clear_stale_busy_profiles()
     clean_project_root()
     threading.Thread(target=_startup_telegram_bootstrap, daemon=True,
