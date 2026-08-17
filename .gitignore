@@ -57,6 +57,13 @@ _dbg_site2/
 solver/checkpoints/
 *.pt
 
+# ---- release build output (mahalli, ghabel-e sakht-e dobare) ----
+dist/
+build/
+# ONNX export az checkpoint sakhte mishavad — artifact ast, na source
+solver/checkpoints/*.onnx
+*.onnx
+
 # ---- chrome profile-haye mahalli (hajm-e bala + cookie/session) ----
 .exitban-chrome-profile/
 *-chrome-profile/
