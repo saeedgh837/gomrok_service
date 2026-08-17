@@ -5,7 +5,7 @@ instead of hamtaStep, the profile has already been through the flow and already
 holds a payment link. The robot must then:
 
   * report it (logs.jsonl row + a Telegram message, both bounded),
-  * mark the panel profile unusable (blocked + disabled),
+  * mark the panel profile SUCCESS (not blocked), with the payment link + receipt,
   * stop — no retry, browser closed.
 """
 import os
@@ -98,10 +98,11 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
     def tearDown(self):
         gomrok._SCREENSHOTS_DIR = self._shots
 
-    def _run(self, screenshot_ok=True, profile_id="p1"):
+    def _run(self, screenshot_ok=True, profile_id="p1", record_ok=True):
         self.logged = []
         self.delivered = []
-        self.unusable = []
+        self.outputs = []
+        self.success_marks = []
 
         def fake_shot(_driver, path):
             if screenshot_ok:
@@ -115,8 +116,10 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
                           side_effect=lambda *a, **k: self.logged.append((a, k))), \
              patch.object(gomrok, "_telegram_deliver",
                           side_effect=lambda kind, **k: self.delivered.append((kind, k)) or True), \
-             patch.object(gomrok, "_mark_panel_profile_unusable",
-                          side_effect=lambda pid, text, **k: self.unusable.append((pid, text, k)) or True), \
+             patch.object(gomrok, "_record_panel_output",
+                          side_effect=lambda *a, **k: self.outputs.append((a, k)) or record_ok), \
+             patch.object(panel, "mark_profile_success",
+                          side_effect=lambda *a, **k: self.success_marks.append((a, k)) or True), \
              patch.object(gomrok, "_CLAIMED_PROFILE_ID", profile_id), \
              patch.object(gomrok, "_CLAIMED_RUNNER_ID", "r1"):
             link = gomrok.handle_already_registered(
@@ -136,11 +139,11 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
         shots = [n for n in os.listdir(self.tmp) if n.endswith("_already_paid.png")]
         self.assertEqual(len(shots), 1)
 
-    def test_logs_an_error_row_with_the_persian_message(self):
+    def test_logs_a_success_row_with_the_persian_message(self):
         self._run()
         self.assertEqual(len(self.logged), 1)
         args, kwargs = self.logged[0]
-        self.assertEqual(args[0], "error")
+        self.assertEqual(args[0], "success")          # NOT "error" — user's decision
         self.assertIn(self.MESSAGE, args[1])
         self.assertIn(PAY_LINK, args[1])
         self.assertEqual(kwargs["imei"], "352506099000001")
@@ -162,57 +165,83 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
         self.assertEqual(kind, "text")
         self.assertIn(self.MESSAGE, kwargs["text"])
 
-    def test_marks_the_panel_profile_unusable_with_link_and_receipt(self):
+    def test_marks_the_profile_success_via_record_output(self):
         self._run()
-        self.assertEqual(len(self.unusable), 1)
-        pid, text, kwargs = self.unusable[0]
-        self.assertEqual(pid, "p1")
-        self.assertIn(self.MESSAGE, text)
-        self.assertIn(PAY_LINK, text)
-        # the link and screenshot must ride along so the panel can show them
-        # WITHOUT record_profile_output() (which would flip status to success)
-        self.assertEqual(kwargs.get("payment_link"), PAY_LINK)
-        self.assertTrue(str(kwargs.get("receipt") or "").endswith("_already_paid.png"))
+        self.assertEqual(len(self.outputs), 1)
+        args, _kwargs = self.outputs[0]
+        # _record_panel_output(profile_id, runner_id, receipt, payment, link)
+        self.assertEqual(args[0], "p1")
+        self.assertEqual(args[1], "r1")
+        self.assertTrue(str(args[2]).endswith("_already_paid.png"))   # receipt
+        self.assertEqual(args[4], PAY_LINK)                            # link
+        # success path must never block the profile
+        self.assertEqual(self.success_marks, [])
 
-    def test_does_not_call_record_profile_output(self):
-        """record_profile_output() sets status=success and would undo 'blocked'."""
+    def test_does_not_block_the_profile(self):
+        """This must NOT call mark_profile_unusable — user wants SUCCESS, not blocked."""
         import inspect
-        import re as _re
         source = inspect.getsource(gomrok.handle_already_registered)
-        # ignore comments (the code explains WHY it is not used)
         code = "\n".join(l.split("#")[0] for l in source.splitlines())
-        self.assertIsNone(_re.search(r"record_profile_output\s*\(", code))
+        self.assertIsNone(re.search(r"mark_profile_unusable\s*\(", code))
+        self.assertIsNone(re.search(r"_mark_panel_profile_unusable\s*\(", code))
+
+    def test_falls_back_to_mark_success_when_record_output_rejects(self):
+        self._run(record_ok=False)
+        self.assertEqual(len(self.outputs), 1)          # tried record first
+        self.assertEqual(len(self.success_marks), 1)    # then fell back
+        args, _kwargs = self.success_marks[0]
+        self.assertEqual(args[3], PAY_LINK)             # payment_link forwarded
 
     def test_works_without_a_claimed_profile(self):
         link, _ = self._run(profile_id="")
         self.assertEqual(link, PAY_LINK)
-        self.assertEqual(self.unusable, [])
+        self.assertEqual(self.outputs, [])
+        self.assertEqual(self.success_marks, [])
         self.assertEqual(len(self.logged), 1)
 
 
-class PanelBlocksTheProfileTests(unittest.TestCase):
-    def test_mark_unusable_blocks_disables_and_frees_the_profile(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.multiple(
-                panel,
-                PROFILES_PATH=os.path.join(tmp, "profiles.json"),
-                INPUTS_PATH=os.path.join(tmp, "inputs.json"),
-                _STORE_LOCK_PATH=os.path.join(tmp, "profiles.json.lock")):
+class PanelMarksSuccessTests(unittest.TestCase):
+    def _paths(self, tmp):
+        return patch.multiple(
+            panel,
+            PROFILES_PATH=os.path.join(tmp, "profiles.json"),
+            INPUTS_PATH=os.path.join(tmp, "inputs.json"),
+            _STORE_LOCK_PATH=os.path.join(tmp, "profiles.json.lock"))
+
+    def test_record_output_sets_success_and_link_and_frees_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):
             panel._LAST_GOOD_STORE.clear()
             panel.save_store({"active_id": "p1", "profiles": [{
                 "id": "p1", "title": "Ali", "run_status": "busy",
                 "runner_id": "r1", "runner_pid": 4242,
             }]})
-            self.assertTrue(panel.mark_profile_unusable(
-                "p1", "قبلاً این پروفایل لینک پرداخت گرفته است"))
+            ok = panel.record_profile_output("p1", "r1",
+                                             receipt="C:\\shots\\inv.png",
+                                             payment="", link=PAY_LINK)
+            self.assertTrue(ok)
             profile = panel.load_store()["profiles"][0]
-            self.assertEqual(profile["registration_status"], "blocked")
-            self.assertFalse(profile["enabled"])
-            self.assertEqual(profile["run_status"], "idle")
-            self.assertEqual(profile["runner_pid"], 0)
-            self.assertIn("لینک پرداخت", profile["runtime_error"])
-            # a blocked profile can no longer be started
+            self.assertEqual(profile["registration_status"], "success")
+            self.assertEqual(profile["payment_link"], PAY_LINK)
+            self.assertEqual(profile["receipt_screenshot"], "C:\\shots\\inv.png")
+
+    def test_a_success_profile_cannot_be_started_again(self):
+        with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):
+            panel._LAST_GOOD_STORE.clear()
+            panel.save_store({"active_id": "p1", "profiles": [{
+                "id": "p1", "title": "Ali", "national": "0012345678",
+                "birth": "1375/04/29", "imeis": ["352506099000001"],
+                "registration_status": "success",
+            }]})
             status, _payload = panel.start_profile("p1")
             self.assertEqual(status, 409)
+
+    def test_a_success_profile_is_not_claimable(self):
+        with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):
+            panel._LAST_GOOD_STORE.clear()
+            panel.save_store({"active_id": "p1", "profiles": [{
+                "id": "p1", "title": "Ali", "registration_status": "success",
+            }]})
+            self.assertIsNone(panel.claim_profile())
 
 
 class RobotStopsInsteadOfRetryingTests(unittest.TestCase):

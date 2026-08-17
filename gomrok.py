@@ -129,13 +129,10 @@ def _record_panel_output(profile_id, runner_id, receipt, payment, link):
         return False
 
 
-def _mark_panel_profile_unusable(profile_id, error_text, payment_link=None,
-                                 receipt=None):
+def _mark_panel_profile_unusable(profile_id, error_text):
     try:
         import panel
-        return panel.mark_profile_unusable(profile_id, error_text,
-                                          payment_link=payment_link,
-                                          receipt=receipt)
+        return panel.mark_profile_unusable(profile_id, error_text)
     except Exception as e:
         print(f">>> (mark-e profile-e gheyr-e ghabele voroud anjam nashod: {e})")
         return False
@@ -716,6 +713,10 @@ WP_IMEI_ADD = "form_imeiStep_add"  # dokme-ye '+' baraye radif-e IMEI-ye dovom (
 # NEMISHAVAD (readyState=complete + hich request/AJAX-e dar jaryan) va captcha
 # hanooz nist, FOWRAN F5 mizanim. Vaghti safhe salem ast, tashkhis dar ~0.1s
 # anjam mishavad (na sabr-e sabet).
+
+# page-load-timeout-e amaliati (ba'd az probe be hamin bar-migardad).
+PAGE_LOAD_TIMEOUT_SEC = 12
+
 _PAGE_PROBE_JS = r"""
 var capSel = arguments[0], btnPath = arguments[1];
 var cap = document.querySelector(capSel);
@@ -790,27 +791,39 @@ def wait_first_page_ready(driver, budget=6.0, settle=0.45, poll=0.08):
     hatta agar safhe ghofl konad, in tabe' bishtar az ~budge tool nemikeshad.
     """
     deadline = time.monotonic() + budget
-    # script-timeout ra be budge mahdud kon ta execute_script-e block-shode
-    # deadline ra napranad (in daghighan hamun ta'khir-e chand-daghighe-i bood).
-    script_timeout = min(2.0, max(0.5, budget))
-    restore = _set_script_timeout(driver, script_timeout)
+    # HARDBUDGE: execute_script-e block-shode ba PAGE-LOAD-timeout mahdud mishavad
+    # (na script-timeout) — blockdiag neshan dad "Timed out receiving message from
+    # renderer" daghighan be andaze-ye page-load-timeout tool mikeshad. Pas HAR DO
+    # ra be yek meghdar-e kootah mibandim ta yek probe-e gir-karde nahayatan
+    # ~probe_cap saniye tool bekeshad, na chandin saniye.
+    probe_cap = min(1.5, max(0.5, budget / 2.0))
+    restore_script = _set_script_timeout(driver, probe_cap)
+    restore_page = _set_page_load_timeout(driver, probe_cap)
     complete_since = None
-    stalled = 0
+    stalled_since = None
+    stopped = False
     try:
         while time.monotonic() < deadline:
             state = probe_first_page(driver)
             if state is None:
-                # probe javab nadad (safhe/script gir karde) — talash-e mahdud,
-                # sepas window.stop() ta render az halat-e ghofl dar biayad.
-                stalled += 1
-                if stalled == 2:
+                # probe javab nadad (renderer mashghul/gir). NEMIGUIM naqes ast —
+                # safhe-ye salem momken ast lahze-i (cold start) block konad. Faghat
+                # yekbar window.stop() mizanim ta render az ghofl dar biayad, sepas
+                # ta payan-e budge dobare talash mikonim. Tashkhis-e 'naqes' FAGHAT
+                # az roo-ye state-e vaghe'i (capBroken/idle) anjam mishavad.
+                now = time.monotonic()
+                if stalled_since is None:
+                    stalled_since = now
+                elif not stopped and now - stalled_since >= 0.3:
+                    stopped = True
                     try:
                         driver.execute_script("window.stop();")
                     except Exception:
                         pass
                 time.sleep(poll)
                 continue
-            stalled = 0
+            stalled_since = None
+            stopped = False
             if state.get("capOk") and state.get("btnOk"):
                 return "ready"
             # captcha-ye shekaste (complete vali naturalWidth=0) = ghat'an naqes
@@ -828,8 +841,12 @@ def wait_first_page_ready(driver, budget=6.0, settle=0.45, poll=0.08):
             time.sleep(poll)
         return "timeout"
     finally:
-        if restore:
+        # timeout-ha ra be meghdar-e amaliati bargardan (bagie-ye flow be
+        # page-load/script-e bolandtar niaz darad).
+        if restore_script:
             _set_script_timeout(driver, 30)
+        if restore_page:
+            _set_page_load_timeout(driver, PAGE_LOAD_TIMEOUT_SEC)
 
 
 def imei_rows(driver):
@@ -1686,8 +1703,9 @@ def handle_already_registered(driver, title="", national="", imei=""):
       1) screenshot-e faktor + zakhire-ye link (mahali),
       2) log-e panel (logs.jsonl) ba payam-e roshan,
       3) ersal-e telegram ba budge-ye mahdud (robot montazer nemimanad),
-      4) profile dar panel GHEYR-E GHABEL-E EJRA (blocked + disabled) mishavad,
-      5) morurgar baste mishavad va robot khatm mishavad.
+      4) profile dar panel MOVAFFAGH (success) sabt mishavad — NA masdud —
+         hamrah ba link-e pardakht va aks-e faktor,
+      5) morurgar baste mishavad va robot khatm mishavad (retry bi-fayde ast).
 
     Barmigardanad link-e pardakht (agar peyda shod).
     """
@@ -1717,20 +1735,20 @@ def handle_already_registered(driver, title="", national="", imei=""):
         except OSError as exc:
             print(f">>> (zakhire-ye link na-shod: {exc})")
 
-    log_event("error",
+    log_event("success",
               f"{message} — safhe-ye faktor-e pish-pardakht bedun-e tey-e marhale-ha "
-              f"amad. robot motevaghef shod va profile gheyr-e ghabel-e ejra shod."
+              f"amad. profile MOVAFFAGH sabt shod va robot motevaghef shod."
               + (f" link: {pay_link}" if pay_link else "")
               + (f" | screenshot: {shot}" if shot else ""),
               step="marhale-1/imeiStep -> faktor-e pish-pardakht",
               title=title, national=national, imei=imei)
 
     caption = (
-        f"⛔ <b>{message}</b>\n"
+        f"✅ <b>{message}</b>\n"
         f"👤 Profile: {title or national}\n"
         f"📱 IMEI: {imei}\n"
         f"ℹ️ Safhe-ye faktor-e pish-pardakht bedun-e tey kardan-e marhale-ha amad — "
-        f"robot motevaghef shod va in profile gheyr-e ghabel-e ejra shod."
+        f"profile be onvan-e MOVAFFAGH zakhire shod va robot motevaghef shod."
         + (f"\n🔗 Link:\n<code>{pay_link}</code>" if pay_link else "")
     )
     if shot and os.path.exists(shot):
@@ -1745,15 +1763,19 @@ def handle_already_registered(driver, title="", national="", imei=""):
                           chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
 
     if _CLAIMED_PROFILE_ID:
-        detail = message + (f" (link: {pay_link})" if pay_link else "")
-        # mostaghim blocked mikonim VA link/aks ra hamanja set mikonim.
-        # record_profile_output() ra seda NEMIZANIM chon status ra 'success'
-        # mikonad va 'blocked' ra pak mikonad.
-        _mark_panel_profile_unusable(_CLAIMED_PROFILE_ID, detail,
-                                     payment_link=pay_link or None,
-                                     receipt=shot or None)
+        # MOVAFFAGH (na masdud): record_profile_output status ra 'success' mikonad
+        # va link + aks-e faktor ra rooye profile mineshanad. profile ba'd az an
+        # ghabel-e ejra nist (claim/start profile-haye success ra rad mikonand).
+        if not _record_panel_output(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID,
+                                    shot or "", "", pay_link or ""):
+            # fallback: agar runner_id match nashod, mostaghim mohr-e movaffaghiat
+            try:
+                import panel as profile_store
+                profile_store.mark_profile_success(title, national, imei, pay_link or "")
+            except Exception as exc:
+                print(f">>> (mohr-e movaffaghiat-e profile na-shod: {exc})")
 
-    print(f">>> ⛔ {message} — robot motevaghef mishavad.")
+    print(f">>> ✅ {message} — profile MOVAFFAGH sabt shod; robot motevaghef mishavad.")
     return pay_link
 
 
@@ -2654,8 +2676,9 @@ def main():
             # --- PROFILE-e GHABLAN SABT-SHODE -------------------------------------
             # Agar BE JAYE hamtaStep, MOSTAGHIM safhe-ye faktor-e pish-pardakht amad,
             # ya'ni in profile ghablan tey shode va link-e pardakht gerefte. Dar in
-            # halat: gozaresh (log + telegram) -> profile gheyr-e ghabel-e ejra ->
-            # bastan-e morurgar va khatm-e robot (retry bi-fayde ast).
+            # halat: gozaresh (log + telegram) -> profile be onvan-e MOVAFFAGH
+            # (success + link) sabt mishavad -> bastan-e morurgar va khatm-e robot
+            # (retry bi-fayde ast).
             if detect_prepayment_page(driver):
                 handle_already_registered(driver, title=title, national=national,
                                           imei=imei)

@@ -324,7 +324,7 @@ def mark_profile_success(title="", national="", imei="", payment_link=""):
     return True
 
 
-def mark_profile_unusable(profile_id, error_text, payment_link=None, receipt=None):
+def mark_profile_unusable(profile_id, error_text):
     with _locked_store():
         store = load_store()
         profile = next((p for p in store.get("profiles", [])
@@ -335,13 +335,6 @@ def mark_profile_unusable(profile_id, error_text, payment_link=None, receipt=Non
         profile["enabled"] = False
         profile["runtime_error"] = (
             "این پروفایل دیگر قابل ورود نیست: " + str(error_text or "").strip())
-        # link/aks-e marbut (agar peyda shodand) baraye namayesh dar panel.
-        # TAVAJOH: record_profile_output() estefade NEMISHAVAD chon status ra
-        # 'success' mikonad va 'blocked' ra pak mikonad.
-        if payment_link:
-            profile["payment_link"] = str(payment_link)
-        if receipt:
-            profile["receipt_screenshot"] = str(receipt)
         profile["run_status"] = "idle"
         profile["runner_id"] = ""
         profile["busy_since"] = ""
@@ -1622,9 +1615,18 @@ PAGE_HEAD = """<!DOCTYPE html>
   .stat .n { font-size:22px; font-weight:700; }
   .stat .l { font-size:11px; }
   .nav-tabs { gap:4px; margin:0 0 18px; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--card); }
-  .nav-tab { min-height:38px; display:flex; align-items:center; justify-content:center; padding:8px 10px; border:0; border-radius:7px; background:transparent; font-size:12.5px; }
-  .nav-tab:hover { color:var(--txt); background:var(--card2); }
-  .nav-tab.active { color:var(--txt); background:var(--card2); box-shadow:0 1px 2px rgba(16,24,40,.06); }
+  .nav-tab { position:relative; min-height:38px; display:flex; align-items:center; justify-content:center; padding:8px 10px; border:0; border-radius:7px; background:transparent; font-size:12.5px; font-weight:600; }
+  .nav-tab:hover { color:var(--txt); background:color-mix(in srgb,var(--brand) 10%,transparent); }
+  /* tab-e ENTEKHAB-SHODE: rang-e brand-e por + noar-e paeen -> ja-ye fe'li roshan ast */
+  .nav-tab.active {
+    color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2));
+    box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent);
+  }
+  .nav-tab.active:hover { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); filter:brightness(1.05); }
+  .nav-tab.active::after {
+    content:""; position:absolute; inset-inline:22%; bottom:-5px; height:3px;
+    border-radius:3px; background:var(--brand);
+  }
   #view-form,#view-logs,#view-inquiries,#view-telegram { padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow); }
   .profile-editor-empty { min-height:360px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:40px; text-align:center; color:var(--muted); }
   .profile-editor-empty .empty-icon { width:46px; height:46px; display:grid; place-items:center; margin-bottom:4px; border:1px solid var(--line); border-radius:12px; background:var(--card2); color:var(--brand); font-size:22px; }
@@ -1632,8 +1634,8 @@ PAGE_HEAD = """<!DOCTYPE html>
   .profile-editor-empty p { max-width:420px; margin:0; font-size:12.5px; line-height:1.8; }
   .section-title { margin:0 0 14px; padding:0; border:0; background:none; color:var(--txt); font-size:17px; }
   .profile-tabs { max-width:520px; gap:4px; margin:0 0 22px; padding:4px; border-radius:9px; background:var(--card2); }
-  .profile-tab { padding:8px 12px; border:0; border-radius:7px; background:transparent; font-size:12px; }
-  .profile-tab.active { color:var(--txt); background:var(--card); box-shadow:0 1px 3px rgba(16,24,40,.08); }
+  .profile-tab { padding:8px 12px; border:0; border-radius:7px; background:transparent; font-size:12px; font-weight:600; }
+  .profile-tab.active { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); box-shadow:0 2px 8px color-mix(in srgb,var(--brand) 30%,transparent); }
   #view-base,#view-identity { display:block; max-width:920px; }
   #view-base > .section-title,#view-base > .profile-tabs,#view-base > #imeis,#view-base > .add-btn,#view-base > .switches,#view-identity > .section-title { width:100%; }
   label { margin:10px 0 5px; font-size:12px; font-weight:600; }
@@ -1703,7 +1705,7 @@ PAGE_HEAD = """<!DOCTYPE html>
         <div class="stat s-success" data-filter="success" title="فیلتر ثبت موفق"><div class="n" id="st-success">۰</div><div class="l">موفق</div></div>
         <div class="stat s-blocked" data-filter="blocked" title="فیلتر مسدود"><div class="n" id="st-blocked">۰</div><div class="l">مسدود</div></div>
       </div>
-      <div class="nav-tabs">
+      <div class="nav-tabs" id="main-tabs" role="tablist">
         <div class="nav-tab active" id="tab-form" onclick="showView('form')">✏️ ویرایش پروفایل</div>
         <div class="nav-tab" id="tab-logs" onclick="showView('logs')">📋 لاگ‌ها</div>
         <div class="nav-tab" id="tab-inquiries" onclick="showView('inquiries')">🔎 استعلامات</div>
@@ -2134,9 +2136,9 @@ function renderLogs(){
   var el=document.getElementById('view-logs'); el.innerHTML='';
   var p=getProf(activeId)||{};
   var own=filterLogsForProfile(LOGS,p);
-  el.innerHTML='<div class="nav-tabs"><div class="nav-tab active" id="log-tab-profile" onclick="renderLogs(\'profile\')">لاگ پروفایل</div><div class="nav-tab" id="log-tab-all" onclick="renderLogs(\'all\')">لاگ کلی</div></div><div id="log-list"></div>';
   var mode=arguments[0]||logMode;
   logMode=mode;
+  el.innerHTML='<div class="nav-tabs"><div class="nav-tab'+(mode!=='all'?' active':'')+'" id="log-tab-profile" onclick="renderLogs(\'profile\')">لاگ پروفایل</div><div class="nav-tab'+(mode==='all'?' active':'')+'" id="log-tab-all" onclick="renderLogs(\'all\')">لاگ کلی</div></div><div id="log-list"></div>';
   var list=mode==='all'?LOGS:own;
   var listEl=document.getElementById('log-list');
   if(!list.length){listEl.innerHTML='<div class="log-empty">هنوز لاگی ثبت نشده</div>';return;}
@@ -2418,7 +2420,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   /* THEME: pishfarz = ROSHAN (light). data-theme="dark" -> tire. */
   :root{
     --bg:#eef1f9;--card:#ffffff;--card2:#f4f6fc;--line:#d9deef;--txt:#1b2036;
-    --muted:#5c6484;--brand:#4f6bef;--ok:#12a05f;--danger:#e0455a;--warn:#c97a10;
+    --muted:#5c6484;--brand:#4f6bef;--brand2:#8250e6;--ok:#12a05f;--danger:#e0455a;--warn:#c97a10;
     --logbg:#f7f9ff;--scroll:#cdd4ec;--sn:#4257a8;--shadow:rgba(20,30,70,.14);
     --pill-neutral-bg:#e6eaf7;--pill-neutral-fg:#5c6484;
     --pill-ok-bg:#dbf3e6;--pill-ok-fg:#0f7d4a;
@@ -2427,7 +2429,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   }
   html[data-theme="dark"]{
     --bg:#0d1220;--card:#151b2d;--card2:#1b2338;--line:#303a58;--txt:#edf1ff;
-    --muted:#a7afc9;--brand:#758cff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
+    --muted:#a7afc9;--brand:#758cff;--brand2:#a06cff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
     --logbg:#0f1526;--scroll:#2c3350;--sn:#8ea2d8;--shadow:rgba(0,0,0,.45);
     --pill-neutral-bg:#243050;--pill-neutral-fg:#a9b7e0;
     --pill-ok-bg:#12321f;--pill-ok-fg:#3ad28b;
@@ -2530,8 +2532,14 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .svc-btns .svc{background:transparent;border:1px solid transparent;color:var(--muted);
                  border-radius:10px;padding:7px 13px;font-size:12.5px;font-weight:700;
                  cursor:pointer;font-family:inherit}
-  .svc-btns .svc:hover{color:var(--txt)}
-  .svc-btns .svc.on{background:var(--brand);border-color:var(--brand);color:#fff}
+  .svc-btns .svc:hover{color:var(--txt);background:color-mix(in srgb,var(--brand) 10%,transparent)}
+  /* gozine-ye ENTEKHAB-SHODE: rang-e brand-e por + noar-e paeen (mesl-e tab-haye digar) */
+  .svc-btns .svc.on{position:relative;background:linear-gradient(135deg,var(--brand),var(--brand2));
+                    border-color:transparent;color:#fff;
+                    box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent)}
+  .svc-btns .svc.on:hover{color:#fff;filter:brightness(1.05)}
+  .svc-btns .svc.on::after{content:"";position:absolute;inset-inline:22%;bottom:-5px;height:3px;
+                           border-radius:3px;background:var(--brand)}
   /* sotoon-e vaziat: badge-e hamta va gomrok zir-e ham ba label-e kuchak */
   .stack{display:flex;align-items:center;gap:6px;margin-bottom:4px}
   .stack:last-child{margin-bottom:0}

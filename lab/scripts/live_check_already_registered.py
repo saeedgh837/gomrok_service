@@ -162,15 +162,17 @@ def main():
         if os.path.exists(gomrok._LOGS_PATH):
             with open(gomrok._LOGS_PATH, encoding="utf-8") as f:
                 rows = [json.loads(l) for l in f if l.strip()]
-        errs = [r for r in rows if r["status"] == "error"]
-        check("an error row was logged", len(errs) == 1, str(rows))
-        if errs:
-            msg = errs[0]["message"]
+        succ = [r for r in rows if r["status"] == "success"]
+        check("a SUCCESS row was logged (not an error)", len(succ) == 1, str(rows))
+        check("no error row was logged",
+              not [r for r in rows if r["status"] == "error"], str(rows))
+        if succ:
+            msg = succ[0]["message"]
             check("log carries the Persian 'already got a payment link' message",
                   "قبلاً این پروفایل لینک پرداخت گرفته است" in msg, msg[:120])
             check("log carries the payment link", PAY_LINK in msg, msg[:160])
-            check("log carries the IMEI", errs[0]["imei"] == "352506099000001",
-                  str(errs[0]))
+            check("log carries the IMEI", succ[0]["imei"] == "352506099000001",
+                  str(succ[0]))
 
         check("exactly one telegram attempt was made", len(delivered) == 1, str(delivered))
         if delivered:
@@ -182,16 +184,21 @@ def main():
             check("telegram send is the photo variant", kind == "photo", kind)
 
         profile = panel.load_store()["profiles"][0]
-        check("panel profile is blocked", profile["registration_status"] == "blocked",
+        check("panel profile is SUCCESS", profile["registration_status"] == "success",
               profile["registration_status"])
-        check("panel profile is disabled", profile["enabled"] is False)
-        check("panel profile is released (idle, pid 0)",
-              profile["run_status"] == "idle" and profile["runner_pid"] == 0,
-              f"{profile['run_status']}/{profile['runner_pid']}")
+        check("panel profile is NOT blocked and stays enabled",
+              profile["registration_status"] != "blocked" and profile["enabled"] is True,
+              f"{profile['registration_status']}/{profile['enabled']}")
         check("panel stores the payment link on the profile",
               profile.get("payment_link") == PAY_LINK, str(profile.get("payment_link")))
+        check("panel stores the invoice screenshot on the profile",
+              str(profile.get("receipt_screenshot") or "").endswith("_already_paid.png"),
+              str(profile.get("receipt_screenshot")))
+        check("success_at stamped", bool(profile.get("success_at")),
+              str(profile.get("success_at")))
         status, _ = panel.start_profile("p1")
-        check("a blocked profile can no longer be started (409)", status == 409, str(status))
+        check("a completed profile can no longer be started (409)", status == 409, str(status))
+        check("a completed profile is not claimable", panel.claim_profile() is None)
     finally:
         gomrok._SCREENSHOTS_DIR = saved["shots"]
         gomrok._LOGS_PATH = saved["logs"]

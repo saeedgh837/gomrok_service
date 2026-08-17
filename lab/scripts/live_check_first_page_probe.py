@@ -139,11 +139,20 @@ def main():
         return result, time.monotonic() - started
 
     try:
-        # sanity: the JS actually returns a dict in a real browser
+        # sanity: the JS actually returns a dict in a real browser.
+        # NOTE: probe right after get() can legitimately catch the page mid-load
+        # (pending=true, ready=false) — that is a CORRECT reading, not a failure.
+        # So poll briefly for the settled state before asserting on the contents.
         driver.get(f"http://127.0.0.1:{PORT}/healthy")
         probe = gomrok.probe_first_page(driver)
         check("probe JS executes in Chrome and returns a dict",
               isinstance(probe, dict) and "capOk" in probe, str(probe))
+        settle_deadline = time.monotonic() + 3.0
+        while time.monotonic() < settle_deadline:
+            if probe and probe.get("capOk") and probe.get("btnOk"):
+                break
+            time.sleep(0.05)
+            probe = gomrok.probe_first_page(driver)
         check("probe sees a decoded captcha + visible button",
               bool(probe and probe.get("capOk") and probe.get("btnOk")), str(probe))
 
