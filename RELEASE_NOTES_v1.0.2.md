@@ -1,8 +1,8 @@
 # irica v1.0.2 — Windows x64
 
 Packaged build of the IRICA registration panel and robots.
-Bundle: `irica-v1.0.2-win64.zip`
-SHA256: recorded below once the asset is published.
+Bundle: `irica-v1.0.2-win64.zip` — 91.9 MB zipped, 200.9 MB unpacked
+SHA256: `2660b2ab5fffa42f46c3ab116dd445142bbde034b7ae4bd233e06a7e5c044feb`
 
 ## Why this release
 
