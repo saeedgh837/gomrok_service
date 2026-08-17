@@ -5,9 +5,19 @@ Metrics (CER / WER) and CTC decoders (greedy + optional beam search).
 from __future__ import annotations
 from typing import List
 
-import torch
+try:
+    import torch
+    _HAS_TORCH = True
+except Exception:                    # packaged release ships onnxruntime, not torch
+    torch = None
+    _HAS_TORCH = False
 
 from vocab import VOCAB
+
+# `@torch.no_grad()` can't decorate when torch is absent; bind a no-op. The two
+# torch decoders below are unreachable without torch anyway — number_decode only
+# needs _edit_distance / _emissions from this module, which are pure-python/numpy.
+_no_grad = torch.no_grad if _HAS_TORCH else (lambda: (lambda f: f))
 
 # Prefer the fast C implementation; fall back to a pure-python DP.
 try:
@@ -83,8 +93,8 @@ def corpus_metrics(preds: List[str], targets: List[str]) -> dict:
 # --------------------------------------------------------------------------- #
 # CTC decoding
 # --------------------------------------------------------------------------- #
-@torch.no_grad()
-def greedy_decode(log_probs: torch.Tensor) -> List[str]:
+@_no_grad()
+def greedy_decode(log_probs) -> List[str]:
     """
     log_probs: (T, B, C). Returns a list of B decoded strings via best-path
     (argmax per timestep) + CTC collapse.
@@ -94,8 +104,8 @@ def greedy_decode(log_probs: torch.Tensor) -> List[str]:
     return [VOCAB.ctc_greedy_decode(seq) for seq in argmax]
 
 
-@torch.no_grad()
-def beam_search_decode(log_probs: torch.Tensor, beam_width: int = 10) -> List[str]:
+@_no_grad()
+def beam_search_decode(log_probs, beam_width: int = 10) -> List[str]:
     """
     Simple prefix beam search (no external LM). O(T * beam * C) per sample.
     log_probs: (T, B, C). Returns list of B strings.

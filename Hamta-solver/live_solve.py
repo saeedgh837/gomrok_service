@@ -20,22 +20,41 @@ if _HERE not in sys.path:
 
 import cv2                      # noqa: E402
 import numpy as np              # noqa: E402
-import torch                    # noqa: E402
+
+try:
+    import torch                # noqa: E402
+    _HAS_TORCH = True
+except Exception:
+    _HAS_TORCH = False
 
 from config import CKPT_DIR                              # noqa: E402
-from model import build_crnn                             # noqa: E402
 from preprocess import to_model_gray, trim_whole, prepare_line_for_model  # noqa: E402
-from utils import greedy_decode                          # noqa: E402
 from vocab import VOCAB                                  # noqa: E402
 import number_decode as nd                               # noqa: E402
 
 DEFAULT_CKPT = os.path.join(_HERE, "checkpoints", "best.pt")
+DEFAULT_ONNX = os.path.join(_HERE, "checkpoints", "best.onnx")
+
+# `@torch.no_grad()` cannot decorate a method when torch is absent, so bind a
+# no-op in that case. HamtaSolver is unusable without torch anyway; only the
+# module-level import must keep working so the ONNX path can be reached.
+_no_grad = torch.no_grad if _HAS_TORCH else (lambda: (lambda f: f))
 
 
 class HamtaSolver:
     """Model yek bar load mishavad; read_pil/read_bgr har bar seda zade mishavad."""
 
     def __init__(self, ckpt_path: str = None, device: str = "cpu"):
+        # Imported lazily so this module stays importable without torch (the
+        # packaged release has onnxruntime only). Bound to the instance here, at
+        # construction time, because the caller may restore sys.path afterwards —
+        # a later `from utils import ...` could then resolve to a DIFFERENT
+        # package that happens to expose the same module name.
+        from model import build_crnn
+        from utils import greedy_decode
+
+        self._greedy_decode = greedy_decode
+
         if device in (None, "auto"):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
@@ -45,7 +64,7 @@ class HamtaSolver:
         self.model.load_state_dict(ck["model"])
         self.model.eval()
 
-    @torch.no_grad()
+    @_no_grad()
     def read_bgr(self, bgr: np.ndarray) -> dict:
         if bgr is None or getattr(bgr, "size", 0) == 0:
             return {"number": None, "text": "", "confidence": 0.0, "snap_distance": -1}
@@ -55,7 +74,7 @@ class HamtaSolver:
         log_probs = self.model(batch)
         if log_probs is None:
             return {"number": None, "text": "", "confidence": 0.0, "snap_distance": -1}
-        text = VOCAB.normalize(greedy_decode(log_probs)[0])
+        text = VOCAB.normalize(self._greedy_decode(log_probs)[0])
         snap_n, snap_d = nd.nearest_number(text)
         sig = nd.confidence_signals(log_probs, b=0)
         return {
@@ -76,8 +95,22 @@ class HamtaSolver:
         return self.read_bgr(cv2.imread(str(path), cv2.IMREAD_COLOR))
 
 
-def load_solver(ckpt: str = None, device: str = "cpu") -> HamtaSolver:
-    return HamtaSolver(ckpt_path=ckpt, device=device)
+def load_solver(ckpt: str = None, device: str = "cpu"):
+    """Load the HAMTA captcha solver once (weights stay in RAM).
+
+    Backend choice mirrors the gomrok solver: use torch (HamtaSolver) when it is
+    importable — the development/training path, unchanged — and fall back to the
+    torch-free OnnxHamtaSolver when it is not, which is what the packaged release
+    runs. Both backends return the identical dict; parity is proven at build time
+    by lab/scripts/export_hamta_onnx.py.
+    """
+    if _HAS_TORCH:
+        return HamtaSolver(ckpt_path=ckpt, device=device)
+    from onnx_solve import OnnxHamtaSolver
+    onnx_path = ckpt
+    if onnx_path and onnx_path.endswith(".pt"):
+        onnx_path = onnx_path[:-3] + ".onnx"
+    return OnnxHamtaSolver(onnx_path=onnx_path or DEFAULT_ONNX, device=device)
 
 
 if __name__ == "__main__":

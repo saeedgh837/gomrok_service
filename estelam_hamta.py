@@ -36,7 +36,12 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SOLVER_DIR = os.path.join(_HERE, "Hamta-solver")
-sys.path.insert(0, _SOLVER_DIR)
+# NOTE: Hamta-solver is intentionally NOT added to sys.path at import time.
+# It shares module names (live_solve, onnx_solve, config, vocab, preprocess,
+# utils) with the gomrok solver/ package; a permanent path entry here would let
+# a later bare `from onnx_solve import ...` in the gomrok solver resolve to the
+# WRONG package. load_solver() below inserts and removes the path in a scoped,
+# self-contained way instead.
 
 from PIL import Image                                             # noqa: E402
 from selenium import webdriver                                    # noqa: E402
@@ -148,7 +153,7 @@ TRANSIENT_MARKERS = [
 ]
 
 _LOG_PATH = os.path.join(_HERE, "hamta_logs.jsonl")
-_STORE_PATH = os.path.join(_HERE, "estelam_store.json")
+_STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or os.path.join(_HERE, "estelam_store.json")
 
 # naghshe-ye status-e hamta -> status-e log-e panel (rang/icon-e moshtarak ba gomrok)
 _PANEL_LOG_STATUS = {
@@ -189,9 +194,37 @@ def _panel_set_device(device_id, **fields):
 
 
 # --- solver -----------------------------------------------------------------
+# Har do package-e solver (solver/ va Hamta-solver/) file-haye HAM-NAM daran:
+# live_solve, config, vocab, preprocess, utils. Dar tolid har robot process-e
+# joda darad pas tasadom peesh nemiayad, vali agar ye process har do ra import
+# konad (masalan smoke test ya yek runner-e yekja), `from live_solve import ...`
+# mitavanad solver-e GOMROK ra bardarad — ba vocab va andaze-ye tasvir-e ghalat
+# va BEDUN-e khata. Pas inja sarih load mikonim va provenance ra check mikonim.
+_HAMTA_SOLVER_MODULES = ("live_solve", "onnx_solve", "config", "vocab",
+                         "preprocess", "utils", "number_decode", "model")
+
+
 def load_solver():
-    from live_solve import load_solver as _ls
-    return _ls(device="cpu")
+    import importlib
+
+    saved_path = list(sys.path)
+    saved_mods = {name: sys.modules.pop(name)
+                  for name in _HAMTA_SOLVER_MODULES if name in sys.modules}
+    try:
+        sys.path.insert(0, _SOLVER_DIR)
+        live = importlib.import_module("live_solve")
+        origin = os.path.dirname(os.path.abspath(live.__file__))
+        if os.path.normcase(origin) != os.path.normcase(_SOLVER_DIR):
+            raise ImportError(
+                f"hamta solver resolved to the wrong package: {live.__file__}")
+        return live.load_solver(device="cpu")
+    finally:
+        # Nagahdashtan-e module-haye hamta dar sys.modules ta import-haye ba'di
+        # (masalan solver-e gomrok) hamin name-ha ra eshtebahi nagirand.
+        for name in _HAMTA_SOLVER_MODULES:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_mods)
+        sys.path[:] = saved_path
 
 
 # --- log / telegram ---------------------------------------------------------

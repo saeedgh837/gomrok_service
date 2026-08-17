@@ -55,6 +55,9 @@ REQUIRED = [
     "telegram_config.example.json",
     "solver/onnx_solve.py", "solver/live_solve.py", "solver/preprocess.py",
     "solver/checkpoints/best_real_v2.onnx",
+    "Hamta-solver/onnx_solve.py", "Hamta-solver/live_solve.py",
+    "Hamta-solver/preprocess.py", "Hamta-solver/number_decode.py",
+    "Hamta-solver/checkpoints/best.onnx",
     "python/python.exe",
 ]
 TEXT_SUFFIXES = {".py", ".json", ".txt", ".md", ".bat", ".html", ".cfg", ".ini"}
@@ -161,12 +164,25 @@ def check_function(dist: Path) -> None:
         "'selenium','cv2','numpy','PIL','onnxruntime','requests')\n"
         "for m in mods: importlib.import_module(m)\n"
         "assert 'torch' not in sys.modules\n"
-        "from onnx_solve import OnnxSolver\n"
         "import numpy as np\n"
-        "s = OnnxSolver('solver/checkpoints/best_real_v2.onnx')\n"
-        "r = s.read_array(np.zeros((48,192,3), np.uint8))\n"
+        # gomrok solver, through its own entry point (gomrok binds load_solver
+        # from the solver/ package at import). A bare `from onnx_solve import`
+        # would be ambiguous: importing estelam_hamta puts Hamta-solver on the
+        # path too, and both packages expose a module named onnx_solve.
+        "import gomrok\n"
+        "gs = gomrok.load_solver(device='cpu')\n"
+        "assert type(gs).__name__ == 'OnnxSolver', type(gs).__name__\n"
+        "r = gs.read_array(np.zeros((48,192,3), np.uint8))\n"
         "assert isinstance(r, str) and len(r) == 5, r\n"
-        "print('OK', len(mods), r)\n"
+        # hamta inquiry: its solver lives in a separate package with its own
+        # model, so it is resolved through the robot's real entry point.
+        "import estelam_hamta as eh\n"
+        "hs = eh.load_solver()\n"
+        "assert type(hs).__name__ == 'OnnxHamtaSolver', type(hs).__name__\n"
+        "hr = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
+        "assert set(hr) == {'number','text','confidence','snap_distance'}, hr\n"
+        "assert 'torch' not in sys.modules, 'torch leaked via hamta'\n"
+        "print('OK', len(mods), r, type(hs).__name__)\n"
     )
     res = subprocess.run([str(python), "-c", probe], cwd=str(dist),
                          capture_output=True, text=True, timeout=300, env=env_clean())

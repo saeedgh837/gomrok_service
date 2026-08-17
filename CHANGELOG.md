@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-08-17
+
+Fixes the hamta inquiry captcha in the packaged release.
+
+### Fixed
+
+- **Hamta inquiry captcha was broken in the v1.0.0 bundle.** `estelam_hamta.py`
+  reads the modal captcha through its own solver package (`Hamta-solver/`), which
+  is separate from the gomrok one and was still torch-only; the v1.0.0 bundle
+  shipped neither that package nor PyTorch, so the hamta robot raised
+  `ModuleNotFoundError: No module named 'live_solve'` the moment it reached the
+  captcha. The hamta CRNN is now exported to ONNX (55.0 MB `.pt` → 18.3 MB
+  `.onnx`) and the bundle carries a torch-free backend for it.
+
+### Added
+
+- `Hamta-solver/onnx_solve.py` — `OnnxHamtaSolver`, an onnxruntime backend with
+  the same surface as `HamtaSolver` (`read_pil` / `read_bgr` / `read_file`) and
+  numpy ports of the CTC greedy decode and confidence signals.
+- `Hamta-solver/live_solve.load_solver()` now selects a backend: torch when
+  importable (development, unchanged), otherwise ONNX.
+- `lab/scripts/export_hamta_onnx.py` — exports the hamta checkpoint and refuses
+  to leave an artifact behind unless both engines return identical result dicts
+  (number, text, confidence and snap distance) on every validation sample.
+- Bundle build and verifier now ship and check the hamta solver, and the smoke
+  test resolves it through `estelam_hamta.load_solver()` rather than the class,
+  so a broken `sys.path` cannot reach a user.
+
+### Changed
+
+- `Hamta-solver/utils.py` and `live_solve.py` import torch lazily, so the modules
+  stay importable in a torch-free runtime (`number_decode` only needs the
+  pure-python edit distance from `utils`).
+
 ## [1.0.0] - 2026-08-17
 
 First packaged Windows x64 release.

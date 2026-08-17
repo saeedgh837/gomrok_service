@@ -75,6 +75,13 @@ APP_FILES = [
 SOLVER_FILES = ["__init__.py", "config.py", "vocab.py", "preprocess.py",
                 "onnx_solve.py", "live_solve.py", "utils.py"]
 
+# estelam_hamta.py reads the hamta modal captcha through its OWN solver package
+# (Hamta-solver/), which is separate from the gomrok one and has its own model.
+# model.py is excluded for the same reason as above; utils.py and number_decode.py
+# ship because number snapping and edit distance are pure-python.
+HAMTA_SOLVER_FILES = ["config.py", "vocab.py", "preprocess.py", "onnx_solve.py",
+                      "live_solve.py", "utils.py", "number_decode.py"]
+
 RUN_PANEL_BAT = """@echo off
 REM Start the irica panel using the bundled Python runtime.
 setlocal
@@ -202,6 +209,22 @@ def copy_app(stage: Path) -> None:
                          "first (it also proves parity with the torch model)")
     shutil.copy2(onnx, solver_dst / onnx.name)
 
+    hamta_dst = stage / "Hamta-solver" / "checkpoints"
+    hamta_dst.mkdir(parents=True, exist_ok=True)
+    for name in HAMTA_SOLVER_FILES:
+        src = ROOT / "Hamta-solver" / name
+        if src.exists():
+            shutil.copy2(src, stage / "Hamta-solver" / name)
+        else:
+            log(f"  WARN missing Hamta-solver/{name}")
+
+    hamta_onnx = ROOT / "Hamta-solver" / "checkpoints" / "best.onnx"
+    if not hamta_onnx.exists():
+        raise SystemExit("HAMTA ONNX model missing — run "
+                         "lab/scripts/export_hamta_onnx.py first (it also proves "
+                         "parity with the torch model)")
+    shutil.copy2(hamta_onnx, hamta_dst / hamta_onnx.name)
+
     (stage / "run_panel.bat").write_text(RUN_PANEL_BAT, encoding="utf-8")
     (stage / "FIRST_RUN.txt").write_text(FIRST_RUN_TXT, encoding="utf-8")
 
@@ -249,12 +272,25 @@ def smoke(stage: Path) -> None:
         "'PIL','onnxruntime','requests'):\n"
         "    importlib.import_module(m)\n"
         "assert 'torch' not in sys.modules, 'torch leaked into the bundle'\n"
-        "from onnx_solve import OnnxSolver\n"
         "import numpy as np\n"
-        "s = OnnxSolver(r'solver/checkpoints/best_real_v2.onnx')\n"
-        "out = s.read_array(np.zeros((48,192,3), np.uint8))\n"
+        # Resolved through gomrok's own entry point rather than a bare
+        # `from onnx_solve import ...`: importing estelam_hamta below puts
+        # Hamta-solver on sys.path, and BOTH packages expose onnx_solve.
+        "import gomrok\n"
+        "gs = gomrok.load_solver(device='cpu')\n"
+        "assert type(gs).__name__ == 'OnnxSolver', type(gs).__name__\n"
+        "out = gs.read_array(np.zeros((48,192,3), np.uint8))\n"
         "assert isinstance(out, str) and len(out) == 5, out\n"
-        "print('SMOKE_OK', out)\n"
+        # The hamta inquiry robot resolves its solver through its own package,
+        # so exercise the real entry point (estelam_hamta.load_solver), not just
+        # the class, or a broken sys.path would slip through to the user.
+        "import estelam_hamta as eh\n"
+        "hs = eh.load_solver()\n"
+        "assert type(hs).__name__ == 'OnnxHamtaSolver', type(hs).__name__\n"
+        "hres = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
+        "assert set(hres) == {'number','text','confidence','snap_distance'}, hres\n"
+        "assert 'torch' not in sys.modules, 'torch leaked via the hamta solver'\n"
+        "print('SMOKE_OK', out, type(hs).__name__)\n"
     )
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")}
