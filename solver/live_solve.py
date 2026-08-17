@@ -34,10 +34,40 @@ _DEFAULT_CKPT = "checkpoints/best_real.pt"
 
 
 def load_solver(ckpt: str = _DEFAULT_CKPT, device: str = "cpu"):
-    """IricaSolver ra yek bar load mikonad (weights-ha dar RAM mimanand)."""
+    """Solver ra yek bar load mikonad (weights-ha dar RAM mimanand).
+
+    Do backend:
+      * torch (predict.IricaSolver) — halat-e development/training.
+      * onnxruntime (onnx_solve.OnnxSolver) — halat-e BASTE-ye release ke torch
+        nadarad (~1.1GB sarfe-jui). Khoruji-ye har do EYNAN yeki ast; barabari
+        dar zaman-e build ba lab/scripts/export_solver_onnx.py sanjide mishavad.
+
+    Entekhab-e backend: agar torch import shod az an estefade mishavad (raftar-e
+    ghabli dast-nakhorde), vagarna be ONNX fallback mishavad. Masir-e .onnx az
+    hamun ckpt sakhte mishavad (پسوند .pt -> .onnx) ya .onnx-e default.
+    """
     # Import injaست ta bar-e sangin-e torch faghat zaman-e niaz bala biyad.
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        return _load_onnx_solver(ckpt)
     from predict import IricaSolver
     return IricaSolver(ckpt_path=ckpt, device=device)
+
+
+def _load_onnx_solver(ckpt: str):
+    """Fallback-e bi-torch. ckpt-e .pt be hamnam-e .onnx tarjome mishavad."""
+    from onnx_solve import OnnxSolver
+    candidate = None
+    if ckpt:
+        p = Path(ckpt)
+        if p.suffix.lower() == ".onnx":
+            candidate = str(p)
+        else:
+            sibling = p.with_suffix(".onnx")
+            if sibling.exists():
+                candidate = str(sibling)
+    return OnnxSolver(candidate)
 
 
 def _natural_key(p: Path):
