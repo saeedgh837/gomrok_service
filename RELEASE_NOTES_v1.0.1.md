@@ -2,7 +2,7 @@
 
 Packaged build of the IRICA registration panel and robots.
 Bundle: `irica-v1.0.1-win64.zip` — 91.9 MB zipped, 200.8 MB unpacked
-SHA256: `fb540887378b1b92383e59905e70831f33d5b15d4115d0434b709454db52f8f7`
+SHA256: `d1c696ec203684013b1710863355f77313ac5d3fdb6fe476e8b7fc56a7db3498`
 
 ## Why this release
 
