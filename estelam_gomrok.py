@@ -70,9 +70,10 @@ def _panel_set_device(device_id, **fields):
 
 
 def _telegram(text):
+    # timeout-e sakht: estelam nabayad rooye ersal-e telegram gir konad.
     try:
         import telegram_notify as tg
-        tg.send_message(text)
+        tg.send_message(text, timeout=15)
     except Exception as e:
         print(f">>> (telegram na-raft: {e})")
 

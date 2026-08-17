@@ -18,9 +18,11 @@ sepas boro be:  http://127.0.0.1:8750
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -41,6 +43,15 @@ EXITBAN_ERRORS_PATH = os.path.join(HERE, "exitban_errors.jsonl")
 HOST, PORT = "127.0.0.1", 8750
 _STORE_LOCK = threading.RLock()
 _STORE_LOCK_PATH = PROFILES_PATH + ".lock"
+# Akharin store-e salem (be tafkik-e masir-e file) ke movaffagh khonde/neveshte shode.
+# Agar profiles.json be dalile write-e nimekare/harab-shode movaqatan ghabel-e khandan
+# nabashad, load_store IN cache ra barmigardanad va HARGEZ file-e mojood ra ba yek
+# profile-e khali baznevisi nemikonad (jelogiri az pak-shodan-e profile-ha zir-e bar).
+_LAST_GOOD_STORE = {}
+
+
+class StoreUnreadableError(RuntimeError):
+    """profiles.json vojood darad ama na khodash na backup-ash ghabel-e parse nist."""
 
 
 @contextmanager
@@ -69,8 +80,12 @@ def _locked_store():
 PROFILE_DEFAULTS = {
     "id": "", "title": "", "national": "", "birth": "", "mobile": "", "telegram_chat_id": "",
     "first_name": "", "last_name": "", "father_name": "", "birth_certificate_no": "",
-    "imeis": ["", ""], "no_confirm_check": False, "submit": False,
+    "imeis": ["", ""], "no_confirm_check": False, "submit": True,
     "debugging": False, "manual_manage": False,
+    # Morurgar be tore pishfarz makhfi (off-screen) ejra mishavad ta manabe-e
+    # system zir-e bar-e chand robot-e hamzaman hedar naravad. Panel in flag ra
+    # taghir midahad va robot-e dar-hal-e-ejra an-ra donbal mikonad.
+    "browser_visible": False,
     "registration_status": "pending", "success_at": "", "payment_link": "",
     "runtime_error": "",
     "run_status": "idle", "runner_id": "", "busy_since": "",
@@ -104,9 +119,14 @@ def _clean_profile(p):
         imeis = [str(imeis)]
     out["imeis"] = [str(x).strip() for x in imeis if x and str(x).strip()]
     out["no_confirm_check"] = bool(out.get("no_confirm_check"))
-    out["submit"] = bool(out.get("submit"))
+    # Auto-submit (zadan-e 'edame') digar switch-e UI nadarad va HAMISHE roshan ast.
+    # Halat-haye debugging va manual_manage tanzimat-e khodeshan ra dast-nakhorde
+    # negah midarand (in do az panel be robot pas mishavand va rooye
+    # jarayan-e submit dar gomrok.py asar-e khodeshan ra darand).
+    out["submit"] = True
     out["debugging"] = bool(out.get("debugging"))
     out["manual_manage"] = bool(out.get("manual_manage"))
+    out["browser_visible"] = bool(out.get("browser_visible"))
     out["enabled"] = bool(out.get("enabled", True))
     try:
         out["runner_pid"] = int(out.get("runner_pid") or 0)
@@ -161,22 +181,65 @@ def record_exitban_result(profile_id, text, status=""):
     return False
 
 
+def _backup_path():
+    return PROFILES_PATH + ".bak"
+
+
+def _parse_store_file(path):
+    """File ra parse mikonad. Barmigardanad store-e tamiz ya None (nabood/harab)."""
+    if not os.path.exists(path):
+        return None
+    try:
+        if os.path.getsize(path) == 0:
+            return None
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("profiles")
+    if not isinstance(raw, list):
+        return None
+    profs = [_clean_profile(p) for p in raw if isinstance(p, dict)]
+    active = data.get("active_id") or (profs[0]["id"] if profs else "")
+    if profs and active not in [p["id"] for p in profs]:
+        active = profs[0]["id"]
+    return {"profiles": profs, "active_id": active}
+
+
 def load_store():
     """profiles.json ra mikhanad: {profiles:[...], active_id:"..."}.
-    Agar nabashad, az inputs.json-e ghadimi yek profile-e avvaliye misazad
-    (mohajerat-e narm)."""
-    if os.path.exists(PROFILES_PATH):
-        try:
-            with open(PROFILES_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-            profs = [_clean_profile(p) for p in (data.get("profiles") or [])]
-            active = data.get("active_id") or (profs[0]["id"] if profs else "")
-            if profs and active not in [p["id"] for p in profs]:
-                active = profs[0]["id"]
-            return {"profiles": profs, "active_id": active}
-        except Exception:
-            pass
-    # mohajerat az inputs.json (agar bud)
+
+    Tartib-e manba'-ha (mohem baraye jelogiri az pak-shodan-e profile-ha):
+      1) khod-e profiles.json
+      2) profiles.json.bak (nokhse-ye salem-e ghabli)
+      3) cache-e in process (_LAST_GOOD_STORE)
+    Agar file VOJOOD DARAD vali hich-kodam ghabel-e khandan nabood,
+    StoreUnreadableError partab mishavad — DAR IN HALAT file BAZNEVISI NEMISHAVAD.
+    Faghat vaghti file asan nabashad, mohajerat az inputs.json anjam mishavad.
+    """
+    store = _parse_store_file(PROFILES_PATH)
+    if store is not None:
+        _LAST_GOOD_STORE[PROFILES_PATH] = store
+        return store
+
+    file_exists = os.path.exists(PROFILES_PATH)
+    if file_exists:
+        recovered = _parse_store_file(_backup_path())
+        if recovered is not None:
+            print(">>> HOSHDAR: profiles.json kharab bood — az profiles.json.bak barmigardanim.")
+            _LAST_GOOD_STORE[PROFILES_PATH] = recovered
+            return recovered
+        cached = _LAST_GOOD_STORE.get(PROFILES_PATH)
+        if cached is not None:
+            print(">>> HOSHDAR: profiles.json kharab bood — az cache-e process estefade shod.")
+            return {"profiles": [dict(p) for p in cached["profiles"]],
+                    "active_id": cached["active_id"]}
+        raise StoreUnreadableError(
+            "profiles.json ghabel-e khandan nist va backup/cache ham vojood nadarad")
+
+    # File asan nist: mohajerat-e narm az inputs.json-e ghadimi.
     profs = []
     if os.path.exists(INPUTS_PATH):
         try:
@@ -184,7 +247,7 @@ def load_store():
                 old = json.load(f)
             if old:
                 profs = [_clean_profile(old)]
-        except Exception:
+        except (OSError, ValueError):
             pass
     if not profs:
         profs = [_clean_profile({})]
@@ -194,13 +257,45 @@ def load_store():
 
 
 def save_store(store):
+    """Store ra ATOMIC minevisad: tmp + fsync + os.replace, ba yek backup-e salem.
+
+    Rooye Windows write-e mostaghim rooye profiles.json ba'd az truncate,
+    agar process/system zir-e bar ghat' shavad, file-e khali/nimekare baja
+    migozarad — hamin baes-e 'khali shodan-e profile-ha' mishod.
+    """
     profs = [_clean_profile(p) for p in store.get("profiles", [])]
     active = store.get("active_id") or (profs[0]["id"] if profs else "")
     if profs and active not in [p["id"] for p in profs]:
         active = profs[0]["id"]
     clean = {"profiles": profs, "active_id": active}
-    with open(PROFILES_PATH, "w", encoding="utf-8") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
+    payload = json.dumps(clean, ensure_ascii=False, indent=2)
+
+    # backup-e nokhse-ye salem-e ghabli (faghat agar khod-esh salem bashad)
+    if _parse_store_file(PROFILES_PATH) is not None:
+        try:
+            shutil.copyfile(PROFILES_PATH, _backup_path())
+        except OSError as exc:
+            print(f">>> HOSHDAR: backup-e profiles.json anjam nashod: {exc}")
+
+    directory = os.path.dirname(os.path.abspath(PROFILES_PATH)) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix=".profiles-", suffix=".tmp", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, PROFILES_PATH)
+        tmp_path = None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    _LAST_GOOD_STORE[PROFILES_PATH] = clean
     sync_active_to_inputs(clean)
     return clean
 
@@ -229,7 +324,7 @@ def mark_profile_success(title="", national="", imei="", payment_link=""):
     return True
 
 
-def mark_profile_unusable(profile_id, error_text):
+def mark_profile_unusable(profile_id, error_text, payment_link=None, receipt=None):
     with _locked_store():
         store = load_store()
         profile = next((p for p in store.get("profiles", [])
@@ -240,6 +335,13 @@ def mark_profile_unusable(profile_id, error_text):
         profile["enabled"] = False
         profile["runtime_error"] = (
             "این پروفایل دیگر قابل ورود نیست: " + str(error_text or "").strip())
+        # link/aks-e marbut (agar peyda shodand) baraye namayesh dar panel.
+        # TAVAJOH: record_profile_output() estefade NEMISHAVAD chon status ra
+        # 'success' mikonad va 'blocked' ra pak mikonad.
+        if payment_link:
+            profile["payment_link"] = str(payment_link)
+        if receipt:
+            profile["receipt_screenshot"] = str(receipt)
         profile["run_status"] = "idle"
         profile["runner_id"] = ""
         profile["busy_since"] = ""
@@ -303,6 +405,8 @@ def claim_profile(profile_id=None):
             p["busy_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
             p["heartbeat_at"] = p["busy_since"]
             p["runner_pid"] = os.getpid()
+            # har ejra ba morurgar-e makhfi shoru mishavad (off-screen).
+            p["browser_visible"] = False
             save_store(store)
             result = dict(p)
             result["runner_id"] = runner_id
@@ -521,10 +625,49 @@ def clear_stale_busy_profiles():
                     not _heartbeat_stale(heartbeat)):
                 continue
             p["run_status"], p["runner_id"], p["busy_since"], p["runner_pid"], p["heartbeat_at"] = "idle", "", "", 0, ""
+            # robot morde ast: darkhast-e namayesh-e morurgar ham bi-ma'ni ast.
+            p["browser_visible"] = False
             changed = True
         if changed:
             save_store(store)
     return changed
+
+
+def get_browser_visibility(profile_id):
+    """Flag-e namayesh-e morurgar baraye in profile (None = profile peyda nashod).
+
+    Robot-e dar-hal-e-ejra in-ra har chand sanie mikhanad; pas SABOK negah dashte
+    mishavad (bedun-e lock-e beyn-processi) va dar soorat-e kharabi-ye movaqat-e
+    file, None barmigardanad ta robot vaziat-e fe'li-ye khod ra hefz konad.
+    """
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return None
+    try:
+        store = load_store()
+    except StoreUnreadableError:
+        return None
+    for p in store.get("profiles", []):
+        if p.get("id") == profile_id:
+            return bool(p.get("browser_visible"))
+    return None
+
+
+def set_browser_visibility(profile_id, visible):
+    """Darkhast-e namayesh/makhfi-kardan-e morurgar ra rooye profile sabt mikonad."""
+    profile_id = str(profile_id or "").strip()
+    if not profile_id:
+        return 422, {"error": "profile id is required"}
+    with _locked_store():
+        store = load_store()
+        profile = next((p for p in store.get("profiles", []) if p.get("id") == profile_id), None)
+        if not profile:
+            return 404, {"error": "profile not found"}
+        if profile.get("run_status") != "busy":
+            return 409, {"error": "این پروفایل در حال اجرا نیست"}
+        profile["browser_visible"] = bool(visible)
+        save_store(store)
+    return 200, {"ok": True, "profile_id": profile_id, "browser_visible": bool(visible)}
 
 
 def release_profile(profile_id, runner_id):
@@ -589,140 +732,10 @@ def public_telegram_config():
             "token_set": bool(str(cfg.get("bot_token") or "").strip())}
 
 
-TELEGRAM_LOCAL_BASE = "http://127.0.0.1:8752"
-RELAY_PROXY_PORT = 18081
-RELAY_API_PORT = 8752
 
-
-def _port_listening(port, host="127.0.0.1", timeout=0.4):
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
-        return sock.connect_ex((host, int(port))) == 0
-
-
-def _process_running(image_name):
-    try:
-        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image_name}"],
-                             capture_output=True, text=True, check=False).stdout
-    except OSError:
-        return False
-    return image_name.lower() in (out or "").lower()
-
-
-def _spawn_detached(command, cwd=None):
-    """Detached child (bedun-e panjere) ke ba baste shodan-e panel nemirad."""
-    flags = 0
-    if os.name == "nt":
-        flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0) |
-                 getattr(subprocess, "DETACHED_PROCESS", 0) |
-                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("VIRTUAL_ENV", None)
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-    return subprocess.Popen(command, cwd=cwd or HERE, env=env,
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT,
-                            creationflags=flags)
-
-
-def _wait_port(port, timeout=20.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _port_listening(port):
-            return True
-        time.sleep(0.35)
-    return False
-
-
-def ensure_telegram_relay_chain(wait_tunnel=True):
-    """Zanjire-ye ersal be telegram ra bala miavarad (idempotent):
-        cloudflare_http_proxy.py :18081  ->  telegram_api_relay.py :8752
-        -> cloudflared named tunnel (telegram.techbysaeed.ir)
-    Har ghesmati ke az ghabl bala bashad dast nakhorde mimanad.
-    """
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    started = []
-
-    if not _port_listening(RELAY_PROXY_PORT):
-        script = os.path.join(HERE, "cloudflare_http_proxy.py")
-        if os.path.isfile(script):
-            _spawn_detached([python_executable, "-u", script])
-            started.append("http_proxy:18081")
-            _wait_port(RELAY_PROXY_PORT, 15)
-
-    if not _port_listening(RELAY_API_PORT):
-        script = os.path.join(HERE, "telegram_api_relay.py")
-        if os.path.isfile(script):
-            _spawn_detached([python_executable, "-u", script])
-            started.append("telegram_relay:8752")
-            _wait_port(RELAY_API_PORT, 15)
-
-    tunnel_needed = str(load_telegram_config().get("api_base") or "").startswith("https://")
-    if tunnel_needed and not _process_running("cloudflared.exe"):
-        cloudflared = os.path.join(HERE, ".tools", "cloudflared.exe")
-        config = os.path.join(HERE, "cloudflare_named_tunnel.yml")
-        if os.path.isfile(cloudflared) and os.path.isfile(config):
-            log_path = os.path.join(HERE, "cloudflare_named_tunnel.log")
-            try:
-                with open(log_path, "w", encoding="utf-8") as log:
-                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | \
-                        getattr(subprocess, "DETACHED_PROCESS", 0)
-                    env = os.environ.copy()
-                    env["TUNNEL_PROTOCOL"] = "http2"
-                    subprocess.Popen([cloudflared, "tunnel", "--config", config, "run"],
-                                     cwd=os.path.join(HERE, ".tools"), env=env,
-                                     stdin=subprocess.DEVNULL, stdout=log,
-                                     stderr=subprocess.STDOUT, creationflags=flags)
-                started.append("cloudflared")
-                if wait_tunnel:
-                    _wait_tunnel_registered(log_path, timeout=30)
-            except OSError:
-                pass
-
-    status = {
-        "proxy": _port_listening(RELAY_PROXY_PORT),
-        "relay": _port_listening(RELAY_API_PORT),
-        "tunnel": _process_running("cloudflared.exe"),
-        "started": started,
-    }
-    if started:
-        print(f">>> Telegram relay chain: start shod -> {', '.join(started)}")
-    print(f">>> Telegram relay chain: proxy={status['proxy']} relay={status['relay']} "
-          f"tunnel={status['tunnel']}")
-    return status
-
-
-def _wait_tunnel_registered(log_path, timeout=30):
-    """Sabr ta cloudflared aghal yek connection sabt konad (vagarna 502 midahad)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with open(log_path, encoding="utf-8", errors="ignore") as handle:
-                if "Registered tunnel connection" in handle.read():
-                    return True
-        except OSError:
-            pass
-        time.sleep(0.5)
-    return False
-
-
-def test_telegram_api(attempts=3, ensure_chain=False):
-    """Connectivity/auth test via getMe; does not send a message.
-
-    Agar api_base-e omoomi (tunnel) javab nadahad, relay-e MOHALI (127.0.0.1:8752)
-    emtehan mishavad — chon ersal-e vaghe'i ham az hamin masir mitavanad anjam
-    shavad. `used_base` neshan midahad kodam masir javab dad.
-    """
+def test_telegram_api(attempts=3):
+    """Connectivity/auth test via getMe; does not send a message."""
     import requests
-    if ensure_chain:
-        try:
-            ensure_telegram_relay_chain()
-        except Exception as exc:
-            print(f">>> (ensure_telegram_relay_chain khata dad: {exc})")
     cfg = load_telegram_config()
     base = str(cfg.get("api_base") or "").rstrip("/")
     token = str(cfg.get("bot_token") or "").strip()
@@ -737,28 +750,22 @@ def test_telegram_api(attempts=3, ensure_chain=False):
         _write_telegram_health(result)
         return result
 
-    candidates = [base]
-    if TELEGRAM_LOCAL_BASE.rstrip("/") != base:
-        candidates.append(TELEGRAM_LOCAL_BASE)
-
     last_message = result["message"]
     for attempt in range(1, max(1, int(attempts)) + 1):
-        for candidate in candidates:
-            try:
-                response = requests.get(f"{candidate}/bot{token}/getMe", timeout=20)
-                payload = response.json()
-                if response.ok and payload.get("ok"):
-                    username = str((payload.get("result") or {}).get("username") or "ربات")
-                    note = "" if candidate == base else " (از مسیر رله محلی)"
-                    result.update(ok=True, used_base=candidate,
-                                  message=f"ارتباط API تلگرام برقرار است — @{username}{note}")
-                    result["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                    _write_telegram_health(result)
-                    return result
-                last_message = str(payload.get("description") or
-                                   f"پاسخ نامعتبر API ({response.status_code})")
-            except Exception as exc:
-                last_message = f"ارتباط API تلگرام ناموفق بود: {type(exc).__name__}"
+        try:
+            response = requests.get(f"{base}/bot{token}/getMe", timeout=20)
+            payload = response.json()
+            if response.ok and payload.get("ok"):
+                username = str((payload.get("result") or {}).get("username") or "ربات")
+                result.update(ok=True, used_base=base,
+                              message=f"ارتباط API تلگرام برقرار است — @{username}")
+                result["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                _write_telegram_health(result)
+                return result
+            last_message = str(payload.get("description") or
+                               f"پاسخ نامعتبر API ({response.status_code})")
+        except Exception as exc:
+            last_message = f"ارتباط API تلگرام ناموفق بود: {type(exc).__name__}"
         if attempt < attempts:
             time.sleep(2.0 * attempt)
     result["message"] = last_message
@@ -779,10 +786,10 @@ def _write_telegram_health(result):
 def _startup_telegram_bootstrap():
     """Ba bala amadan-e panel: zanjire-ye relay ra bala biavar, sepas test kon.
     Agar bar-e aval javab nadad (tunnel taze sabt mishavad), dobare talash kon."""
-    health = test_telegram_api(attempts=3, ensure_chain=True)
+    health = test_telegram_api(attempts=3)
     if not health.get("ok"):
         time.sleep(6)
-        health = test_telegram_api(attempts=3, ensure_chain=True)
+        health = test_telegram_api(attempts=3)
     tag = "OK" if health.get("ok") else "FAIL"
     print(f">>> Telegram API health [{tag}]: {health.get('message')}")
     return health
@@ -1338,6 +1345,16 @@ PAGE_HEAD = """<!DOCTYPE html>
   .profile-number { display:inline-flex; min-width:24px; height:24px; align-items:center; justify-content:center; border-radius:8px; background:var(--brand); color:#fff; font-size:11px; }
   .artifact-links { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
   .artifact-links a { color:var(--ok); text-decoration:none; font-size:10.5px; }
+  /* --- dokme-ye namayesh/makhfi-kardan-e morurgar-e robot-e dar hal-e ejra --- */
+  .prof-browser-row { margin-top:7px; }
+  .browser-btn { position:relative; width:100%; display:inline-flex; align-items:center;
+    justify-content:center; gap:6px; min-height:32px; padding:7px 10px; border-radius:9px;
+    cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; transition:.15s;
+    border:1px dashed var(--brand); background:rgba(109,139,255,.08); color:var(--brand); }
+  .browser-btn:hover { background:rgba(109,139,255,.16); border-style:solid; }
+  .browser-btn.visible { border-style:solid; border-color:var(--warn,#e5a13a);
+    background:rgba(229,161,58,.12); color:var(--warn,#e5a13a); }
+  .browser-btn[disabled] { opacity:.55; cursor:progress; }
   .prof-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
   .mini-btn {
     flex:1 1 60px; font-size:10.5px; padding:6px 5px; border-radius:7px; cursor:pointer;
@@ -1442,6 +1459,18 @@ PAGE_HEAD = """<!DOCTYPE html>
   textarea { width:100%; min-height:90px; padding:12px 14px; border-radius:12px;
     border:1px solid var(--line); background:var(--input); color:var(--txt); font-family:inherit; }
   input.ltr { direction:ltr; text-align:left; letter-spacing:1px; }
+  /* field ba dokme-ye paste-e kenari */
+  .field-row { display:flex; gap:8px; align-items:stretch; }
+  .field-row > input[type=text] { flex:1 1 auto; min-width:0; }
+  .paste-btn { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; gap:5px;
+    min-width:46px; padding:0 11px; border-radius:12px; cursor:pointer; font-family:inherit; font-size:12px;
+    border:1px solid var(--line); background:var(--card2); color:var(--muted); transition:.15s; }
+  .paste-btn .paste-ico { font-size:14px; line-height:1; }
+  .paste-btn .paste-label { font-size:11.5px; }
+  .paste-btn:hover { color:var(--brand); border-color:var(--brand); background:rgba(109,139,255,.10); }
+  .paste-btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .paste-btn.ok { color:var(--ok); border-color:var(--ok); background:rgba(46,204,113,.12); }
+  .paste-btn.err { color:var(--danger); border-color:var(--danger); background:rgba(255,107,122,.12); }
   .imei-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
   .imei-row input { flex:1; }
   .icon-btn { width:42px; height:44px; border-radius:12px; border:1px solid var(--line);
@@ -1611,6 +1640,10 @@ PAGE_HEAD = """<!DOCTYPE html>
   input[type=text],textarea { padding:10px 12px; border-radius:8px; font-size:13px; background:var(--input); }
   input[type=text]:focus,textarea:focus { box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 15%,transparent); }
   .imei-row { margin-bottom:7px; }
+  .field-row { gap:7px; }
+  .paste-btn { min-width:44px; padding:0 10px; border-radius:8px; font-size:11.5px; }
+  .paste-btn .paste-ico { font-size:13px; }
+  .paste-btn .paste-label { font-size:11px; }
   .icon-btn { width:40px; height:40px; border-radius:8px; font-size:18px; }
   .add-btn { width:max-content; padding:8px 12px; border-radius:8px; }
   .switches { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
@@ -1729,7 +1762,7 @@ function updateThemeButton(){
   var btn=document.getElementById('theme-toggle'); if(!btn)return;
   btn.textContent=document.documentElement.getAttribute('data-theme')==='dark'?'☀️ حالت روشن':'🌙 حالت تاریک';
 }
-setInterval(function(){fetch('/state').then(function(r){return r.json();}).then(function(s){STORE=s;renderProfiles();});},3000);
+setInterval(function(){fetch('/state').then(function(r){return r.json();}).then(function(s){if(s&&s.error){return;}STORE=s;renderProfiles();}).catch(function(){});},3000);
 
 function getProf(id){ return STORE.profiles.find(function(p){return p.id===id;}); }
 
@@ -1739,6 +1772,31 @@ function profileRunButton(p,extraClass){
   if(p.run_status==='busy') return '<button class="'+cls+' stop" onclick="stopProfile(\''+p.id+'\','+p.runner_pid+')">⏹ توقف ربات</button>';
   if(p.registration_status!=='success') return '<button class="'+cls+' start" onclick="startProfile(\''+p.id+'\')">▶ شروع به کار</button>';
   return '';
+}
+
+/* Dokme-ye namayesh/makhfi-kardan-e morurgar (faghat baraye profile-e dar-hal-e-ejra).
+   Morurgar hamishe headed ast vali be tore pishfarz off-screen negah dashte mishavad. */
+function profileBrowserButton(p){
+  if(p.run_status!=='busy') return '';
+  var visible=Boolean(p.browser_visible);
+  return '<button type="button" class="browser-btn'+(visible?' visible':'')+'" '+
+    'data-tip="'+(visible?'مرورگر روی صفحه است — کلیک: مخفی کردن برای صرفه‌جویی منابع':'مرورگر مخفی است — کلیک: نمایش برای مدیریت زنده')+'" '+
+    'onclick="setBrowserVisible(\''+p.id+'\','+(!visible)+')">'+
+    (visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>';
+}
+
+function setBrowserVisible(id,visible){
+  var buttons=document.querySelectorAll('[data-profile-id="'+id+'"] .browser-btn');
+  buttons.forEach(function(b){b.disabled=true;});
+  fetch('/browser-visibility',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id,visible:visible})})
+  .then(function(r){return r.json().then(function(d){return {ok:r.ok,data:d};});})
+  .then(function(res){
+    if(!res.ok){alert(res.data.error||'تغییر وضعیت مرورگر انجام نشد');buttons.forEach(function(b){b.disabled=false;});return;}
+    var p=getProf(id); if(p)p.browser_visible=Boolean(res.data.browser_visible);
+    renderProfiles();
+  })
+  .catch(function(){buttons.forEach(function(b){b.disabled=false;});});
 }
 
 function normalizeProfileSearch(value){
@@ -1796,6 +1854,7 @@ function renderProfiles(){
       '<div class="prof-meta">'+escHtml(p.national||'—')+(p.mobile?' • '+escHtml(p.mobile):'')+'</div>'+
       (p.registration_status==='blocked'?'<div class="prof-blocked">⛔ غیرقابل ورود — تلاش متوقف شد</div><div class="prof-blocked-detail">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div>':'')+
       (p.registration_status==='success'?'<div class="prof-success">✓ موفق — مرحله پرداخت</div>':'')+
+      (p.run_status==='busy'?'<div class="prof-browser-row">'+profileBrowserButton(p)+'</div>':'')+
       '<div class="artifact-links">'+
       (p.receipt_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=receipt">🧾 مشاهده رسید</a>':'')+
       (p.payment_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=payment">💳 مشاهده پرداخت</a>':'')+
@@ -1815,6 +1874,59 @@ function renderProfiles(){
 }
 
 function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+/* ---- paste-e kenar-e har kadar-e vorudi ---------------------------------- */
+function withPaste(inputHtml){
+  return '<div class="field-row">'+inputHtml+
+    '<button type="button" class="paste-btn" title="پیست از کلیپ‌بورد" aria-label="پیست کردن در این کادر" onclick="pasteInto(this)">'+
+    '<span class="paste-ico" aria-hidden="true">📋</span><span class="paste-label">پیست</span></button></div>';
+}
+
+/* Text-e clipboard ra tamiz mikonad: raqam-haye farsi/arabi -> ASCII,
+   hazf-e mark-haye jahat/ZWNJ va faseleha (baraye field-haye adadi-ye .ltr). */
+function normalizePasted(text,isNumericField){
+  var out=String(text==null?'':text).replace(/[\u200b-\u200f\u202a-\u202e\ufeff]/g,'');
+  out=out.replace(/[۰-۹]/g,function(c){return String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c));})
+         .replace(/[٠-٩]/g,function(c){return String('٠١٢٣٤٥٦٧٨٩'.indexOf(c));});
+  out=out.replace(/[\r\n\t]+/g,' ').trim();
+  if(isNumericField) out=out.replace(/\s+/g,'');
+  return out;
+}
+
+function flashPasteBtn(btn,cls,label){
+  var labelEl=btn.querySelector('.paste-label'); var previous=labelEl?labelEl.textContent:'';
+  btn.classList.remove('ok','err'); btn.classList.add(cls);
+  if(labelEl&&label)labelEl.textContent=label;
+  setTimeout(function(){btn.classList.remove(cls); if(labelEl&&label)labelEl.textContent=previous;},1400);
+}
+
+function applyPastedValue(input,btn,raw){
+  var isNumeric=input.classList.contains('ltr');
+  var value=normalizePasted(raw,isNumeric);
+  if(!value){ flashPasteBtn(btn,'err','خالی'); return; }
+  input.value=value;
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+  input.focus();
+  flashPasteBtn(btn,'ok','✓');
+}
+
+function pasteInto(btn){
+  var row=btn.closest('.field-row')||btn.parentNode;
+  var input=row?row.querySelector('input[type=text]'):null;
+  if(!input)return;
+  if(!navigator.clipboard||!navigator.clipboard.readText){
+    input.focus(); input.select();
+    btn.title='مرورگر اجازه خواندن کلیپ‌بورد نمی‌دهد — با Ctrl+V پیست کنید';
+    flashPasteBtn(btn,'err','Ctrl+V'); return;
+  }
+  navigator.clipboard.readText().then(function(text){
+    applyPastedValue(input,btn,text);
+  }).catch(function(){
+    input.focus(); input.select();
+    btn.title='دسترسی به کلیپ‌بورد رد شد — با Ctrl+V پیست کنید';
+    flashPasteBtn(btn,'err','Ctrl+V');
+  });
+}
 
 function buildExitbanResult(p){
   var status=p.exitban_status||'not_checked';
@@ -1844,21 +1956,19 @@ function buildForm(p){
       '<button type="button" aria-label="تب استعلامات" class="profile-tab" onclick="showProfileSection(\'inquiries\')">استعلامات</button>'+ 
     '</div>'+ 
     '<div id="view-base">'+
-    '<input type="text" name="title" value="'+escHtml(p.title||'')+'" placeholder="مثلاً علی رضایی">'+
+    withPaste('<input type="text" name="title" value="'+escHtml(p.title||'')+'" placeholder="مثلاً علی رضایی">')+
     '<label>کد ملی</label>'+
-    '<input type="text" name="national" class="ltr" value="'+escHtml(p.national||'')+'" placeholder="۱۰ رقم" oninput="syncSharedField(\'identity_national\',this.value)">'+
+    withPaste('<input type="text" name="national" class="ltr" value="'+escHtml(p.national||'')+'" placeholder="۱۰ رقم" oninput="syncSharedField(\'identity_national\',this.value)">')+
     '<label>تاریخ تولد (شمسی)</label>'+
-    '<input type="text" name="birth" class="ltr" value="'+escHtml(p.birth||'')+'" placeholder="۱۳۶۶/۱۰/۱" oninput="syncSharedField(\'identity_birth\',this.value)">'+
+    withPaste('<input type="text" name="birth" class="ltr" value="'+escHtml(p.birth||'')+'" placeholder="۱۳۶۶/۱۰/۱" oninput="syncSharedField(\'identity_birth\',this.value)">')+
     '<label>شماره موبایل</label>'+
-    '<input type="text" name="mobile" class="ltr" value="'+escHtml(p.mobile||'')+'" placeholder="۰۹۱۴...">'+
+    withPaste('<input type="text" name="mobile" class="ltr" value="'+escHtml(p.mobile||'')+'" placeholder="۰۹۱۴...">')+
     '<label>کدهای IMEI</label>'+
     '<div id="imeis"></div>'+
     '<button type="button" class="add-btn" onclick="addImei(\'\')">+ افزودن IMEI</button>'+ 
     '<div class="switches">'+
       '<div class="switch"><div><div class="t">زدن تیک «قبول دارم»</div><div class="d">اگر خاموش باشد تیک زده نمی‌شود</div></div>'+
         '<label class="toggle"><input type="checkbox" id="confirm_on"'+(p.no_confirm_check?'':' checked')+'><span class="track"></span></label></div>'+
-      '<div class="switch"><div><div class="t">submit خودکار (زدنِ «ادامه»)</div><div class="d">با احتیاط — فرم واقعاً ارسال می‌شود</div></div>'+
-        '<label class="toggle danger"><input type="checkbox" id="submit_on"'+(p.submit?' checked':'')+'><span class="track"></span></label></div>'+
       '<div class="switch"><div><div class="t">🐞 حالت دیباگ</div><div class="d">قبل از هر مرحله مکث می‌کند</div></div>'+
         '<label class="toggle"><input type="checkbox" id="debug_on"'+(p.debugging?' checked':'')+'><span class="track"></span></label></div>'+
       '<div class="switch"><div><div class="t">✋ مدیریت دستی</div><div class="d">صفحه اول باز می‌شود؛ خودت تا کد ۴رقمی برو، تیک بزن، دکمه بالای صفحه را بزن → brute-force</div></div>'+
@@ -1867,12 +1977,12 @@ function buildForm(p){
     '</div>'+ 
     '<div id="view-identity" class="hidden">'+
     '<div class="section-title">اطلاعات هویتی</div>'+
-    '<label>نام</label><input type="text" name="first_name" value="'+escHtml(p.first_name||'')+'">'+
-    '<label>نام خانوادگی</label><input type="text" name="last_name" value="'+escHtml(p.last_name||'')+'">'+
-    '<label>نام پدر</label><input type="text" name="father_name" value="'+escHtml(p.father_name||'')+'">'+
-    '<label>تاریخ تولد</label><input type="text" name="identity_birth" class="ltr" value="'+escHtml(p.birth||'')+'" oninput="syncSharedField(\'birth\',this.value)">'+
-    '<label>شماره شناسنامه</label><input type="text" name="birth_certificate_no" class="ltr" value="'+escHtml(p.birth_certificate_no||'')+'">'+
-    '<label>کد ملی</label><input type="text" name="identity_national" class="ltr" value="'+escHtml(p.national||'')+'" oninput="syncSharedField(\'national\',this.value)">'+
+    '<label>نام</label>'+withPaste('<input type="text" name="first_name" value="'+escHtml(p.first_name||'')+'">')+
+    '<label>نام خانوادگی</label>'+withPaste('<input type="text" name="last_name" value="'+escHtml(p.last_name||'')+'">')+
+    '<label>نام پدر</label>'+withPaste('<input type="text" name="father_name" value="'+escHtml(p.father_name||'')+'">')+
+    '<label>تاریخ تولد</label>'+withPaste('<input type="text" name="identity_birth" class="ltr" value="'+escHtml(p.birth||'')+'" oninput="syncSharedField(\'birth\',this.value)">')+
+    '<label>شماره شناسنامه</label>'+withPaste('<input type="text" name="birth_certificate_no" class="ltr" value="'+escHtml(p.birth_certificate_no||'')+'">')+
+    '<label>کد ملی</label>'+withPaste('<input type="text" name="identity_national" class="ltr" value="'+escHtml(p.national||'')+'" oninput="syncSharedField(\'national\',this.value)">')+
     '</div>'+ 
     '<div id="view-profile-inquiries" class="hidden">'+
       '<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div>'+ 
@@ -1887,6 +1997,7 @@ function addImei(val){
   var wrap=document.getElementById('imeis');
   var row=document.createElement('div'); row.className='imei-row';
   row.innerHTML='<input type="text" class="ltr" placeholder="۱۵ رقم" value="'+escHtml(val||'')+'">'+
+    '<button type="button" class="paste-btn" title="پیست از کلیپ‌بورد" aria-label="پیست کردن در این کادر" onclick="pasteInto(this)"><span class="paste-ico" aria-hidden="true">📋</span><span class="paste-label">پیست</span></button>'+
     '<button type="button" class="icon-btn" title="حذف">×</button>';
   row.querySelector('.icon-btn').onclick=function(){row.remove();};
   wrap.appendChild(row);
@@ -2000,7 +2111,6 @@ function saveProfile(e){
     birth_certificate_no:f.birth_certificate_no.value.trim(),
     imeis:imeis,
     no_confirm_check:!document.getElementById('confirm_on').checked,
-    submit:document.getElementById('submit_on').checked,
     debugging:document.getElementById('debug_on').checked,
     manual_manage:document.getElementById('manual_on').checked
   };
@@ -2274,6 +2384,7 @@ function statusKey(p){
 }
 function refresh(){
   fetch('/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+    if(!s||s.error)return;
     var ps=s.profiles||[],c={running:0,success:0,blocked:0};
     ps.forEach(function(p){var k=statusKey(p);if(c[k]!==undefined)c[k]++;});
     document.getElementById('s-total').textContent=toFa(ps.length);
@@ -3200,6 +3311,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _state_json(self, code=200):
+        """load_store-e amn baraye route-haye read: agar file lahze-i kharab bood,
+        be jaye 500/khali, akharin store-e salem barmigardanad (UI khali nashavad)."""
+        try:
+            self._json(load_store(), code)
+        except StoreUnreadableError:
+            cached = _LAST_GOOD_STORE.get(PROFILES_PATH)
+            if cached is not None:
+                self._json(cached, code)
+            else:
+                # hich manba'-e salemi nist: 503 ba flag ta JS store-e fe'li ra negah darad.
+                self._json({"error": "store temporarily unreadable", "retry": True}, 503)
+
     def do_GET(self):
         from urllib.parse import urlsplit
         route = urlsplit(self.path).path
@@ -3218,7 +3342,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"logs": load_estelam_logs()})
         elif route == "/state":
             clear_stale_busy_profiles()
-            self._json(load_store())
+            self._state_json()
         elif route == "/logs":
             self._json(load_logs())
         elif route == "/site2-notif":
@@ -3227,7 +3351,7 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             if query.get("run") == ["1"]:
-                self._json(test_telegram_api(attempts=2, ensure_chain=True))
+                self._json(test_telegram_api(attempts=2))
             else:
                 self._json(load_telegram_health())
         elif route == "/artifact":
@@ -3235,7 +3359,11 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlsplit(self.path).query)
             pid, kind = (q.get("id") or [""])[0], (q.get("kind") or [""])[0]
             key = "receipt_screenshot" if kind == "receipt" else "payment_screenshot"
-            profile = next((p for p in load_store().get("profiles", []) if p.get("id") == pid), None)
+            try:
+                profiles = load_store().get("profiles", [])
+            except StoreUnreadableError:
+                profiles = (_LAST_GOOD_STORE.get(PROFILES_PATH) or {}).get("profiles", [])
+            profile = next((p for p in profiles if p.get("id") == pid), None)
             path = os.path.realpath((profile or {}).get(key) or "")
             root = os.path.realpath(os.path.join(HERE, "screenshots"))
             try:
@@ -3251,7 +3379,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
-        store = load_store()
+        try:
+            store = load_store()
+        except StoreUnreadableError:
+            # profiles.json lahze-i ghabel-e khandan nist. Az cache estefade mikonim
+            # ta write-e badi rooye dade-ye salem anjam shavad (na baznevisi-ye khali).
+            cached = _LAST_GOOD_STORE.get(PROFILES_PATH)
+            if cached is None:
+                self._json({"error": "store temporarily unreadable", "retry": True}, 503)
+                return
+            store = {"profiles": [dict(p) for p in cached["profiles"]],
+                     "active_id": cached["active_id"]}
         if self.path == "/save":
             data = self._read_json()
             pid = (data.get("id") or "").strip()
@@ -3370,6 +3508,12 @@ class Handler(BaseHTTPRequestHandler):
                 store["active_id"] = store["profiles"][0]["id"]
             clean = save_store(store)
             self._json(clean)
+
+        elif self.path == "/browser-visibility":
+            data = self._read_json()
+            status, payload = set_browser_visibility(
+                str(data.get("id") or ""), bool(data.get("visible")))
+            self._json(payload, status)
 
         elif self.path == "/clear-logs":
             clear_logs()

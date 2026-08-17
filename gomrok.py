@@ -29,6 +29,7 @@ import time
 from collections import deque
 
 import captcha_collector as cc
+import browser_visibility as bvis
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -102,6 +103,14 @@ def _claim_panel_profile(profile_id=None):
         return None
 
 
+def _panel_browser_visibility(profile_id):
+    try:
+        import panel
+        return panel.get_browser_visibility(profile_id)
+    except Exception:
+        return None
+
+
 def _release_panel_profile(profile_id, runner_id):
     try:
         import panel
@@ -120,10 +129,13 @@ def _record_panel_output(profile_id, runner_id, receipt, payment, link):
         return False
 
 
-def _mark_panel_profile_unusable(profile_id, error_text):
+def _mark_panel_profile_unusable(profile_id, error_text, payment_link=None,
+                                 receipt=None):
     try:
         import panel
-        return panel.mark_profile_unusable(profile_id, error_text)
+        return panel.mark_profile_unusable(profile_id, error_text,
+                                          payment_link=payment_link,
+                                          receipt=receipt)
     except Exception as e:
         print(f">>> (mark-e profile-e gheyr-e ghabele voroud anjam nashod: {e})")
         return False
@@ -152,6 +164,13 @@ _SCREENSHOTS_DIR = os.path.join(_HERE, "screenshots")
 _CLAIMED_PROFILE_ID = ""
 _CLAIMED_RUNNER_ID = ""
 _CUSTOMER_TELEGRAM_CHAT_ID = ""
+
+# --- Budge-ye zamani-ye telegram -------------------------------------------
+# Robot NABAYAD roo-ye ersal-e telegram gir konad. Har ersal yek deadline-e
+# sakht darad; ba'd az an log mishavad ("timeout — mahali zakhire shod") va
+# robot FOWRAN edame midahad. Aks/link az ghabl rooye disk hastand.
+TELEGRAM_PHOTO_TIMEOUT_SEC = 25.0
+TELEGRAM_TEXT_TIMEOUT_SEC = 10.0
 
 
 def log_event(status, message, step="", title="", national="", imei=""):
@@ -183,6 +202,45 @@ def log_event(status, message, step="", title="", national="", imei=""):
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
         print(f">>> (zakhire-ye log na-shod: {e})")
+
+
+def _telegram_deliver(kind, *, photo_path=None, text="", caption="",
+                      step="", title="", national="", imei="", chat_ids=None):
+    """Ersal-e telegram ba DEADLINE-e sakht — robot HARGEZ inja gir nemikonad.
+
+    kind: 'photo' ya 'text'. Barmigardanad True agar tahvil ta'id shod.
+    Har natije (movaffagh / timeout / khata) dar logs.jsonl sabt mishavad va
+    dar halat-e shekast masir-e mahalli-ye file dar payam zekr mishavad ta
+    bedanim aks az dast naraft.
+    """
+    import telegram_notify as tg
+
+    is_photo = kind == "photo"
+    timeout = TELEGRAM_PHOTO_TIMEOUT_SEC if is_photo else TELEGRAM_TEXT_TIMEOUT_SEC
+    local = f" — mahali zakhire shod: {photo_path}" if (is_photo and photo_path) else ""
+    started = time.monotonic()
+    try:
+        if is_photo:
+            tg.send_photo(photo_path, caption=caption,
+                          extra_chat_ids=chat_ids, timeout=timeout)
+        else:
+            tg.send_message(text, extra_chat_ids=chat_ids, timeout=timeout)
+    except TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        log_event("warn",
+                  f"telegram TIMEOUT ba'd az {elapsed:.1f}s (budge={timeout:.0f}s)"
+                  f"{local} — robot edame midahad. ({str(exc).splitlines()[0][:120]})",
+                  step=step, title=title, national=national, imei=imei)
+        return False
+    except Exception as exc:
+        elapsed = time.monotonic() - started
+        log_event("warn",
+                  f"telegram na-movaffagh ba'd az {elapsed:.1f}s{local} — robot "
+                  f"edame midahad. ({str(exc).splitlines()[0][:150]})",
+                  step=step, title=title, national=national, imei=imei)
+        return False
+    print(f">>> Telegram: {step} ersal shod ({time.monotonic() - started:.1f}s).")
+    return True
 
 
 def install_profile_banner(driver, title):
@@ -633,22 +691,10 @@ def ensure_page_ready(driver, wait, dbg=None, max_reload=5):
 
     Barmigardanad True agar safhe amade shod, vagarna False."""
     for i in range(max_reload):
-        try:
-            btn = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]')
-            cap = driver.find_elements(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
-            has_btn = bool(btn) and btn[0].is_displayed()
-            # aks-e captcha bayad vojud dashte bashad VA load shode bashad (arz > 0)
-            has_cap = False
-            if cap:
-                try:
-                    w = driver.execute_script("return arguments[0].naturalWidth||0;", cap[0])
-                    has_cap = bool(w and w > 0)
-                except Exception:
-                    has_cap = cap[0].is_displayed()
-            if has_btn and has_cap:
-                return True
-        except Exception:
-            pass
+        # probe-e sari': safhe-ye salem fowran ta'id mishavad; naqes be mahz-e
+        # idle-shodan (bedun-e sabr-e sabet) tashkhis dade mishavad.
+        if wait_first_page_ready(driver, budget=3.0) == "ready":
+            return True
         # naqes ast -> F5
         if dbg:
             dbg.step(f"reload (F5): safhe naqes bood (dokme/captcha nist) — talash #{i + 1}")
@@ -657,20 +703,133 @@ def ensure_page_ready(driver, wait, dbg=None, max_reload=5):
             driver.refresh()
         except Exception as e:
             print(f">>> khata dar reload: {e}")
-        # ba'd az reload sabr ta captcha-ye salem biayad
-        try:
-            cc.ensure_real_captcha(driver, wait, 0.8)
-        except Exception:
-            time.sleep(2)
     # akharin check
+    return wait_first_page_ready(driver, budget=2.0) == "ready"
+
+
+WP_IMEI_ADD = "form_imeiStep_add"  # dokme-ye '+' baraye radif-e IMEI-ye dovom (dual-SIM)
+
+
+# --- Tashkhis-e SARI'-e 'safhe naqes load shode' ---------------------------
+# Site ba'zi vaghtha safhe ra bedun-e captcha/dokme-ye 'edame' tahvil midahad.
+# Ghablan robot ta 10s sabr mikard; hala be mahz-e inke safhe DIGAR LOAD
+# NEMISHAVAD (readyState=complete + hich request/AJAX-e dar jaryan) va captcha
+# hanooz nist, FOWRAN F5 mizanim. Vaghti safhe salem ast, tashkhis dar ~0.1s
+# anjam mishavad (na sabr-e sabet).
+_PAGE_PROBE_JS = r"""
+var capSel = arguments[0], btnPath = arguments[1];
+var cap = document.querySelector(capSel);
+var btn = document.querySelector('[wicketpath="' + btnPath + '"]');
+var btnOk = !!btn && btn.offsetParent !== null;
+// captcha bayad DECODE shode bashad (naturalWidth>0) — na faghat dar DOM
+var capOk = !!cap && (cap.naturalWidth || 0) > 0 && cap.offsetParent !== null;
+var capBroken = !!cap && cap.complete === true && (cap.naturalWidth || 0) === 0;
+var ind = document.querySelectorAll(
+  '.wicket-ajax-indicator,[wicketpath$="indicator_indicatorImg"]');
+var ajaxBusy = false;
+for (var i = 0; i < ind.length; i++) {
+  if (ind[i].offsetParent !== null) { ajaxBusy = true; break; }
+}
+// aya hanooz manba'-i (aks) dar hal-e download ast?
+var pending = false;
+var imgs = document.images || [];
+for (var j = 0; j < imgs.length; j++) {
+  if (!imgs[j].complete) { pending = true; break; }
+}
+return {
+  ready: document.readyState === 'complete',
+  capOk: capOk, capBroken: capBroken, capMissing: !cap,
+  btnOk: btnOk, ajaxBusy: ajaxBusy, pending: pending
+};
+"""
+
+
+def probe_first_page(driver):
+    """Yek snapshot-e sabok az vaziat-e safhe-ye avval (imeiStep).
+
+    MOHEM: agar manba'-i (aks/script) gir karde bashad, khod-e execute_script
+    momken ast BLOCK shavad. Pas ghabl az probe yek script-timeout-e kootah
+    tanzim mishavad (dar wait_first_page_ready) va inja timeout = None
+    (yani 'nemidanim') ke loop bar asas-e deadline tasmim begirad.
+    """
     try:
-        btn = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]')
-        return bool(btn) and btn[0].is_displayed()
+        return driver.execute_script(_PAGE_PROBE_JS, cc.CAPTCHA_CSS, WP_CONTINUE)
+    except Exception:
+        return None
+
+
+def _set_script_timeout(driver, seconds):
+    try:
+        driver.set_script_timeout(max(0.5, float(seconds)))
+        return True
     except Exception:
         return False
 
 
-WP_IMEI_ADD = "form_imeiStep_add"  # dokme-ye '+' baraye radif-e IMEI-ye dovom (dual-SIM)
+def _set_page_load_timeout(driver, seconds):
+    try:
+        driver.set_page_load_timeout(max(1.0, float(seconds)))
+        return True
+    except Exception:
+        return False
+
+
+def wait_first_page_ready(driver, budget=6.0, settle=0.45, poll=0.08):
+    """SARI' tashkhis midahad ke safhe-ye avval amade ast ya bayad F5 shavad.
+
+    Barmigardanad yeki az:
+      'ready'      -> captcha-ye decode-shode + dokme-ye 'edame' hastand
+      'incomplete' -> load tamam shode (ya captcha shekaste) vali captcha nist -> F5
+      'timeout'    -> ta payan-e budge hich natije-ye ghat'i nashod (F5 shavad)
+
+    `settle`: ba'd az readyState=complete in meghdar sabr mikonim ta AJAX-e
+    dir-res ham forsat dashte bashad; in ta'khir-e KOL-e halat-e salem ra
+    zir-e ~0.5s negah midarad.
+
+    Manba'-e gir-karde: script-timeout roo-ye khod-e budge mahdud mishavad, pas
+    hatta agar safhe ghofl konad, in tabe' bishtar az ~budge tool nemikeshad.
+    """
+    deadline = time.monotonic() + budget
+    # script-timeout ra be budge mahdud kon ta execute_script-e block-shode
+    # deadline ra napranad (in daghighan hamun ta'khir-e chand-daghighe-i bood).
+    script_timeout = min(2.0, max(0.5, budget))
+    restore = _set_script_timeout(driver, script_timeout)
+    complete_since = None
+    stalled = 0
+    try:
+        while time.monotonic() < deadline:
+            state = probe_first_page(driver)
+            if state is None:
+                # probe javab nadad (safhe/script gir karde) — talash-e mahdud,
+                # sepas window.stop() ta render az halat-e ghofl dar biayad.
+                stalled += 1
+                if stalled == 2:
+                    try:
+                        driver.execute_script("window.stop();")
+                    except Exception:
+                        pass
+                time.sleep(poll)
+                continue
+            stalled = 0
+            if state.get("capOk") and state.get("btnOk"):
+                return "ready"
+            # captcha-ye shekaste (complete vali naturalWidth=0) = ghat'an naqes
+            if state.get("capBroken") and not state.get("ajaxBusy"):
+                return "incomplete"
+            idle = (state.get("ready") and not state.get("ajaxBusy")
+                    and not state.get("pending"))
+            if idle:
+                if complete_since is None:
+                    complete_since = time.monotonic()
+                elif time.monotonic() - complete_since >= settle:
+                    return "incomplete"
+            else:
+                complete_since = None
+            time.sleep(poll)
+        return "timeout"
+    finally:
+        if restore:
+            _set_script_timeout(driver, 30)
 
 
 def imei_rows(driver):
@@ -1483,6 +1642,121 @@ def brute_force_security_code(driver, dbg=None, title="", national="", imei="",
     return None
 
 
+def _extract_payment_link(driver):
+    """Link-e pardakht ra az onclick-e dokme (ya URL-e fe'li) darmiavarad."""
+    try:
+        btns = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_PARDAKHT}"]')
+        if btns:
+            onclick = btns[0].get_attribute("onclick") or ""
+            m = re.search(r"window\.location\.href\s*=\s*'([^']+)'", onclick)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    try:
+        return driver.current_url or ""
+    except Exception:
+        return ""
+
+
+def detect_prepayment_page(driver):
+    """True agar safhe-ye FAKTOR-e pish-pardakht rooye safhe bashad.
+
+    Marker-e ghat'i: dokme-ye pardakht (WP_PARDAKHT). Baraye etminan, nabudan-e
+    dokme-ye edame-ye imeiStep/hamtaStep ham check mishavad ta ba safhe-haye
+    miani eshtebah nashavad.
+    """
+    try:
+        has_pay = bool(driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_PARDAKHT}"]'))
+        if not has_pay:
+            return False
+        still_imei = bool(driver.find_elements(
+            By.CSS_SELECTOR, f'[wicketpath="{WP_CONTINUE}"]'))
+        has_hamta = bool(driver.find_elements(
+            By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]'))
+        return not (still_imei or has_hamta)
+    except Exception:
+        return False
+
+
+def handle_already_registered(driver, title="", national="", imei=""):
+    """Safhe-ye faktor-e pish-pardakht BEDUN-e tey kardan-e marhale-ha amad.
+
+    Ma'ni: in profile GHABLAN sabt shode va link-e pardakht gerefte. Pas:
+      1) screenshot-e faktor + zakhire-ye link (mahali),
+      2) log-e panel (logs.jsonl) ba payam-e roshan,
+      3) ersal-e telegram ba budge-ye mahdud (robot montazer nemimanad),
+      4) profile dar panel GHEYR-E GHABEL-E EJRA (blocked + disabled) mishavad,
+      5) morurgar baste mishavad va robot khatm mishavad.
+
+    Barmigardanad link-e pardakht (agar peyda shod).
+    """
+    import random
+
+    message = "قبلاً این پروفایل لینک پرداخت گرفته است"
+    os.makedirs(_SCREENSHOTS_DIR, exist_ok=True)
+    rand = str(random.randint(10000, 99999))
+    safe = _safe_filename(title)
+
+    pay_link = _extract_payment_link(driver)
+
+    shot = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_already_paid.png")
+    try:
+        if not _full_screenshot(driver, shot):
+            shot = None
+    except Exception as exc:
+        print(f">>> (screenshot-e faktor-e ghabli na-shod: {exc})")
+        shot = None
+
+    if pay_link:
+        link_txt = os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{rand}.txt")
+        try:
+            with open(link_txt, "w", encoding="utf-8") as f:
+                f.write(pay_link + "\n")
+            print(f">>> Link-e pardakht-e ghabli zakhire shod: {link_txt}")
+        except OSError as exc:
+            print(f">>> (zakhire-ye link na-shod: {exc})")
+
+    log_event("error",
+              f"{message} — safhe-ye faktor-e pish-pardakht bedun-e tey-e marhale-ha "
+              f"amad. robot motevaghef shod va profile gheyr-e ghabel-e ejra shod."
+              + (f" link: {pay_link}" if pay_link else "")
+              + (f" | screenshot: {shot}" if shot else ""),
+              step="marhale-1/imeiStep -> faktor-e pish-pardakht",
+              title=title, national=national, imei=imei)
+
+    caption = (
+        f"⛔ <b>{message}</b>\n"
+        f"👤 Profile: {title or national}\n"
+        f"📱 IMEI: {imei}\n"
+        f"ℹ️ Safhe-ye faktor-e pish-pardakht bedun-e tey kardan-e marhale-ha amad — "
+        f"robot motevaghef shod va in profile gheyr-e ghabel-e ejra shod."
+        + (f"\n🔗 Link:\n<code>{pay_link}</code>" if pay_link else "")
+    )
+    if shot and os.path.exists(shot):
+        _telegram_deliver("photo", photo_path=shot, caption=caption,
+                          step="telegram: profile-e ghablan sabt-shode (aks)",
+                          title=title, national=national, imei=imei,
+                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
+    else:
+        _telegram_deliver("text", text=caption,
+                          step="telegram: profile-e ghablan sabt-shode (matn)",
+                          title=title, national=national, imei=imei,
+                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
+
+    if _CLAIMED_PROFILE_ID:
+        detail = message + (f" (link: {pay_link})" if pay_link else "")
+        # mostaghim blocked mikonim VA link/aks ra hamanja set mikonim.
+        # record_profile_output() ra seda NEMIZANIM chon status ra 'success'
+        # mikonad va 'blocked' ra pak mikonad.
+        _mark_panel_profile_unusable(_CLAIMED_PROFILE_ID, detail,
+                                     payment_link=pay_link or None,
+                                     receipt=shot or None)
+
+    print(f">>> ⛔ {message} — robot motevaghef mishavad.")
+    return pay_link
+
+
 def _safe_filename(title):
     """Title ra baraye esm-e file amniat mikonad (kar-haye gheyr-mojaz ra hazf mikonad)."""
     import re
@@ -1536,7 +1810,6 @@ def handle_receipt_and_payment(driver, title="", national="", imei=""):
        + link-e kamel + ersal be telegram + zakhire-ye link dar payment-link-*.txt
     """
     import random
-    import telegram_notify as tg
 
     os.makedirs(_SCREENSHOTS_DIR, exist_ok=True)
     rand = str(random.randint(10000, 99999))
@@ -1560,17 +1833,13 @@ def handle_receipt_and_payment(driver, title="", national="", imei=""):
         f"🔐 Kod-e amniati peyda shod — safhe-ye rasid"
     )
     if shot_receipt and os.path.exists(shot_receipt):
-        try:
-            tg.send_photo(shot_receipt, caption=caption_receipt,
-                          extra_chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-            print(">>> Telegram: screenshot-e rasid ersal shod.")
-        except Exception as e:
-            print(f">>> (ersal-e telegram na-shod: {e})")
+        _telegram_deliver("photo", photo_path=shot_receipt, caption=caption_receipt,
+                          step="telegram: rasid (aks)", title=title, national=national,
+                          imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
     else:
-        try:
-            tg.send_message(caption_receipt, extra_chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-        except Exception as e:
-            print(f">>> (ersal-e telegram na-shod: {e})")
+        _telegram_deliver("text", text=caption_receipt,
+                          step="telegram: rasid (matn)", title=title, national=national,
+                          imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
 
     # --- 2) Dokme-ye pardakht ---
     pay_btns = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_PARDAKHT}"]')
@@ -1642,17 +1911,15 @@ def handle_receipt_and_payment(driver, title="", national="", imei=""):
         f"🔗 Link:\n<code>{pay_link}</code>"
     )
     if shot_pay and os.path.exists(shot_pay):
-        try:
-            tg.send_photo(shot_pay, caption=caption_pay,
-                          extra_chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-            print(">>> Telegram: screenshot-e pish-pardakht ersal shod.")
-        except Exception as e:
-            print(f">>> (ersal-e telegram na-shod: {e})")
+        _telegram_deliver("photo", photo_path=shot_pay, caption=caption_pay,
+                          step="telegram: pish-pardakht (aks)", title=title,
+                          national=national, imei=imei,
+                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
     else:
-        try:
-            tg.send_message(caption_pay, extra_chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-        except Exception as e:
-            print(f">>> (ersal-e telegram na-shod: {e})")
+        _telegram_deliver("text", text=caption_pay,
+                          step="telegram: pish-pardakht (matn)", title=title,
+                          national=national, imei=imei,
+                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
 
     if pay_link:
         print(f">>> 🔗 Link-e pardakht: {pay_link}")
@@ -1674,8 +1941,10 @@ def main():
     ap.add_argument("--ckpt", default=_DEFAULT_CKPT)
     ap.add_argument("--no-confirm-check", action="store_true",
                     help="tik-e 'ghabool daram' ra nazan")
-    ap.add_argument("--submit", action="store_true",
-                    help="dokme-ye 'edame' ra KHODKAR bezan (submit-e vaghe'i)")
+    ap.add_argument("--submit", action="store_true", default=True,
+                    help="(pishfarz-e roshan) dokme-ye 'edame' KHODKAR zade mishavad")
+    ap.add_argument("--no-submit", dest="submit", action="store_false",
+                    help="dokme-ye 'edame' ra NAZAN (faghat baraye test/bazrasi-ye dasti)")
     ap.add_argument("--debugging", action="store_true",
                     help="halat-e debug: ghabl az har marhale-ye asasi ta zadan-e "
                          "dokme-ye 'Next action' (balaye safhe) sabr mikonad")
@@ -1704,8 +1973,8 @@ def main():
     # QABL az vorudi-ha: manual_manage momken ast bedun-e melli/birth/imei kar konad.
     if not args.no_confirm_check and panel.get("no_confirm_check"):
         args.no_confirm_check = True
-    if not args.submit and panel.get("submit"):
-        args.submit = True
+    # submit: pishfarz-e roshan ast. panel digar in switch ra nadarad; faghat
+    # --no-submit-e sarih (CLI) mitavanad an-ra khamush konad.
     if not args.debugging and panel.get("debugging"):
         args.debugging = True
     if not args.manual_manage and panel.get("manual_manage"):
@@ -1762,10 +2031,20 @@ def main():
     MAX_TRY = 20
     PAGE_LOAD_SEC = 12          # qablan 25 — agar site baz nashod zood-tar fail + retry
     CAPTCHA_WAIT_SEC = 10
-    OPEN_GET_TRIES = 4          # chand bar get/F5 dar yek session ghabl az restart
+    # Budge-ye tashkhis-e safhe-ye avval: safhe-ye SALEM dar ~0.5s ta'id mishavad;
+    # safhe-ye NAQES be mahz-e idle shodan (bedun-e captcha) F5 mishavad. In adad
+    # faghat sagh-e balaa baraye halat-haye shabake-ye kond ast.
+    FIRST_PAGE_BUDGET_SEC = 6.0
+    OPEN_GET_TRIES = 6          # chand bar get/F5 dar yek session ghabl az restart
     driver = None
     reuse_driver = False  # ba'd az 'پایان' marhale-4: hamun driver, safhe-ye 1
     found = None  # kod-e amniati-ye peyda-shode (agar marhale-5 rasid)
+    # Morurgar be tore PISHFARZ makhfi (off-screen) ast; panel mitavanad zende
+    # an-ra namayan/makhfi konad. Dar halat-haye debug/modiriat-e dasti karbar
+    # bayad safhe ra bebinad, pas az aval namayan mimanad.
+    visibility = None
+    browser_visible_default = bool(args.debugging or args.manual_manage or
+                                   panel.get("browser_visible"))
     for attempt in range(1, MAX_TRY + 1):
         try:
             skip_build = reuse_driver  # in talash: driver-e ghabli ra negah dar
@@ -1786,6 +2065,13 @@ def main():
             if not skip_build:
                 driver = cc.build_driver(ua)
                 install_profile_banner(driver, title)
+                # Panjere ra fowran be halat-e darkhast-shode bebar (pishfarz: makhfi)
+                # va watcher ra roshan kon ta panel betavanad zende taghir-esh dahad.
+                if visibility is None:
+                    visibility = bvis.start(driver, _CLAIMED_PROFILE_ID,
+                                            visible=browser_visible_default)
+                else:
+                    visibility.rebind(driver)
                 try:
                     driver.set_page_load_timeout(PAGE_LOAD_SEC)
                 except Exception:
@@ -1807,26 +2093,25 @@ def main():
                                 driver.execute_script("window.stop();")
                             except Exception:
                                 pass
-                        try:
-                            WebDriverWait(driver, CAPTCHA_WAIT_SEC).until(
-                                EC.presence_of_element_located(
-                                    (By.CSS_SELECTOR, cc.CAPTCHA_CSS)))
+                        # Tashkhis-e SARI': be jaye sabr-e sabet ta CAPTCHA_WAIT_SEC,
+                        # be mahz-e inke safhe digar load nemishavad va captcha nist
+                        # F5 mizanim. Safhe-ye salem ~0.5s tashkhis dade mishavad.
+                        verdict = wait_first_page_ready(driver, budget=FIRST_PAGE_BUDGET_SEC)
+                        if verdict == "ready":
                             opened = True
                             break
-                        except Exception as _we:
-                            last_open_err = _we
-                            print(f">>>   captcha nayamad — F5 sari' ...")
+                        last_open_err = RuntimeError(f"safhe naqes ({verdict})")
+                        print(f">>>   safhe naqes ({verdict}) — F5 sari' ...")
+                        try:
+                            driver.refresh()
+                        except Exception:
                             try:
-                                driver.refresh()
-                            except Exception:
-                                try:
-                                    driver.get(cc.URL)
-                                except Exception as _ge2:
-                                    last_open_err = _ge2
-                            time.sleep(0.6)
+                                driver.get(cc.URL)
+                            except Exception as _ge2:
+                                last_open_err = _ge2
                     except Exception as _oe:
                         last_open_err = _oe
-                        time.sleep(0.4)
+                        time.sleep(0.2)
                 if not opened:
                     raise RuntimeError(
                         f"site baz nashod ba'd az {OPEN_GET_TRIES} get/F5: {last_open_err}")
@@ -1880,20 +2165,21 @@ def main():
                         time.sleep(300)
                 break  # kar tamam — az MAX_TRY biroon
 
-            # SABR ta safhe amade shavad (captcha-ye salem = form-e kamel)
-            print(">>> Sabr baraye captcha-ye salem ...")
+            # Safhe dar wait_first_page_ready ta'id shode (captcha-ye decode-shode +
+            # dokme-ye 'edame'). Faghat motmaen mishavim captcha KHALI (kadr-e sefid)
+            # nist; agar bud, ensure_real_captcha reload mikonad.
             try:
                 cc.ensure_real_captcha(driver, wait, 0.8)
             except Exception as _ec:
                 print(f">>> (ensure_real_captcha khata dad: {_ec} — edame ba ensure_page_ready)")
 
-            # QABL az por kardan: motmaen sho safhe KAMEL load shode (dokme-ye 'edame'
-            # VA aks-e captcha hastand). Agar naqes bود -> F5 ta kamel shavad.
-            # te'dad-e reload-ra bالا bordim (site ziyad naqes miayad).
-            if not ensure_page_ready(driver, wait, dbg=dbg, max_reload=8):
-                print(">>> HOSHDAR: safhe ba'd az chand reload ham kamel nashod — "
-                      "talash-e ba'di (restart-e morurgar).")
-                raise RuntimeError("safhe naqes: dokme-ye 'edame'/captcha peyda nashod")
+            # Check-e nahayi ba probe-e sari' (bedun-e sabr-e ezafe). Agar be har
+            # dalil safhe naqes shode bood -> F5-haye sari' ta kamel shavad.
+            if wait_first_page_ready(driver, budget=1.5) != "ready":
+                if not ensure_page_ready(driver, wait, dbg=dbg, max_reload=8):
+                    print(">>> HOSHDAR: safhe ba'd az chand reload ham kamel nashod — "
+                          "talash-e ba'di (restart-e morurgar).")
+                    raise RuntimeError("safhe naqes: dokme-ye 'edame'/captcha peyda nashod")
 
             dbg.step("safhe amade shod — shoru'-e por kardan-e form")
 
@@ -2364,6 +2650,21 @@ def main():
             print(f">>> Ba'd az submit: URL={cur_url}")
             print(f">>> Screenshot: {page_shot}")
             print(f">>> HTML-e safhe: {html_path}")
+
+            # --- PROFILE-e GHABLAN SABT-SHODE -------------------------------------
+            # Agar BE JAYE hamtaStep, MOSTAGHIM safhe-ye faktor-e pish-pardakht amad,
+            # ya'ni in profile ghablan tey shode va link-e pardakht gerefte. Dar in
+            # halat: gozaresh (log + telegram) -> profile gheyr-e ghabel-e ejra ->
+            # bastan-e morurgar va khatm-e robot (retry bi-fayde ast).
+            if detect_prepayment_page(driver):
+                handle_already_registered(driver, title=title, national=national,
+                                          imei=imei)
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                return
 
             # --- MARHALE-ye 2: safhe-ye hamtaStep (etela'at-e gushi + dokme-ye edame) ---
             hamta_btns = driver.find_elements(
@@ -3160,6 +3461,8 @@ def main():
         finally:
             pass
 
+    if visibility is not None:
+        visibility.stop()
     try:
         if driver:
             driver.quit()

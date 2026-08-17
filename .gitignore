@@ -23,6 +23,7 @@ telegram_health.json
 # ---- runtime / state (mahalli, ghabel-e sakht-e dobare) ----
 profiles.json
 profiles.json.lock
+profiles.json.bak
 inputs.json
 estelam_store.json
 logs.jsonl

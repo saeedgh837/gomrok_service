@@ -222,10 +222,11 @@ def _elog(status, message, serial="", extra=None):
 def _telegram(text, enabled=True):
     if not enabled:
         return
+    # timeout-e sakht: estelam nabayad rooye ersal-e telegram gir konad.
     try:
         sys.path.insert(0, _HERE)
         import telegram_notify as tg
-        tg.send_message(text)
+        tg.send_message(text, timeout=15)
     except Exception as e:
         print(f">>> (telegram na-raft: {e})")
 

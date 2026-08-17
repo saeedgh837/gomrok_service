@@ -51,9 +51,6 @@ def ensure_config():
     return cfg
 
 
-_LOCAL_BASE = "http://127.0.0.1:8752"
-
-
 def _api(method, cfg, base=None):
     base = (base or cfg["api_base"]).rstrip("/")
     token = cfg["bot_token"]
@@ -61,12 +58,9 @@ def _api(method, cfg, base=None):
 
 
 def _bases(cfg):
-    """Masir-e omoomi (tunnel) + fallback-e mohalli-ye relay (:8752)."""
+    """Return the configured Telegram API endpoint."""
     primary = str(cfg.get("api_base") or "").rstrip("/")
-    out = [primary] if primary else []
-    if _LOCAL_BASE not in out:
-        out.append(_LOCAL_BASE)
-    return out
+    return [primary] if primary else []
 
 
 def _chat_ids(cfg):
@@ -80,17 +74,25 @@ def _target_chat_ids(cfg, extra_chat_ids=None):
     ]))
 
 
-def _post_confirmed(method, cfg, data, files_factory=None, attempts=4):
+def _post_confirmed(method, cfg, data, files_factory=None, attempts=4, deadline=None):
     import requests
     last_error = None
     bases = _bases(cfg)
     for attempt in range(1, attempts + 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Telegram deadline reached after {attempt - 1} attempts: {last_error}")
         base = bases[(attempt - 1) % len(bases)]   # masir-ha ra jabejaa emtehan kon
+        # timeout-e har request az budge-ye baghimande bishtar nashavad
+        request_timeout = 150 if files_factory else 20
+        if deadline is not None:
+            remaining = max(1.0, deadline - time.monotonic())
+            request_timeout = min(request_timeout, remaining)
         try:
             files = files_factory() if files_factory else None
             try:
                 response = requests.post(_api(method, cfg, base), data=data, files=files,
-                                         timeout=150 if files else 20)
+                                         timeout=request_timeout)
             finally:
                 if files:
                     for value in files.values():
@@ -113,7 +115,11 @@ def _post_confirmed(method, cfg, data, files_factory=None, attempts=4):
                 raise
             last_error = exc
         if attempt < attempts:
-            time.sleep(min(2 ** (attempt - 1), 5))
+            backoff = min(2 ** (attempt - 1), 5)
+            if deadline is not None:
+                backoff = min(backoff, max(0.0, deadline - time.monotonic()))
+            if backoff > 0:
+                time.sleep(backoff)
     raise RuntimeError(f"Telegram delivery failed after {attempts} attempts: {last_error}")
 
 
@@ -128,16 +134,17 @@ def _is_permanent_chat_error(error):
     return any(marker in text for marker in _PERMANENT_CHAT_ERRORS)
 
 
-def _fanout(method, cfg, chat_ids, payload_for, files_factory=None):
+def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=None):
     """Be hame-ye chat-ha mifrestad. chat-e kharab (chat not found / block) baes-e
     shekast-e KOL-e ersal nemishavad — faghat agar HICH chat-i movaffagh nashod
-    exception partab mishavad."""
+    exception partab mishavad. `deadline` (monotonic) budge-ye zamani-ye koll ast."""
     results = []
     failures = []
     for chat_id in chat_ids:
         try:
             results.append(_post_confirmed(method, cfg, payload_for(chat_id),
-                                           files_factory=files_factory))
+                                           files_factory=files_factory,
+                                           deadline=deadline))
         except Exception as exc:
             failures.append((chat_id, exc))
             level = "NA-MOTABAR" if _is_permanent_chat_error(exc) else "KHATA"
@@ -145,22 +152,32 @@ def _fanout(method, cfg, chat_ids, payload_for, files_factory=None):
     if results:
         return results
     detail = "; ".join(f"{cid}: {exc}" for cid, exc in failures) or "no chat_ids configured"
+    if failures and all(isinstance(exc, TimeoutError) for _cid, exc in failures):
+        raise TimeoutError(f"Telegram delivery timed out for all chats: {detail}")
     raise RuntimeError(f"Telegram delivery failed for all chats: {detail}")
 
 
-def send_message(text, parse_mode="HTML", extra_chat_ids=None):
+def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None):
+    """Payam mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
+    TimeoutError partab mishavad (baraye jaha ke robot nabayad gir konad)."""
     cfg = ensure_config()
+    deadline = (time.monotonic() + timeout) if timeout else None
     return _fanout("sendMessage", cfg, _target_chat_ids(cfg, extra_chat_ids),
                    lambda chat_id: {"chat_id": chat_id, "text": text,
-                                    "parse_mode": parse_mode})
+                                    "parse_mode": parse_mode},
+                   deadline=deadline)
 
 
-def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None):
+def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None, timeout=None):
+    """Aks mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
+    TimeoutError partab mishavad (aks az ghabl mahali zakhire shode)."""
     cfg = ensure_config()
+    deadline = (time.monotonic() + timeout) if timeout else None
     return _fanout("sendPhoto", cfg, _target_chat_ids(cfg, extra_chat_ids),
                    lambda chat_id: {"chat_id": chat_id, "caption": caption,
                                     "parse_mode": parse_mode},
-                   files_factory=lambda: {"photo": open(photo_path, "rb")})
+                   files_factory=lambda: {"photo": open(photo_path, "rb")},
+                   deadline=deadline)
 
 
 def rand5():
