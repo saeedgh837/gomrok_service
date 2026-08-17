@@ -52,6 +52,7 @@ SECRET_PATTERNS = [
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
     "run_panel.bat", "FIRST_RUN.txt", "README.md", "VERSION",
+    "profile_inquiry.py",
     "telegram_config.example.json",
     "solver/onnx_solve.py", "solver/live_solve.py", "solver/preprocess.py",
     "solver/checkpoints/best_real_v2.onnx",
@@ -145,6 +146,16 @@ def check_safety(dist: Path) -> None:
 def check_completeness(dist: Path) -> None:
     missing = [r for r in REQUIRED if not (dist / r).exists()]
     check("every required file is present", not missing, str(missing))
+
+    # Root-cause guard, not another hand-maintained name: panel.py spawns robots
+    # as subprocesses, so ANY script it names must be inside the bundle. This is
+    # what caught profile_inquiry.py being absent while panel.py called it.
+    panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
+    spawned = set(re.findall(r'HERE,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
+    spawned |= set(re.findall(r'\(\s*"([A-Za-z0-9_]+\.py)"\s*,\s*\[', panel_src))
+    absent = sorted(s for s in spawned if not (dist / s).exists())
+    check(f"every script panel.py spawns is bundled ({len(spawned)} found)",
+          not absent, str(absent))
     check("no torch inside the bundle",
           not list((dist / "python" / "Lib" / "site-packages").glob("torch*")))
     check("no .pt checkpoint shipped (ONNX only)",
@@ -182,6 +193,14 @@ def check_function(dist: Path) -> None:
         "hr = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
         "assert set(hr) == {'number','text','confidence','snap_distance'}, hr\n"
         "assert 'torch' not in sys.modules, 'torch leaked via hamta'\n"
+        # profile_inquiry.py is spawned by the panel's inquiry button; import it
+        # and drive its store-building helper so a missing dependency inside the
+        # bundle surfaces here rather than as a dead button on the user's machine.
+        "import profile_inquiry as pi\n"
+        "st = pi._store({'id':'p1','title':'t','imeis':['352506099000001'],"
+        "'national':'1','birth':'2','mobile':'3'})\n"
+        "assert len(st['devices']) == 1 and st['devices'][0]['serial1'], st\n"
+        "assert st['person']['national'] == '1', st\n"
         "print('OK', len(mods), r, type(hs).__name__)\n"
     )
     res = subprocess.run([str(python), "-c", probe], cwd=str(dist),

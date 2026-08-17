@@ -3,6 +3,30 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-08-17
+
+Ships the per-profile device inquiries in the packaged release.
+
+### Added
+
+- **Per-profile device inquiry.** A profile's saved IMEIs can be checked against
+  HAMTA, customs, or both from the profile's own *استعلامات* tab; results, status
+  and errors are stored on the profile (`POST /profile-device-inquiry`, executed
+  by `profile_inquiry.py` as a tracked subprocess).
+- **Read-only profile overview.** Selecting a profile shows its data without
+  editable inputs; editing is an explicit action.
+
+### Fixed
+
+- **`profile_inquiry.py` was missing from the bundle.** `panel.py` spawns it for
+  every inquiry, but it was absent from the packaged file list, so the inquiry
+  button would have failed on a user's machine. It now ships, and the verifier
+  parses `panel.py` for every script it spawns and fails when any of them is not
+  in the bundle — the same class of bug as the v1.0.1 hamta solver, now caught
+  structurally rather than by name.
+- Inquiry robots honour `IRICA_ESTELAM_STORE`, so a per-profile run uses its own
+  temporary store instead of the shared `estelam_store.json`.
+
 ## [1.0.1] - 2026-08-17
 
 Fixes the hamta inquiry captcha in the packaged release.

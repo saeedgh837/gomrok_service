@@ -59,6 +59,7 @@ RUNTIME_REQS = [
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
     "estelam_all.py", "estelam_gomrok.py", "estelam_hamta.py", "exitban.py",
+    "profile_inquiry.py",
     "captcha_collector.py", "telegram_notify.py",
     "browser_window.py", "browser_visibility.py",
     "cloudflare_auth_relay.py", "cloudflare_http_proxy.py",
@@ -290,6 +291,11 @@ def smoke(stage: Path) -> None:
         "hres = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
         "assert set(hres) == {'number','text','confidence','snap_distance'}, hres\n"
         "assert 'torch' not in sys.modules, 'torch leaked via the hamta solver'\n"
+        # profile_inquiry.py is spawned by the panel's inquiry button.
+        "import profile_inquiry as pi\n"
+        "st = pi._store({'id':'p1','title':'t','imeis':['352506099000001'],"
+        "'national':'1','birth':'2','mobile':'3'})\n"
+        "assert len(st['devices']) == 1, st\n"
         "print('SMOKE_OK', out, type(hs).__name__)\n"
     )
     env = {k: v for k, v in os.environ.items()
