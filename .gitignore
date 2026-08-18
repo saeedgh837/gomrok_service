@@ -19,6 +19,7 @@ relay_config.json
 secrets/
 # runtime health snapshot
 telegram_health.json
+system_debug.json
 
 # ---- runtime / state (mahalli, ghabel-e sakht-e dobare) ----
 profiles.json
@@ -31,9 +32,8 @@ estelam_logs.jsonl
 hamta_logs.jsonl
 site2_notif.json
 exitban_errors.jsonl
-*_worker.log
-*_stdout.log
 *.log
+logs/system/
 cloudflare_public_url.txt
 
 # ---- debug / movaqat (bayad tamiz bemanad) ----

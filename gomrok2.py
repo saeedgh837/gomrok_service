@@ -21,6 +21,7 @@ import threading
 import time
 
 import captcha_collector as cc
+import system_debug
 
 URL = "https://epl.irica.ir/login?2"
 
@@ -1332,6 +1333,7 @@ def run_after_continue(driver, handoff, debug=False):
 def main(argv=None):
     global _CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID
     ensure_utf8_stdio()
+    system_debug.configure("gomrok-site2")
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-id")
     parser.add_argument("--url", default=URL)

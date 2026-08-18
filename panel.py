@@ -40,6 +40,8 @@ SITE2_NOTIF_PATH = os.path.join(HERE, "site2_notif.json")
 TELEGRAM_PATH = os.path.join(HERE, "telegram_config.json")
 TELEGRAM_HEALTH_PATH = os.path.join(HERE, "telegram_health.json")
 EXITBAN_ERRORS_PATH = os.path.join(HERE, "exitban_errors.jsonl")
+SYSTEM_LOG_DIR = os.path.join(HERE, "logs", "system")
+SYSTEM_DEBUG_CONFIG_PATH = os.path.join(HERE, "system_debug.json")
 HOST, PORT = "127.0.0.1", 8750
 _STORE_LOCK = threading.RLock()
 _STORE_LOCK_PATH = PROFILES_PATH + ".lock"
@@ -477,14 +479,15 @@ def claim_profile(profile_id=None):
     return None
 
 
+def _robot_command(python_executable, script, *args):
+    return [python_executable, os.path.join(HERE, "robot_launcher.py"),
+            os.path.join(HERE, script)] + [str(arg) for arg in args]
+
+
 def start_profile_process(profile_id):
     python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = [python_executable, os.path.join(HERE, "gomrok.py"), "--profile-id", str(profile_id)]
-    child_env = os.environ.copy()
-    child_env.pop("PYTHONPATH", None)
-    child_env.pop("VIRTUAL_ENV", None)
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    child_env["PYTHONUTF8"] = "1"
+    command = _robot_command(python_executable, "gomrok.py", "--profile-id", profile_id)
+    child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -496,12 +499,8 @@ def start_profile_process(profile_id):
 
 def start_profile2_process(profile_id):
     python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = [python_executable, os.path.join(HERE, "gomrok2.py"), "--profile-id", str(profile_id)]
-    child_env = os.environ.copy()
-    child_env.pop("PYTHONPATH", None)
-    child_env.pop("VIRTUAL_ENV", None)
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    child_env["PYTHONUTF8"] = "1"
+    command = _robot_command(python_executable, "gomrok2.py", "--profile-id", profile_id)
+    child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -513,12 +512,8 @@ def start_profile2_process(profile_id):
 
 def start_site2_manual_process():
     python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = [python_executable, os.path.join(HERE, "gomrok2.py"), "--no-panel"]
-    child_env = os.environ.copy()
-    child_env.pop("PYTHONPATH", None)
-    child_env.pop("VIRTUAL_ENV", None)
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    child_env["PYTHONUTF8"] = "1"
+    command = _robot_command(python_executable, "gomrok2.py", "--no-panel")
+    child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -604,14 +599,10 @@ def start_profile_device_inquiry(profile_id, service):
         if old_pid and _pid_alive(old_pid):
             return 409, {"error": "یک استعلام برای این پروفایل در حال اجرا است"}
 
-    command = [ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable,
-               os.path.join(HERE, "profile_inquiry.py"), "--profile-id", profile_id,
-               "--service", service]
-    child_env = os.environ.copy()
-    child_env.pop("PYTHONPATH", None)
-    child_env.pop("VIRTUAL_ENV", None)
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    child_env["PYTHONUTF8"] = "1"
+    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
+    command = _robot_command(python_executable, "profile_inquiry.py",
+                             "--profile-id", profile_id, "--service", service)
+    child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env,
@@ -635,11 +626,11 @@ def start_profile_device_inquiry(profile_id, service):
 
 def start_exitban_process(profile_id):
     log_path = os.path.join(HERE, "exitban_worker.log")
-    command = [sys.executable, os.path.join(HERE, "exitban.py"),
-               "--profile-id", str(profile_id), "--submit"]
+    command = _robot_command(sys.executable, "exitban.py",
+                             "--profile-id", profile_id, "--submit")
     log_file = open(log_path, "a", encoding="utf-8")
     try:
-        process = subprocess.Popen(command, cwd=HERE, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=HERE, env=_robot_child_env(), stdin=subprocess.DEVNULL,
                                    stdout=log_file, stderr=log_file)
     finally:
         log_file.close()
@@ -813,6 +804,68 @@ def record_profile_output(profile_id, runner_id="", receipt="", payment="", link
             save_store(store)
             return True
     return False
+
+
+def load_system_debug_config():
+    try:
+        with open(SYSTEM_DEBUG_CONFIG_PATH, encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except (OSError, ValueError):
+        data = {}
+    return {"enabled": bool(data.get("enabled"))}
+
+
+def save_system_debug_config(data):
+    clean = {"enabled": bool((data or {}).get("enabled"))}
+    os.makedirs(os.path.dirname(SYSTEM_DEBUG_CONFIG_PATH), exist_ok=True)
+    with open(SYSTEM_DEBUG_CONFIG_PATH, "w", encoding="utf-8") as handle:
+        json.dump(clean, handle, ensure_ascii=False, indent=2)
+    return clean
+
+
+def list_system_logs():
+    os.makedirs(SYSTEM_LOG_DIR, exist_ok=True)
+    logs = []
+    for name in os.listdir(SYSTEM_LOG_DIR):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.log", name):
+            continue
+        path = os.path.join(SYSTEM_LOG_DIR, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        logs.append({"name": name, "size": stat.st_size,
+                     "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))})
+    logs.sort(key=lambda item: item["modified"], reverse=True)
+    return logs[:200]
+
+
+def read_system_log(name, max_bytes=512000):
+    name = str(name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.log", name):
+        raise ValueError("invalid log name")
+    root = os.path.realpath(SYSTEM_LOG_DIR)
+    path = os.path.realpath(os.path.join(root, name))
+    if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+        raise FileNotFoundError(name)
+    with open(path, "rb") as handle:
+        size = os.path.getsize(path)
+        if size > max_bytes:
+            handle.seek(size - max_bytes)
+            handle.readline()
+        raw = handle.read(max_bytes)
+    return raw.decode("utf-8", errors="replace")
+
+
+def _robot_child_env():
+    child_env = os.environ.copy()
+    child_env.pop("PYTHONPATH", None)
+    child_env.pop("VIRTUAL_ENV", None)
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+    child_env["IRICA_SYSTEM_DEBUG"] = "1" if load_system_debug_config()["enabled"] else "0"
+    child_env["IRICA_SYSTEM_LOG_DIR"] = SYSTEM_LOG_DIR
+    return child_env
 
 
 def load_telegram_config():
@@ -1208,14 +1261,10 @@ ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه 
 def start_estelam_process(device_id=None, service="gomrok"):
     python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
     script, base_args = ESTELAM_SERVICES.get(service, ESTELAM_SERVICES["gomrok"])
-    command = [python_executable, os.path.join(HERE, script)] +list(base_args)
+    command = _robot_command(python_executable, script, *base_args)
     if device_id:
         command += ["--device-id", str(device_id)]
-    child_env = os.environ.copy()
-    child_env.pop("PYTHONPATH", None)
-    child_env.pop("VIRTUAL_ENV", None)
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    child_env["PYTHONUTF8"] = "1"
+    child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env,
@@ -1652,6 +1701,15 @@ PAGE_HEAD = """<!DOCTYPE html>
   .exitban-result-time { margin-top:8px; font-size:11px; opacity:.75; direction:ltr; text-align:right; }
   .settings-section,.inquiry-card { background:var(--card2);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0; }
   .settings-section h3,.inquiry-card h3 { margin:0 0 8px; }
+  .system-debug-card { display:grid; gap:12px; }
+  .system-debug-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .system-debug-help { color:var(--muted); font-size:11.5px; line-height:1.8; }
+  .system-log-list { display:grid; gap:7px; max-height:260px; overflow:auto; }
+  .system-log-item { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--input); }
+  .system-log-name { direction:ltr; text-align:left; font:700 11px Consolas,monospace; flex:1; overflow:hidden; text-overflow:ellipsis; }
+  .system-log-meta { color:var(--muted); font-size:10px; white-space:nowrap; direction:ltr; }
+  .system-log-open { border:1px solid var(--brand); color:var(--brand); background:transparent; border-radius:7px; padding:5px 9px; cursor:pointer; font:700 11px inherit; }
+  .system-log-viewer { min-height:230px; max-height:440px; overflow:auto; white-space:pre-wrap; word-break:break-word; direction:ltr; text-align:left; padding:12px; border:1px solid var(--line); border-radius:8px; background:#080b12; color:#d9e2f2; font:11px/1.65 Consolas,monospace; }
   .inquiry-picker { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin:14px 0; }
   .inquiry-picker button { min-height:42px; border:1px solid var(--line); background:var(--input); color:var(--txt); border-radius:9px; cursor:pointer; font:700 12px inherit; }
   .inquiry-picker button.active { background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; border-color:transparent; }
@@ -2501,16 +2559,37 @@ function refreshApiHealth(run){
     .catch(function(){showApiHealth({ok:false,message:'ارتباط پنل با تست API برقرار نشد.'});});
 }
 
+var SYSTEM_DEBUG={enabled:false};
+var SYSTEM_LOGS=[];
+function renderSystemLogs(){
+  var list=document.getElementById('system-log-list'); if(!list)return;
+  if(!SYSTEM_LOGS.length){list.innerHTML='<div class="hint">هنوز لاگ سیستمی ساخته نشده است.</div>';return;}
+  list.innerHTML=SYSTEM_LOGS.map(function(item){return '<div class="system-log-item"><span class="system-log-name">'+escHtml(item.name)+'</span><span class="system-log-meta">'+escHtml(item.modified)+'</span><button type="button" class="system-log-open" onclick="openSystemLog(\''+escHtml(item.name)+'\')">مشاهده</button></div>';}).join('');
+}
+function loadSystemLogs(){
+  fetch('/system-logs',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){SYSTEM_LOGS=data.logs||[];renderSystemLogs();}).catch(function(){});
+}
+function openSystemLog(name){
+  fetch('/system-log?name='+encodeURIComponent(name),{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){
+    var viewer=document.getElementById('system-log-viewer'); if(viewer)viewer.textContent=data.content||data.error||'لاگ خالی است';
+  }).catch(function(){var viewer=document.getElementById('system-log-viewer');if(viewer)viewer.textContent='خطا در خواندن لاگ';});
+}
+function toggleSystemDebug(enabled){
+  fetch('/system-debug-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})}).then(function(r){return r.json();}).then(function(data){SYSTEM_DEBUG=data;renderTelegram();});
+}
 function renderTelegram(){
   var tokenState = TELEGRAM.token_set
     ? '<span class="token-badge ok">🔒 توکن ذخیره شده و محافظت‌شده است</span>'
     : '<span class="token-badge warn">⚠ توکنی ثبت نشده است</span>';
   document.getElementById('view-telegram').innerHTML='<div class="settings-section"><h3>تنظیمات کلی</h3><p class="hint">تنظیمات عمومی پنل و ربات در این بخش قرار می‌گیرد.</p></div>'+
+    '<div class="settings-section system-debug-card"><div class="system-debug-row"><div><h3>Debug log سیستمی</h3><div class="system-debug-help">با فعال‌سازی، هر اجرای ربات یک فایل مستقل و تاریخ‌دار در پوشه logs/system پروژه می‌سازد.</div></div><label class="toggle"><input id="system-debug-toggle" type="checkbox" '+(SYSTEM_DEBUG.enabled?'checked':'')+' onchange="toggleSystemDebug(this.checked)"><span class="track"></span></label></div><div class="system-debug-row"><strong>لاگ‌های موجود</strong><button type="button" class="system-log-open" onclick="loadSystemLogs()">به‌روزرسانی فهرست</button></div><div id="system-log-list" class="system-log-list"></div><pre id="system-log-viewer" class="system-log-viewer">یک فایل لاگ را برای مشاهده انتخاب کنید.</pre></div>'+
     '<label>API Base</label><input id="tg_api" type="text" class="ltr" value="'+escHtml(TELEGRAM.api_base||'https://api.telegram.org')+'">'+
     '<label>توکن ربات</label>'+tokenState+
     '<input id="tg_token" type="password" class="ltr" autocomplete="off" placeholder="'+(TELEGRAM.token_set?'برای تغییر، توکن جدید را وارد کنید (خالی = بدون تغییر)':'توکن ربات را وارد کنید')+'">'+
     '<label>Chat IDها (هر کدام یک خط)</label><textarea id="tg_ids" class="ltr">'+escHtml((TELEGRAM.chat_ids||[]).join('\n'))+'</textarea>'+
     '<button class="save" onclick="saveTelegram()">💾 ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>';
+  renderSystemLogs();
+  loadSystemLogs();
 }
 
 function saveTelegram(){
@@ -2531,7 +2610,9 @@ function showView(v){
   document.getElementById('tab-logs').classList.toggle('active',v==='logs');
   document.getElementById('tab-telegram').classList.toggle('active',v==='telegram');
   if(v==='logs') renderLogs();
-  if(v==='telegram') renderTelegram();
+  if(v==='telegram'){
+    fetch('/system-debug-config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){SYSTEM_DEBUG=data;renderTelegram();}).catch(function(){renderTelegram();});
+  }
 }
 
 // init
@@ -3595,6 +3676,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(test_telegram_api(attempts=2))
             else:
                 self._json(load_telegram_health())
+        elif route == "/system-debug-config":
+            self._json(load_system_debug_config())
+        elif route == "/system-logs":
+            self._json({"logs": list_system_logs()})
+        elif route == "/system-log":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            name = (query.get("name") or [""])[0]
+            try:
+                self._json({"name": name, "content": read_system_log(name)})
+            except ValueError:
+                self._json({"error": "نام فایل لاگ نامعتبر است"}, 400)
+            except FileNotFoundError:
+                self._json({"error": "فایل لاگ پیدا نشد"}, 404)
         elif route == "/artifact":
             from urllib.parse import parse_qs, urlsplit
             q = parse_qs(urlsplit(self.path).query)
@@ -3765,6 +3860,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/clear-logs":
             clear_logs()
             self._json({"ok": True})
+
+        elif self.path == "/system-debug-config":
+            self._json(save_system_debug_config(self._read_json()))
 
         elif self.path == "/telegram-config":
             self._json(save_telegram_config(self._read_json()))

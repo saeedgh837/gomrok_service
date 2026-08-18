@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import system_debug
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SOLVER_DIR = os.path.join(_HERE, "Hamta-solver")
@@ -681,6 +682,7 @@ def run_from_store(device_id=None, telegram=True):
 
 
 def main():
+    system_debug.configure("inquiry-hamta")
     ap = argparse.ArgumentParser(description="Estelam-e asalat-e dastgah az HAMTA")
     ap.add_argument("--serial", help="serial/IMEI-e 15-raghmi (halat-e tak-estelam)")
     ap.add_argument("--from-store", action="store_true",

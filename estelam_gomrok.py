@@ -28,6 +28,7 @@ import time
 
 import captcha_collector as cc
 import gomrok as G
+import system_debug
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -460,6 +461,7 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
 
 
 def main():
+    system_debug.configure("inquiry-customs")
     ap = argparse.ArgumentParser(description="Estelam-e salamat-e dastgah (safhe-ye 1-e gomrok)")
     ap.add_argument("--device-id", help="faghat hamin device ra estelam begir")
     ap.add_argument("--ckpt", default=G._DEFAULT_CKPT)

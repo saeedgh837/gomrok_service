@@ -36,6 +36,7 @@ FORBIDDEN_NAMES = {
     "profiles.json.lock", "inputs.json", "estelam_store.json",
     "logs.jsonl", "estelam_logs.jsonl", "hamta_logs.jsonl",
     "site2_notif.json", "exitban_errors.jsonl", "cloudflare_public_url.txt",
+    "system_debug.json",
 }
 FORBIDDEN_GLOBS = ["*.log", "*.pt", "secrets/*", "*-chrome-profile/*",
                    "_dbg_last.*", "_after_submit.*"]
@@ -52,7 +53,7 @@ SECRET_PATTERNS = [
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
     "run_panel.bat", "FIRST_RUN.txt", "README.md", "VERSION",
-    "profile_inquiry.py",
+    "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "telegram_config.example.json",
     "solver/onnx_solve.py", "solver/live_solve.py", "solver/preprocess.py",
     "solver/checkpoints/best_real_v2.onnx",
@@ -153,6 +154,7 @@ def check_completeness(dist: Path) -> None:
     panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
     spawned = set(re.findall(r'HERE,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
     spawned |= set(re.findall(r'\(\s*"([A-Za-z0-9_]+\.py)"\s*,\s*\[', panel_src))
+    spawned |= set(re.findall(r'_robot_command\([^,]+,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
     absent = sorted(s for s in spawned if not (dist / s).exists())
     check(f"every script panel.py spawns is bundled ({len(spawned)} found)",
           not absent, str(absent))

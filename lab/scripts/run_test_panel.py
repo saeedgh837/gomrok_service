@@ -32,6 +32,8 @@ panel.LOGS_PATH = os.path.join(TMP, "logs.jsonl")
 panel.TELEGRAM_PATH = os.path.join(TMP, "telegram_config.json")
 panel.TELEGRAM_HEALTH_PATH = os.path.join(TMP, "telegram_health.json")
 panel.EXITBAN_ERRORS_PATH = os.path.join(TMP, "exitban_errors.jsonl")
+panel.SYSTEM_DEBUG_CONFIG_PATH = os.path.join(TMP, "system_debug.json")
+panel.SYSTEM_LOG_DIR = os.path.join(TMP, "logs", "system")
 panel.ESTELAM_STORE_PATH = getattr(panel, "ESTELAM_STORE_PATH",
                                    os.path.join(TMP, "estelam_store.json"))
 panel._LAST_GOOD_STORE.clear()

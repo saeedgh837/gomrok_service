@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import system_debug
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -69,6 +70,7 @@ def _record(profile_id, service, data, error=""):
 
 
 def main():
+    system_debug.configure("profile-inquiry")
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-id", required=True)
     parser.add_argument("--service", choices=("hamta", "gomrok", "all"), required=True)

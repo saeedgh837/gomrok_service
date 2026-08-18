@@ -30,6 +30,7 @@ from collections import deque
 
 import captcha_collector as cc
 import browser_visibility as bvis
+import system_debug
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -59,6 +60,7 @@ def ensure_utf8_stdio():
 
 
 ensure_utf8_stdio()
+system_debug.configure("gomrok-profile")
 
 # --- bazgasht be safhe-ye 1 dar HAMUN morurgar (dokme-ye 'پایان' marhale-4) ---
 class Page1Restart(Exception):

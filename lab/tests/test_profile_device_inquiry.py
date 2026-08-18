@@ -44,7 +44,8 @@ class ProfileDeviceInquiryTests(unittest.TestCase):
                 status, payload = panel.start_profile_device_inquiry("p1", "all")
                 self.assertEqual(status, 200)
                 command = popen.call_args.args[0]
-                self.assertIn("profile_inquiry.py", command[1])
+                self.assertIn("robot_launcher.py", command[1])
+                self.assertIn("profile_inquiry.py", command[2])
                 self.assertEqual(command[-4:], ["--profile-id", "p1", "--service", "all"])
                 profile = panel.load_store()["profiles"][0]
                 self.assertEqual(profile["gomrok_inquiry_status"], "running")
