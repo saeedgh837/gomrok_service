@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] - 2026-08-18
+
+Adds optional per-run system diagnostics for troubleshooting robot startup and
+runtime failures on other Windows machines.
+
+### Added
+
+- Debug log switch and log viewer under General Settings.
+- Timestamped per-run logs under `logs/system/` when enabled.
+- Common launcher that captures pre-import failures, environment, arguments,
+  stdout/stderr and tracebacks.
+- Safe system-log listing and bounded file-reading endpoints.
+
 ## [1.0.2] - 2026-08-17
 
 Ships the per-profile device inquiries in the packaged release.
