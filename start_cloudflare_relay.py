@@ -7,7 +7,10 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PYTHON = r"C:\Program Files\Python310\python.exe"
+# The interpreter running this script: the bundled python.exe in a release, the
+# developer's python during development. A hardcoded path breaks the release on
+# any machine without that exact install (see panel._resolve_robot_python).
+PYTHON = sys.executable
 CLOUDFLARED = os.path.join(HERE, ".tools", "cloudflared.exe")
 AUTH_RELAY = os.path.join(HERE, "cloudflare_auth_relay.py")
 HTTP_PROXY_RELAY = os.path.join(HERE, "cloudflare_http_proxy.py")

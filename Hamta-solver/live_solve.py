@@ -41,6 +41,29 @@ DEFAULT_ONNX = os.path.join(_HERE, "checkpoints", "best.onnx")
 _no_grad = torch.no_grad if _HAS_TORCH else (lambda: (lambda f: f))
 
 
+def _module_importable(name: str) -> bool:
+    """True when `name` can be found on sys.path WITHOUT importing it."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _torch_backend_available() -> bool:
+    """True only when the torch backend can actually be constructed.
+
+    torch being importable is NOT sufficient: `HamtaSolver.__init__` needs
+    `model.py` (and `utils.greedy_decode`), and the packaged release deliberately
+    ships neither -- it carries onnxruntime and the .onnx weights instead. On a
+    machine that happens to have torch installed, checking only `import torch`
+    selected a backend whose modules are missing and every inquiry died with
+    `ModuleNotFoundError: No module named 'model'`. Verify the whole backend.
+    """
+    return _HAS_TORCH and _module_importable("model") and _module_importable("utils")
+
+
 class HamtaSolver:
     """Model yek bar load mishavad; read_pil/read_bgr har bar seda zade mishavad."""
 
@@ -98,13 +121,17 @@ class HamtaSolver:
 def load_solver(ckpt: str = None, device: str = "cpu"):
     """Load the HAMTA captcha solver once (weights stay in RAM).
 
-    Backend choice mirrors the gomrok solver: use torch (HamtaSolver) when it is
-    importable — the development/training path, unchanged — and fall back to the
-    torch-free OnnxHamtaSolver when it is not, which is what the packaged release
-    runs. Both backends return the identical dict; parity is proven at build time
-    by lab/scripts/export_hamta_onnx.py.
+    Backend choice mirrors the gomrok solver: use torch (HamtaSolver) when the
+    torch backend is COMPLETE -- the development/training path, unchanged -- and
+    fall back to the torch-free OnnxHamtaSolver otherwise, which is what the
+    packaged release runs. Both backends return the identical dict; parity is
+    proven at build time by lab/scripts/export_hamta_onnx.py.
+
+    The check is `_torch_backend_available()`, not a bare `import torch`: the
+    release ships no model.py, so a stray torch install must not select a
+    backend that cannot load.
     """
-    if _HAS_TORCH:
+    if _torch_backend_available():
         return HamtaSolver(ckpt_path=ckpt, device=device)
     from onnx_solve import OnnxHamtaSolver
     onnx_path = ckpt

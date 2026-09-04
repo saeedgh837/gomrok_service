@@ -83,7 +83,8 @@ def free_port() -> int:
 
 def env_clean() -> dict:
     return {k: v for k, v in os.environ.items()
-            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")}
+            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME",
+                         "IRICA_ROBOT_PYTHON")}
 
 
 # --------------------------------------------------------------------------- #
@@ -169,15 +170,33 @@ def check_completeness(dist: Path) -> None:
 
 def check_function(dist: Path) -> None:
     python = dist / "python" / "python.exe"
+    probe_path = dist / "_tmp_release_probe.py"
+    # Run THROUGH robot_launcher.py with a script argument -- the exact shape the
+    # panel uses to spawn a robot. The old gate used `python -c` plus a manual
+    # `sys.path.insert(0, '.')`, which handed the probe the one thing the real
+    # spawn path lacks, and so passed while every inquiry died in the field.
     probe = (
-        "import sys, importlib\n"
-        "sys.path.insert(0, '.'); sys.path.insert(0, 'solver')\n"
-        "mods = ('panel','gomrok','gomrok2','estelam_gomrok','estelam_hamta',"
-        "'exitban','telegram_notify','browser_window','browser_visibility',"
-        "'selenium','cv2','numpy','PIL','onnxruntime','requests')\n"
+        "import sys\n"
+        "import importlib\n"
+        "mods = ('panel','gomrok','gomrok2','estelam_gomrok','estelam_hamta',\n"
+        "        'estelam_all','profile_inquiry','robot_launcher','system_debug',\n"
+        "        'exitban','telegram_notify','browser_window','browser_visibility',\n"
+        "        'selenium','cv2','numpy','PIL','onnxruntime','requests')\n"
         "for m in mods: importlib.import_module(m)\n"
         "assert 'torch' not in sys.modules\n"
         "import numpy as np\n"
+        # The interpreter the panel hands to a robot must be the bundled one.
+        # A hardcoded foreign interpreter is what broke v1.0.3: it had torch, and
+        # the solvers then chose a torch backend this bundle does not ship.
+        "import panel\n"
+        "assert panel.ROBOT_PYTHON == sys.executable, panel.ROBOT_PYTHON\n"
+        "assert 'Program Files' not in panel.ROBOT_PYTHON or sys.executable == panel.ROBOT_PYTHON\n"
+        "cmd = panel._robot_command(panel.ROBOT_PYTHON, 'estelam_hamta.py', '--from-store')\n"
+        "assert cmd[0] == sys.executable and 'robot_launcher.py' in cmd[1], cmd\n"
+        # Robots that spawn robots must go through the launcher too.
+        "import estelam_all, profile_inquiry\n"
+        "assert 'robot_launcher.py' in estelam_all._LAUNCHER\n"
+        "assert 'robot_launcher.py' in profile_inquiry.LAUNCHER\n"
         # gomrok solver, through its own entry point (gomrok binds load_solver
         # from the solver/ package at import). A bare `from onnx_solve import`
         # would be ambiguous: importing estelam_hamta puts Hamta-solver on the
@@ -205,12 +224,17 @@ def check_function(dist: Path) -> None:
         "assert st['person']['national'] == '1', st\n"
         "print('OK', len(mods), r, type(hs).__name__)\n"
     )
-    res = subprocess.run([str(python), "-c", probe], cwd=str(dist),
-                         capture_output=True, text=True, timeout=300, env=env_clean())
+    probe_path.write_text(probe, encoding="utf-8")
+    try:
+        res = subprocess.run([str(python), str(dist / "robot_launcher.py"), str(probe_path)],
+                             cwd=str(dist), capture_output=True, text=True,
+                             timeout=300, env=env_clean())
+    finally:
+        probe_path.unlink(missing_ok=True)
     ok = res.stdout.strip().splitlines()[-1:] and \
         res.stdout.strip().splitlines()[-1].startswith("OK")
-    check("bundled python imports every module and reads a captcha", ok,
-          res.stdout.strip() or res.stderr.strip()[-160:])
+    check("robots launch under the bundled python and read a captcha", ok,
+          res.stdout.strip()[-200:] or res.stderr.strip()[-200:])
 
     # Serve the panel from a temp CWD so the real profiles.json is never touched.
     port = free_port()

@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_LAUNCHER = os.path.join(_HERE, "robot_launcher.py")
 
 
 def _child_env():
@@ -25,8 +26,11 @@ def _child_env():
 
 
 def _run(script, extra):
-    cmd = [sys.executable, os.path.join(_HERE, script)] + extra
-    print(f"\n=== ejra: {' '.join(cmd[1:])} ===", flush=True)
+    # Through robot_launcher.py, exactly like the panel's own spawns: it repairs
+    # sys.path for the isolated embedded interpreter and captures a startup
+    # traceback into the system debug log.
+    cmd = [sys.executable, _LAUNCHER, os.path.join(_HERE, script)] + extra
+    print(f"\n=== ejra: {' '.join(cmd[2:])} ===", flush=True)
     try:
         return subprocess.call(cmd, cwd=_HERE, env=_child_env(),
                                stdin=subprocess.DEVNULL)

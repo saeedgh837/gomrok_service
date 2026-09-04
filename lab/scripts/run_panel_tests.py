@@ -23,6 +23,7 @@ DEFAULT = [
     "test_page_probe_and_telegram_timeout", "test_already_registered_profile",
     "test_telegram_delivery", "test_telegram_chain",
     "test_profile_device_inquiry", "test_profile_readonly_view", "test_system_debug_logs",
+    "test_robot_interpreter",
 ]
 
 names = sys.argv[1:] or DEFAULT

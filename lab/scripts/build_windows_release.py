@@ -261,19 +261,35 @@ def prune(stage: Path) -> None:
 def smoke(stage: Path) -> None:
     """Prove the bundled runtime imports the app and still reads a captcha.
 
-    Runs with the SHIPPED python.exe against the SHIPPED files, so a pruned-away
-    dependency or a torch assumption surfaces here, not on the user's machine.
+    Runs with the SHIPPED python.exe against the SHIPPED files, THROUGH
+    `robot_launcher.py` with a script argument -- exactly how the panel spawns a
+    robot. This shape matters: the previous gate used `python -c` with a manual
+    `sys.path.insert(0, '.')`, which silently supplied the one thing the real
+    spawn path lacks. Two v1.0.3 field failures hid behind that difference:
+
+    * the embedded interpreter is ISOLATED, so a script argument does NOT put the
+      project directory on `sys.path` and every project import failed;
+    * the panel spawned robots with a hardcoded foreign interpreter, whose torch
+      install made the solvers pick a backend this bundle does not ship.
     """
     python = stage / "python" / "python.exe"
+    probe_path = stage / "_tmp_release_smoke.py"
     probe = (
-        "import sys, importlib\n"
-        "sys.path.insert(0, '.')\n"
-        "sys.path.insert(0, r'solver')\n"
-        "for m in ('panel','gomrok','telegram_notify','selenium','cv2','numpy',"
-        "'PIL','onnxruntime','requests'):\n"
+        # No sys.path bootstrap here on purpose: robot_launcher.py must provide
+        # it, exactly as it does for a real robot.
+        "import sys\n"
+        "import importlib\n"
+        "for m in ('panel','gomrok','gomrok2','telegram_notify','selenium','cv2',\n"
+        "          'numpy','PIL','onnxruntime','requests','exitban',\n"
+        "          'browser_window','browser_visibility','estelam_all'):\n"
         "    importlib.import_module(m)\n"
         "assert 'torch' not in sys.modules, 'torch leaked into the bundle'\n"
         "import numpy as np\n"
+        # The interpreter the panel would hand a robot must be THIS bundle's
+        # python, never a foreign install that may carry torch.
+        "import panel\n"
+        "assert panel.ROBOT_PYTHON == sys.executable, panel.ROBOT_PYTHON\n"
+        "assert 'robot_launcher.py' in panel._robot_command(panel.ROBOT_PYTHON, 'gomrok.py')[1]\n"
         # Resolved through gomrok's own entry point rather than a bare
         # `from onnx_solve import ...`: importing estelam_hamta below puts
         # Hamta-solver on sys.path, and BOTH packages expose onnx_solve.
@@ -291,17 +307,24 @@ def smoke(stage: Path) -> None:
         "hres = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
         "assert set(hres) == {'number','text','confidence','snap_distance'}, hres\n"
         "assert 'torch' not in sys.modules, 'torch leaked via the hamta solver'\n"
-        # profile_inquiry.py is spawned by the panel's inquiry button.
+        # profile_inquiry.py is spawned by the panel's inquiry button, and it
+        # spawns robots of its own -- through the launcher, like the panel does.
         "import profile_inquiry as pi\n"
+        "assert 'robot_launcher.py' in pi.LAUNCHER, pi.LAUNCHER\n"
         "st = pi._store({'id':'p1','title':'t','imeis':['352506099000001'],"
         "'national':'1','birth':'2','mobile':'3'})\n"
         "assert len(st['devices']) == 1, st\n"
         "print('SMOKE_OK', out, type(hs).__name__)\n"
     )
+    probe_path.write_text(probe, encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")}
-    res = subprocess.run([str(python), "-c", probe], cwd=str(stage),
-                         capture_output=True, text=True, timeout=300, env=env)
+           if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME", "IRICA_ROBOT_PYTHON")}
+    try:
+        res = subprocess.run([str(python), str(stage / "robot_launcher.py"), str(probe_path)],
+                             cwd=str(stage), capture_output=True, text=True,
+                             timeout=300, env=env)
+    finally:
+        probe_path.unlink(missing_ok=True)
     if "SMOKE_OK" not in res.stdout:
         raise SystemExit("bundle smoke test FAILED after prune:\n"
                          f"{res.stdout[-1500:]}\n{res.stderr[-1500:]}")

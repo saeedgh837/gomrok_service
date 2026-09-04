@@ -8,6 +8,7 @@ import tempfile
 import system_debug
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+LAUNCHER = os.path.join(HERE, "robot_launcher.py")
 
 
 def _child_env(store_path):
@@ -21,7 +22,10 @@ def _child_env(store_path):
 
 
 def _run(script, args, store_path):
-    command = [sys.executable, os.path.join(HERE, script)] + args
+    # Through robot_launcher.py, exactly like the panel's own spawns: it repairs
+    # sys.path for the isolated embedded interpreter and captures a startup
+    # traceback into the system debug log.
+    command = [sys.executable, LAUNCHER, os.path.join(HERE, script)] + args
     return subprocess.call(command, cwd=HERE, env=_child_env(store_path),
                            stdin=subprocess.DEVNULL)
 

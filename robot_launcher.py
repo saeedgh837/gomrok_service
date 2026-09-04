@@ -1,10 +1,22 @@
-"""Launch a robot script with optional diagnostics enabled before imports."""
+"""Launch a robot script with optional diagnostics enabled before imports.
+
+The packaged release runs on an embedded CPython whose `python*._pth` makes the
+interpreter ISOLATED: `PYTHONPATH` is ignored and -- unlike a normal install --
+the script's own directory is NOT prepended to `sys.path`. Every project import
+(`system_debug`, `panel`, `captcha_collector`, the solver packages) would fail
+with ModuleNotFoundError. So repair `sys.path` here, before the first project
+import, for both this launcher and the robot it runs.
+"""
 import os
 import runpy
 import sys
 import traceback
 
-import system_debug
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import system_debug  # noqa: E402  (needs the bootstrap above)
 
 
 def main():

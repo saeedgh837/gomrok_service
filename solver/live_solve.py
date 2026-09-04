@@ -33,6 +33,33 @@ from pathlib import Path
 _DEFAULT_CKPT = "checkpoints/best_real.pt"
 
 
+def _module_importable(name: str) -> bool:
+    """True when `name` can be found on sys.path WITHOUT importing it."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _torch_backend_available() -> bool:
+    """True only when the torch backend can actually be constructed.
+
+    torch being importable is NOT sufficient: the torch path needs `predict.py`,
+    which the packaged release deliberately does not ship (it carries
+    onnxruntime and the .onnx weights instead). On a machine that happens to
+    have torch installed, checking only `import torch` selected a backend whose
+    modules are missing and every robot died with
+    `ModuleNotFoundError: No module named 'predict'`. Verify the whole backend.
+    """
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        return False
+    return _module_importable("predict")
+
+
 def load_solver(ckpt: str = _DEFAULT_CKPT, device: str = "cpu"):
     """Solver ra yek bar load mikonad (weights-ha dar RAM mimanand).
 
@@ -42,14 +69,13 @@ def load_solver(ckpt: str = _DEFAULT_CKPT, device: str = "cpu"):
         nadarad (~1.1GB sarfe-jui). Khoruji-ye har do EYNAN yeki ast; barabari
         dar zaman-e build ba lab/scripts/export_solver_onnx.py sanjide mishavad.
 
-    Entekhab-e backend: agar torch import shod az an estefade mishavad (raftar-e
-    ghabli dast-nakhorde), vagarna be ONNX fallback mishavad. Masir-e .onnx az
-    hamun ckpt sakhte mishavad (پسوند .pt -> .onnx) ya .onnx-e default.
+    Entekhab-e backend: agar backend-e torch KAMEL bud (torch + predict.py) az an
+    estefade mishavad (raftar-e ghabli dast-nakhorde), vagarna be ONNX fallback
+    mishavad. Faghat `import torch` kafi NIST: release predict.py nadarad, pas yek
+    torch-e nasb-shode-ye bi-rabt nabayad backend-e naghes ra entekhab konad.
+    Masir-e .onnx az hamun ckpt sakhte mishavad (پسوند .pt -> .onnx) ya .onnx-e default.
     """
-    # Import injaست ta bar-e sangin-e torch faghat zaman-e niaz bala biyad.
-    try:
-        import torch  # noqa: F401
-    except Exception:
+    if not _torch_backend_available():
         return _load_onnx_solver(ckpt)
     from predict import IricaSolver
     return IricaSolver(ckpt_path=ckpt, device=device)

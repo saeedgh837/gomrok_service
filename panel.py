@@ -31,7 +31,37 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROBOT_PYTHON = r"C:\Program Files\Python310\python.exe"
+# The packaged release runs on an embedded CPython that is ISOLATED (see
+# python*._pth): PYTHONPATH is ignored and the script's directory is NOT added to
+# sys.path. Top-level imports here are stdlib only, so the panel starts either
+# way, but the lazy project imports further down (`import exitban` in the
+# /exitban-inquiry route) would raise ModuleNotFoundError at request time.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+
+def _resolve_robot_python():
+    """Interpreter that runs the robots.
+
+    Robots MUST run under the interpreter that owns the dependencies shipped
+    next to them. The packaged release ships its own embedded CPython (no torch,
+    ONNX solver) and no torch-only solver modules; a foreign interpreter that
+    happens to have torch installed makes the solver packages pick their torch
+    backend and die with ModuleNotFoundError before the browser even opens --
+    the v1.0.3 field failure. `sys.executable` is the panel's own interpreter,
+    which is by construction the right one.
+
+    `IRICA_ROBOT_PYTHON` overrides it for development, and only when it points
+    at a real file, so a stale value can never break the robots.
+    """
+    override = str(os.environ.get("IRICA_ROBOT_PYTHON") or "").strip()
+    if override and os.path.isfile(override):
+        return override
+    return sys.executable
+
+
+ROBOT_PYTHON = _resolve_robot_python()
+
 ROBOT_LOG_PATH = os.path.join(HERE, "gomrok_worker.log")
 INPUTS_PATH = os.path.join(HERE, "inputs.json")
 PROFILES_PATH = os.path.join(HERE, "profiles.json")
@@ -485,8 +515,7 @@ def _robot_command(python_executable, script, *args):
 
 
 def start_profile_process(profile_id):
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = _robot_command(python_executable, "gomrok.py", "--profile-id", profile_id)
+    command = _robot_command(ROBOT_PYTHON, "gomrok.py", "--profile-id", profile_id)
     child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
@@ -498,8 +527,7 @@ def start_profile_process(profile_id):
 
 
 def start_profile2_process(profile_id):
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = _robot_command(python_executable, "gomrok2.py", "--profile-id", profile_id)
+    command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--profile-id", profile_id)
     child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
@@ -511,8 +539,7 @@ def start_profile2_process(profile_id):
 
 
 def start_site2_manual_process():
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = _robot_command(python_executable, "gomrok2.py", "--no-panel")
+    command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--no-panel")
     child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
@@ -599,8 +626,7 @@ def start_profile_device_inquiry(profile_id, service):
         if old_pid and _pid_alive(old_pid):
             return 409, {"error": "یک استعلام برای این پروفایل در حال اجرا است"}
 
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
-    command = _robot_command(python_executable, "profile_inquiry.py",
+    command = _robot_command(ROBOT_PYTHON, "profile_inquiry.py",
                              "--profile-id", profile_id, "--service", service)
     child_env = _robot_child_env()
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
@@ -626,7 +652,7 @@ def start_profile_device_inquiry(profile_id, service):
 
 def start_exitban_process(profile_id):
     log_path = os.path.join(HERE, "exitban_worker.log")
-    command = _robot_command(sys.executable, "exitban.py",
+    command = _robot_command(ROBOT_PYTHON, "exitban.py",
                              "--profile-id", profile_id, "--submit")
     log_file = open(log_path, "a", encoding="utf-8")
     try:
@@ -1259,9 +1285,8 @@ ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه 
 
 
 def start_estelam_process(device_id=None, service="gomrok"):
-    python_executable = ROBOT_PYTHON if os.path.isfile(ROBOT_PYTHON) else sys.executable
     script, base_args = ESTELAM_SERVICES.get(service, ESTELAM_SERVICES["gomrok"])
-    command = _robot_command(python_executable, script, *base_args)
+    command = _robot_command(ROBOT_PYTHON, script, *base_args)
     if device_id:
         command += ["--device-id", str(device_id)]
     child_env = _robot_child_env()
