@@ -207,6 +207,32 @@ print("REPORT " + json.dumps({"token": (tn._load_cfg() or {}).get("bot_token"),
             check(f"the {label} install gained no new state file", not leaked,
                   str(leaked))
 
+        # --- 5. THE DOCUMENTED UPGRADE PATH: sibling folder, empty data dir ---
+        # The release notes tell the operator to unzip the new version into a NEW
+        # folder next to the old one. In that shape the app folder is fresh and
+        # the settings are one directory over. v1.0.7 imported nothing here.
+        print("\n=== 5. documented path: NEW sibling folder, data dir never written ===")
+        fresh_data = tmp / "AppData" / "Local" / "irica-fresh"
+        sibling = tmp / "irica-v1.0.8-win64"
+        shutil.copytree(STAGED, sibling)
+        check("the sibling install ships no config",
+              not (sibling / "telegram_config.json").exists())
+        # `old` still holds the pre-upgrade settings from step 1.
+        fifth = run_probe(sibling, fresh_data, REPORT_PROBE)
+        check("settings are imported from the SIBLING install",
+              "telegram_config.json" in fifth["migrated"],
+              str(fifth["migrated"]))
+        check("the token is present without copying anything by hand",
+              fifth["cfg"]["bot_token"] == TOKEN
+              or fifth["cfg"]["bot_token"] == "7777777777:CHANGED-IN-THE-NEW-INSTALL",
+              repr(fifth["cfg"]["bot_token"])[:24])
+        check("profiles came along too",
+              isinstance(fifth["profiles"], list) and fifth["profiles"]
+              and fifth["profiles"][0]["id"] == "p-legacy",
+              str(fifth["profiles"])[:50])
+        check("the source install keeps its copy (rollback still works)",
+              (old / "telegram_config.json").exists())
+
         print("\n----")
         bad = [n for n, ok in rows if not ok]
         print(f"RESULT: {len(rows) - len(bad)}/{len(rows)} checks passed")

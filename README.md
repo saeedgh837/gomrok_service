@@ -51,8 +51,11 @@ there. `relay_config.json` and `upstream_proxy.json` also belong in that
 directory — the `*.example.json` templates in this repo show their shape and are
 the only versions ever committed.
 
-Files left in an older release folder are copied into the data directory
-automatically on first run (copied, not moved, so a rollback still works).
+Files left in an older install are copied into the data directory automatically
+on first run — the application folder and its siblings are both searched, since
+an upgrade normally unzips into a new folder next to the old one, and
+`IRICA_IMPORT_FROM` names a source explicitly. Copies, not moves, so a rollback
+still works.
 
 ## Versioning
 

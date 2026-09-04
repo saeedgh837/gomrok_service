@@ -43,8 +43,17 @@ PY_VERSION = "3.10.11"
 PY_EMBED_URL = (f"https://www.python.org/ftp/python/{PY_VERSION}/"
                 f"python-{PY_VERSION}-embed-amd64.zip")
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-# files.pythonhosted.org is unreachable from the build machine; this mirror works.
-PIP_INDEX = "https://mirror-pypi.runflare.com/simple/"
+# Package indexes, tried in order until one serves the wheels. Neither host is
+# dependable from this network: files.pythonhosted.org was unreachable when the
+# v1.0.3 bundle was built (hence the mirror), and the mirror stopped serving
+# packages while v1.0.8 was being built (HTTP 200 on /simple/, "from versions:
+# none" for every requirement) while pypi.org worked. So the build tries several
+# and only fails when they all fail. IRICA_PIP_INDEX overrides the list.
+PIP_INDEXES = [
+    "https://pypi.org/simple/",
+    "https://mirror-pypi.runflare.com/simple/",
+    "https://pypi.tuna.tsinghua.edu.cn/simple/",
+]
 
 # Runtime dependencies only — derived from the imports the panel and robots
 # actually execute. Deliberately excluded: torch, pandas, tqdm, Levenshtein
@@ -157,8 +166,15 @@ device inquiries, logs -- is stored in:
 
 To upgrade, just unzip the new release into a new folder and run it. Nothing
 needs to be copied by hand. Upgrading from v1.0.6 or older also needs nothing:
-files found in the old release folder are imported automatically on first run
-(copied, not moved, so the old version keeps working if you go back).
+the settings in your previous install are imported automatically on first run,
+whether you unzipped over the old folder or beside it (copied, not moved, so the
+old version keeps working if you go back). The panel prints which folder it read
+them from.
+
+If the old install is somewhere the new one cannot find (another drive), name it
+once:
+
+   set IRICA_IMPORT_FROM=D:\\irica-v1.0.4-win64
 
 To keep the data next to the program instead (a portable install on a USB
 drive, for example), set IRICA_DATA_DIR before starting:
@@ -224,11 +240,43 @@ def build_runtime(stage: Path, cache: Path) -> Path:
     run(python, download(GET_PIP_URL, cache / "get-pip.py"),
         "--no-warn-script-location", script=True)
     log(f"  install {len(RUNTIME_REQS)} runtime dependencies")
-    run(python, "-m", "pip", "install", "--no-warn-script-location",
-        "--target", str(py_dir / "Lib" / "site-packages"),
-        "--index-url", PIP_INDEX, *RUNTIME_REQS)
+    install_requirements(python, py_dir / "Lib" / "site-packages")
     verify_runtime(python)
     return python
+
+
+def pip_indexes() -> list[str]:
+    override = (os.environ.get("IRICA_PIP_INDEX") or "").strip()
+    if override:
+        return [u.strip() for u in override.split(",") if u.strip()]
+    return list(PIP_INDEXES)
+
+
+def install_requirements(python: Path, target: Path) -> None:
+    """Install the runtime deps, trying each index until one works.
+
+    A failing index is not a build failure by itself: this network reaches
+    different package hosts on different days (see PIP_INDEXES). Only the last
+    index's error is raised, with every attempt named.
+    """
+    attempts = []
+    for index in pip_indexes():
+        try:
+            run(python, "-m", "pip", "install", "--no-warn-script-location",
+                "--retries", "2", "--timeout", "30",
+                "--target", str(target), "--index-url", index, *RUNTIME_REQS)
+        except SystemExit as exc:
+            attempts.append(index)
+            log(f"  index failed: {index}")
+            last = exc
+            continue
+        if attempts:
+            log(f"  index used  : {index}  (after {len(attempts)} failed)")
+        else:
+            log(f"  index       : {index}")
+        return
+    raise SystemExit("every package index failed: " + ", ".join(attempts)
+                     + f"\n{last}")
 
 
 def verify_runtime(python: Path) -> None:

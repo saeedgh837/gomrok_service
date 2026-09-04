@@ -4004,7 +4004,9 @@ def main():
     print(f">>> Panel bala amad: {url}")
     print(f">>> Tanzimat va dade-ha: {DATA_DIR}")
     if _MIGRATED_FILES:
-        print(f">>> Az nasKHe-ye ghabli montaghel shod: {', '.join(_MIGRATED_FILES)}")
+        source = app_paths.imported_from()
+        print(f">>> Az nasKHe-ye ghabli montaghel shod ({source}): "
+              f"{', '.join(_MIGRATED_FILES)}")
     print(f">>> Profile-ha: {PROFILES_PATH}")
     print(f">>> Profile-e active -> {INPUTS_PATH} (gomrok.py az inja mikhanad)")
     print(f">>> Log-ha: {LOGS_PATH}")

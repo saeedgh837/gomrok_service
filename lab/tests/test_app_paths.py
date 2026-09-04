@@ -22,6 +22,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import app_paths
@@ -159,6 +160,18 @@ class MigrationTests(unittest.TestCase):
             with patch.object(shutil, "copy2", side_effect=OSError("locked")):
                 self.assertEqual(app_paths.migrate_legacy(app_dir, data_dir), [])
 
+    def test_migration_records_where_it_read_from(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir, data_dir = os.path.join(tmp, "app"), os.path.join(tmp, "data")
+            os.makedirs(app_dir)
+            self._legacy(app_dir, "inputs.json", "{}")
+            app_paths.reset_cache()
+            self.assertEqual(app_paths.imported_from(), "")
+            app_paths.migrate_legacy(app_dir, data_dir)
+            self.assertEqual(os.path.normcase(app_paths.imported_from()),
+                             os.path.normcase(os.path.abspath(app_dir)))
+            app_paths.reset_cache()
+
     def test_migration_covers_every_config_and_state_file(self):
         """Any file the app persists must be in the migration list."""
         for name in ("telegram_config.json", "upstream_proxy.json",
@@ -169,6 +182,140 @@ class MigrationTests(unittest.TestCase):
                      "exitban_errors.jsonl", "system_debug.json"):
             with self.subTest(name=name):
                 self.assertIn(name, app_paths.MIGRATED_FILES)
+
+
+class LegacySourceTests(unittest.TestCase):
+    """Finding an older install to import from.
+
+    The release tells the operator to unzip the new version into a NEW folder,
+    so the settings are usually in a SIBLING directory, not in the folder the
+    new code runs from.
+    """
+
+    def _install(self, path, state=None, with_panel=True):
+        path.mkdir(parents=True, exist_ok=True)
+        if with_panel:
+            (path / "panel.py").write_text("# marker\n", encoding="utf-8")
+        for name, payload in (state or {}).items():
+            (path / name).write_text(payload, encoding="utf-8")
+        return path
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.data = self.tmp / "data"
+
+    def assertSameDir(self, actual, expected):
+        """find_legacy_source returns a str; tests build paths with pathlib."""
+        self.assertIsNotNone(actual, "no legacy source found")
+        self.assertEqual(os.path.normcase(os.path.abspath(str(actual))),
+                         os.path.normcase(os.path.abspath(str(expected))))
+
+    def test_none_when_nothing_to_import(self):
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        self.assertIsNone(app_paths.find_legacy_source(app, self.data))
+
+    def test_app_dir_wins_when_it_holds_the_state(self):
+        """The in-place shape: the new code runs from the old folder."""
+        app = self._install(self.tmp / "irica-v1.0.6-win64",
+                            {"telegram_config.json": '{"bot_token": "t"}'})
+        self.assertSameDir(app_paths.find_legacy_source(app, self.data), app)
+
+    def test_sibling_is_found_when_the_app_dir_is_fresh(self):
+        old = self._install(self.tmp / "irica-v1.0.4-win64",
+                            {"telegram_config.json": '{"bot_token": "old"}'})
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        self.assertSameDir(app_paths.find_legacy_source(app, self.data), old)
+
+    def test_newest_sibling_wins(self):
+        older = self._install(self.tmp / "irica-v1.0.3-win64",
+                              {"profiles.json": '{"profiles": [{"id": "a"}]}'})
+        newer = self._install(self.tmp / "irica-v1.0.4-win64",
+                              {"profiles.json": '{"profiles": [{"id": "b"}]}'})
+        os.utime(older / "profiles.json", (1_600_000_000, 1_600_000_000))
+        os.utime(newer / "profiles.json", (1_700_000_000, 1_700_000_000))
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        self.assertSameDir(app_paths.find_legacy_source(app, self.data), newer)
+
+    def test_a_folder_without_panel_py_is_not_an_install(self):
+        """Never pull a stray profiles.json out of an unrelated directory."""
+        self._install(self.tmp / "some-backup",
+                      {"telegram_config.json": '{"bot_token": "x"}'},
+                      with_panel=False)
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        self.assertIsNone(app_paths.find_legacy_source(app, self.data))
+
+    def test_explicit_override_wins(self):
+        chosen = self._install(self.tmp / "somewhere-else",
+                               {"telegram_config.json": '{"bot_token": "picked"}'},
+                               with_panel=False)
+        self._install(self.tmp / "irica-v1.0.4-win64",
+                      {"telegram_config.json": '{"bot_token": "ignored"}'})
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        with patch.dict(os.environ, {"IRICA_IMPORT_FROM": str(chosen)}):
+            self.assertSameDir(app_paths.find_legacy_source(app, self.data), chosen)
+
+    def test_a_bad_override_falls_back_to_detection(self):
+        old = self._install(self.tmp / "irica-v1.0.4-win64",
+                            {"telegram_config.json": '{"bot_token": "old"}'})
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        with patch.dict(os.environ,
+                        {"IRICA_IMPORT_FROM": str(self.tmp / "does-not-exist")}):
+            self.assertSameDir(app_paths.find_legacy_source(app, self.data), old)
+
+    def test_the_data_directory_is_never_its_own_source(self):
+        self.data.mkdir(parents=True)
+        (self.data / "panel.py").write_text("# marker\n", encoding="utf-8")
+        (self.data / "telegram_config.json").write_text("{}", encoding="utf-8")
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        self.assertIsNone(app_paths.find_legacy_source(app, self.data))
+
+    def test_one_source_only_no_mixing_between_installs(self):
+        """profiles.json and estelam_store.json cross-reference by profile id,
+        so they must come from the SAME install, not the newest of each."""
+        older = self._install(self.tmp / "irica-v1.0.3-win64", {
+            "profiles.json": '{"profiles": [{"id": "from-1.0.3"}]}',
+            "estelam_store.json": '{"devices": [{"imei": "103"}]}'})
+        newer = self._install(self.tmp / "irica-v1.0.4-win64", {
+            "profiles.json": '{"profiles": [{"id": "from-1.0.4"}]}'})
+        os.utime(older / "profiles.json", (1_600_000_000, 1_600_000_000))
+        os.utime(older / "estelam_store.json", (1_900_000_000, 1_900_000_000))
+        os.utime(newer / "profiles.json", (1_700_000_000, 1_700_000_000))
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        # estelam_store.json in the OLDER install is the newest single file, but
+        # the older install is chosen as a whole, so nothing is mixed.
+        source = app_paths.find_legacy_source(app, self.data)
+        moved = app_paths.migrate_legacy(app, self.data)
+        self.assertSameDir(source, older)
+        self.assertIn("profiles.json", moved)
+        with open(self.data / "profiles.json", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["profiles"][0]["id"], "from-1.0.3")
+
+    def test_bootstrap_imports_from_a_sibling_install(self):
+        """The end-to-end shape from the release notes."""
+        old = self._install(self.tmp / "irica-v1.0.4-win64", {
+            "telegram_config.json": json.dumps(
+                {"bot_token": "123:REAL", "chat_ids": ["9"]}),
+            "profiles.json": '{"profiles": [{"id": "kept"}]}'})
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        moved = app_paths.migrate_legacy(app, self.data)
+        self.assertIn("telegram_config.json", moved)
+        with open(self.data / "telegram_config.json", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["bot_token"], "123:REAL")
+        # copied, not moved: a rollback to the old version still works
+        self.assertTrue((old / "telegram_config.json").exists())
+
+    def test_an_already_populated_data_dir_is_left_alone(self):
+        self.data.mkdir(parents=True)
+        (self.data / "telegram_config.json").write_text(
+            '{"bot_token": "ALREADY-SET"}', encoding="utf-8")
+        self._install(self.tmp / "irica-v1.0.4-win64",
+                      {"telegram_config.json": '{"bot_token": "OLDER"}'})
+        app = self._install(self.tmp / "irica-v1.0.7-win64")
+        moved = app_paths.migrate_legacy(app, self.data)
+        self.assertNotIn("telegram_config.json", moved)
+        with open(self.data / "telegram_config.json", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["bot_token"], "ALREADY-SET")
 
 
 class ModuleWiringTests(unittest.TestCase):

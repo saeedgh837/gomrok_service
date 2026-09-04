@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.8] - 2026-09-04
+
+Completes v1.0.7: the settings import now works for the upgrade path the release
+notes actually describe.
+
+### Fixed
+
+- v1.0.7 only imported settings that sat in the folder the new code ran from. The
+  documented upgrade — unzip the new version into a NEW folder next to the old one
+  — left the application folder empty, so nothing was imported and the Telegram
+  token had to be entered again, the very problem v1.0.7 set out to remove.
+  Sibling install folders are now searched as well: the most recently written one
+  wins and is taken as a whole, so `profiles.json` and `estelam_store.json` can
+  never come from different installs. A folder only counts as an install if it
+  contains `panel.py`, and `IRICA_IMPORT_FROM` names a source explicitly for the
+  case where the old install is on another drive.
+- The panel prints which folder it imported from, so a wrong source is visible
+  immediately instead of silently.
+
+### Added
+
+- `find_legacy_source()` / `imported_from()` in `app_paths.py`, with 12 tests
+  covering sibling detection, install-marker filtering, the explicit override, a
+  bad override, mtime ordering and the no-mixing rule.
+
+### Fixed (build)
+
+- The release build no longer depends on a single package index. It tries
+  `pypi.org`, the runflare mirror and tsinghua in order, logs which one served the
+  wheels, and only fails when all of them fail (`IRICA_PIP_INDEX` overrides the
+  list). The mirror the build had been pinned to since v1.0.3 stopped serving
+  packages — HTTP 200 on `/simple/` but "from versions: none" for every
+  requirement — which broke the v1.0.8 build outright.
+
 ## [1.0.7] - 2026-09-04
 
 Settings survive an update. The Telegram token, profiles, device inquiries and

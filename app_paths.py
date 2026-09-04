@@ -11,9 +11,13 @@ So they live in a per-user data directory instead, outside the release:
     POSIX    $XDG_DATA_HOME/irica  (default ~/.local/share/irica)
     override $IRICA_DATA_DIR       (any absolute or relative path)
 
-`bootstrap()` copies any file still next to the application into that directory
-on first run, so upgrading from a version that kept them locally needs no
-manual step. Copies, not moves: a rollback to the old build keeps working.
+`bootstrap()` imports any settings from a previous install on first run, so
+upgrading needs no manual step. It looks in the application folder AND in
+sibling folders (the release tells the operator to unzip the new version into a
+NEW folder, so the old settings are usually one directory over), preferring the
+most recently written install and taking it as a whole. `IRICA_IMPORT_FROM`
+names a folder explicitly. Copies, not moves: a rollback to the old build keeps
+working.
 
 Secrets never enter the repository or the release archive -- only the
 `*.example.json` templates ship, and the release verifier fails the build if a
@@ -50,6 +54,9 @@ MIGRATED_FILES = (
 
 _CACHE = []
 _BOOTSTRAPPED = []
+_IMPORTED_FROM = []
+#: A folder is only treated as a previous install if it looks like one.
+_INSTALL_MARKER = "panel.py"
 
 
 def _default_dir():
@@ -85,6 +92,7 @@ def reset_cache():
     """Forget the resolved directory (tests change the environment)."""
     del _CACHE[:]
     del _BOOTSTRAPPED[:]
+    del _IMPORTED_FROM[:]
 
 
 def data_path(name):
@@ -117,36 +125,116 @@ def data_subdir(*parts):
     return path
 
 
+def _state_files_in(folder):
+    """The migratable files present in a folder, newest mtime first."""
+    found = []
+    for name in MIGRATED_FILES:
+        if ".example." in name:
+            continue
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            try:
+                found.append((os.path.getmtime(path), name))
+            except OSError:
+                continue
+    found.sort(reverse=True)
+    return found
+
+
+def find_legacy_source(app_dir=None, target=None):
+    """The folder to import settings from, or None.
+
+    Three cases, in order:
+
+    1. `IRICA_IMPORT_FROM` names a folder holding state -> use it, no questions.
+    2. The application folder itself holds state (the operator unzipped over the
+       old install, or ran the new code from the old folder) -> use it.
+    3. A SIBLING folder holds state. This is the normal upgrade: the release
+       notes say to unzip the new version into a NEW folder, so the settings are
+       one directory over, not in `app_dir`. The most recently written install
+       wins, and it is chosen as a WHOLE -- `profiles.json` and
+       `estelam_store.json` cross-reference each other by profile id, so mixing
+       files from different installs would produce a broken store.
+
+    A sibling only counts as an install if it contains `panel.py`; a stray
+    `profiles.json` in some unrelated directory is never picked up.
+    """
+    app_dir = os.path.abspath(app_dir or APP_DIR)
+    target = os.path.abspath(target or data_dir())
+
+    override = (os.environ.get("IRICA_IMPORT_FROM") or "").strip()
+    if override:
+        candidate = os.path.abspath(override)
+        if os.path.isdir(candidate) \
+                and os.path.normcase(candidate) != os.path.normcase(target) \
+                and _state_files_in(candidate):
+            return candidate
+
+    if _state_files_in(app_dir):
+        return app_dir
+
+    parent = os.path.dirname(app_dir)
+    if not parent or os.path.normcase(parent) == os.path.normcase(app_dir):
+        return None
+    best, best_mtime = None, -1.0
+    try:
+        entries = sorted(os.listdir(parent))
+    except OSError:
+        return None
+    for entry in entries:
+        candidate = os.path.join(parent, entry)
+        if not os.path.isdir(candidate):
+            continue
+        if os.path.normcase(candidate) in (os.path.normcase(app_dir),
+                                           os.path.normcase(target)):
+            continue
+        if not os.path.isfile(os.path.join(candidate, _INSTALL_MARKER)):
+            continue
+        state = _state_files_in(candidate)
+        if state and state[0][0] > best_mtime:
+            best, best_mtime = candidate, state[0][0]
+    return best
+
+
 def migrate_legacy(app_dir=None, target=None):
-    """Copy config/state left inside an old release folder into the data dir.
+    """Copy config/state from a previous install into the data directory.
 
     Never overwrites a file that already exists at the destination, and never
     touches the `*.example.json` templates. Returns the names copied.
     """
-    app_dir = app_dir or APP_DIR
-    target = target or data_dir()
-    if os.path.normcase(os.path.abspath(app_dir)) == \
-            os.path.normcase(os.path.abspath(target)):
+    target = os.path.abspath(target or data_dir())
+    source = find_legacy_source(app_dir, target)
+    if source is None:
+        return []
+    if os.path.normcase(source) == os.path.normcase(target):
         return []
     moved = []
     for name in MIGRATED_FILES:
         if ".example." in name:
             continue
-        source = os.path.join(app_dir, name)
+        origin = os.path.join(source, name)
         destination = os.path.join(target, name)
-        if not os.path.isfile(source) or os.path.exists(destination):
+        if not os.path.isfile(origin) or os.path.exists(destination):
             continue
         try:
             os.makedirs(target, exist_ok=True)
-            shutil.copy2(source, destination)
+            shutil.copy2(origin, destination)
         except OSError:
             continue
         moved.append(name)
+    if moved:
+        del _IMPORTED_FROM[:]
+        _IMPORTED_FROM.append(source)
     return moved
 
 
+def imported_from():
+    """The folder the last migration read from, or '' — for the startup log."""
+    return _IMPORTED_FROM[0] if _IMPORTED_FROM else ""
+
+
 def bootstrap():
-    """Resolve the data directory and migrate an old release folder once."""
+    """Resolve the data directory and import a previous install once."""
     if _BOOTSTRAPPED:
         return []
     _BOOTSTRAPPED.append(True)
