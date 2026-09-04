@@ -2,7 +2,7 @@
 
 Packaged build of the IRICA registration panel and robots.
 Bundle: `irica-v1.0.4-win64.zip`
-SHA256: `PENDING`
+SHA256: `3e6a1c0e1354922ad23799c67cfe6c5fbac9426146ba29469d4c99f582f0b5fe`
 
 ## Why this release
 
@@ -41,7 +41,9 @@ libraries, and closes the gap in the release checks that let the defect through.
   previous check ran the same code in a slightly different way, which is why
   v1.0.3 passed verification and still failed for the operator.
 - New automated regression suite covering interpreter selection, import-path
-  setup, sub-robot spawning and captcha backend selection (14 tests).
+  setup, sub-robot spawning and captcha backend selection (15 tests).
+- The build script now produces the release archive and its SHA256 itself, so the
+  published hash always matches the tree that passed verification.
 
 ## Requirements
 
