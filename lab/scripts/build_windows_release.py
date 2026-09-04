@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import compileall
+import hashlib
 import os
 import shutil
 import subprocess
@@ -230,6 +231,21 @@ def copy_app(stage: Path) -> None:
     (stage / "FIRST_RUN.txt").write_text(FIRST_RUN_TXT, encoding="utf-8")
 
 
+def strip_caches(stage: Path) -> None:
+    """Remove every bytecode cache from the staged tree.
+
+    Must run again immediately before packaging: the smoke test and
+    verify_windows_release.py import the app, which regenerates these. A shipped
+    .pyc embeds the absolute path it was compiled from, so tracebacks on the
+    operator's machine would name the BUILD directory instead of their install —
+    directly undermining the debug-log workflow.
+    """
+    for cache in stage.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
+    for junk in stage.rglob("*.pyc"):
+        junk.unlink(missing_ok=True)
+
+
 def prune(stage: Path) -> None:
     """Drop build-time-only and unused weight, then verify the trim was safe.
 
@@ -252,10 +268,7 @@ def prune(stage: Path) -> None:
         for dll in cv2_dir.glob("opencv_videoio_ffmpeg*.dll"):
             dll.unlink(missing_ok=True)
         shutil.rmtree(cv2_dir / "data", ignore_errors=True)
-    for cache in stage.rglob("__pycache__"):
-        shutil.rmtree(cache, ignore_errors=True)
-    for junk in stage.rglob("*.pyc"):
-        junk.unlink(missing_ok=True)
+    strip_caches(stage)
 
 
 def smoke(stage: Path) -> None:
@@ -335,10 +348,35 @@ def tree_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
+def package(stage: Path, dist: Path, version: str) -> Path:
+    """Zip the staged tree and record its SHA256.
+
+    The archive keeps the `irica-vX.Y.Z-win64/` top-level directory so unzipping
+    lands in one folder, matching every previous release. Caches are stripped
+    first: the smoke test regenerates .pyc files that embed the build path.
+    """
+    strip_caches(stage)
+    archive = dist / f"{stage.name}.zip"
+    archive.unlink(missing_ok=True)
+    files = sorted(p for p in stage.rglob("*"))
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for path in files:
+            z.write(path, path.relative_to(dist).as_posix())
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (dist / "SHA256SUMS.txt").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    (ROOT / f"SHA256SUMS_v{version}.txt").write_text(
+        f"{archive.name}  {digest}\n", encoding="utf-8")
+    log(f"  zip     {archive.name}  {archive.stat().st_size / 1048576:.1f} MB")
+    log(f"  sha256  {digest}")
+    return archive
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
     ap.add_argument("--clean", action="store_true", help="wipe dist/ first")
+    ap.add_argument("--no-zip", action="store_true",
+                    help="stage and smoke-test only, do not package")
     args = ap.parse_args()
 
     dist = ROOT / "dist"
@@ -359,6 +397,9 @@ def main() -> int:
     prune(stage)
     log("smoke:")
     smoke(stage)
+    if not args.no_zip:
+        log("package:")
+        package(stage, dist, args.version)
 
     total = tree_size(stage)
     log("")
@@ -368,6 +409,7 @@ def main() -> int:
         if p.exists():
             log(f"  {sub:<8}: {tree_size(p) / 1048576:.1f} MB")
     log(f"RESULT: staged {stage}")
+    log("        run lab/scripts/verify_windows_release.py before publishing")
     return 0
 
 
