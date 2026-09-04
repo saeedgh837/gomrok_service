@@ -64,9 +64,37 @@ except Exception:
 URL = "https://hamta.ntsw.ir/"
 CHROMEDRIVER_PATH = r"C:\chromedriver.exe"
 USE_EDGE = False
-MOBILE_METRICS = {"width": 430, "height": 932, "pixelRatio": 3.0, "mobile": True}
+# height=0 ya'ni "in mehvar ra override nakon": viewport hamandaze-ye nahiye-ye
+# ghabel-e namayesh-e panjere mishavad. ba 932 (ghad-e vaghe'i-ye iPhone) 151 pixel-e
+# paeen-e safhe birun-e kadr mimand va safhe-haye kootah HICH scroll-i nadarand.
+# tozih-e kamel + andaze-giri: captcha_collector.MOBILE_METRICS va
+# lab/tests/test_manual_scroll.py
+MOBILE_METRICS = {"width": 430, "height": 0, "pixelRatio": 3.0, "mobile": True}
+# Andaze-ye VAGHE'I-ye panjere; height-e emulation (0) NABAYAD inja beyad.
+WINDOW_SIZE = (430, 932)
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+
+
+def window_size_arg():
+    """`--window-size=W,H` ba adad-haye vaghe'i (na height-e 0-e emulation)."""
+    return f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}"
+
+
+def install_manual_scroll(driver):
+    """Scroll-e dasti ba DRAG-e mouse (mesl-e angosht rooye gooshi).
+
+    Emulation-e mobile scrollbar-e overlay midahad ke ba mouse ghabel-e gereftan
+    nist, pas baraye baznagari-ye dasti drag lazem ast. best-effort: agar CDP
+    dar dastres nabashad robot bi-ekhtelal edame midahad.
+    """
+    try:
+        driver.execute_cdp_cmd("Emulation.setEmitTouchEventsForMouse",
+                               {"enabled": True, "configuration": "mobile"})
+    except Exception as exc:
+        print(f">>> (faal-kardan-e scroll-e dasti na-shod: {exc})")
+    return driver
+
 
 # --- selector-haye MODAL (hame scope-shode be modal ta ba safhe-ye login ghати nashavad)
 SEL_INQUIRY_BTN = ".imeiInquiry"
@@ -296,17 +324,18 @@ def build_driver():
         o.add_argument("--disable-gpu")
         o.add_experimental_option("mobileEmulation",
                                   {"deviceMetrics": MOBILE_METRICS, "userAgent": UA})
-        o.add_argument(f"--window-size={MOBILE_METRICS['width']},{MOBILE_METRICS['height']}")
-        return webdriver.Edge(options=o)
+        o.add_argument(window_size_arg())
+        return install_manual_scroll(webdriver.Edge(options=o))
     o = Options()
     o.add_argument("--disable-gpu")
     o.add_experimental_option("mobileEmulation",
                               {"deviceMetrics": MOBILE_METRICS, "userAgent": UA})
-    o.add_argument(f"--window-size={MOBILE_METRICS['width']},{MOBILE_METRICS['height']}")
+    o.add_argument(window_size_arg())
     if CHROMEDRIVER_PATH:
-        return webdriver.Chrome(service=ChromeService(executable_path=CHROMEDRIVER_PATH),
-                                options=o)
-    return webdriver.Chrome(options=o)
+        return install_manual_scroll(
+            webdriver.Chrome(service=ChromeService(executable_path=CHROMEDRIVER_PATH),
+                             options=o))
+    return install_manual_scroll(webdriver.Chrome(options=o))
 
 
 # --- captcha ----------------------------------------------------------------

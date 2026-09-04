@@ -73,10 +73,33 @@ USE_EDGE = False
 # Ba in kar site naskhe-ye mobile-e khod ra (ke doros load mishavad) namayesh midahad.
 MOBILE_EMULATION = True
 
-# Andaze-ye safhe-ye mobile-e shabih-sazi-shode — daghighan iPhone 14 Pro Max
-# (hamon device-i ke dar DevTools entekhab mishavad va site ba an dorost load mishavad).
-#   width/height: viewport-e logic-e iPhone 14 Pro Max = 430x932 | pixelRatio = 3
-MOBILE_METRICS = {"width": 430, "height": 932, "pixelRatio": 3.0, "mobile": True}
+# Andaze-ye viewport-e mobile-e shabih-sazi-shode.
+#   width      = arze-ye logic-e iPhone 14 Pro Max (site naskhe-ye mobile midahad)
+#   height = 0 = "in mehvar ra override NAKON" -> viewport daghighan hamandaze-ye
+#                nahiye-ye ghabel-e namayesh-e panjere mishavad.
+#
+# CHERA height=0 va na 932 (ghad-e vaghe'i-ye iPhone)?
+#   panjere-ye 430x932 dar amal 516x932 mishavad ke 151px-ash chrome-e morurgar
+#   ast, pas faghat 781 CSS-pixel az safhe DIDE mishavad. ba height=932:
+#     * 151 pixel-e paeen-e viewport HAMISHE birun-e kadr mimanad (moshkel-e
+#       gozaresh-shode: bakhshi az form-e login dide nemishavad), va
+#     * baraye safhe-i kootah-tar az 932 (safhe-ye login) scrollHeight ba
+#       clientHeight barabar mishavad -> HICH range-e scroll-i nist, pas na
+#       charkh-e mouse na keyboard hich kari nemikonand.
+#   ba height=0 har do moshkel az bein miravand va viewport ba resize-e panjere
+#   ham hamahang mimanad. arze/DPR/UA dast-nakhorde -> layout-e mobile hefz mishavad
+#   va meghyas-e screenshot (baraye crop-e captcha) ham 3.0 mimanad.
+MOBILE_METRICS = {"width": 430, "height": 0, "pixelRatio": 3.0, "mobile": True}
+
+# Andaze-ye VAGHE'I-ye panjere (--window-size). height-e MOBILE_METRICS sefr ast va
+# NABAYAD inja estefade shavad, vagarna panjere-ye bi-ertefa sakhte mishavad.
+WINDOW_SIZE = (430, 932)
+
+
+def window_size_arg():
+    """`--window-size=W,H` ba adad-haye VAGHE'I (na height-e 0-e emulation)."""
+    return f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}"
+
 
 # --- zoom-e safhe-ye SITE-e gomrok (na panel-e ma) --------------------------------
 # Site-e irica dar zoom-e 100% dokme/matn-hash biroon mizanad; 25% kamtar (0.75)
@@ -125,6 +148,57 @@ def install_site_zoom(driver, zoom=SITE_ZOOM):
     except Exception:
         pass
     return driver
+
+
+# --- scroll-e DASTI-ye karbar (baznagari-ye safhe dar panjere-ye robot) ------------
+# Emulation-e mobile scrollbar-e overlay midahad: 0 pixel az layout migirad va ba
+# mouse ghabel-e gereftan NIST (ba CSS-e ::-webkit-scrollbar ya flag-haye
+# --disable-*overlay*scrollbar ham bar nemigardad; har 4 ravesh sanjide shod va
+# hame 0px dadand). pas baraye baznagari-ye dasti do rah migozarim:
+#   1) DRAG ba mouse — mesl-e angosht rooye gooshi. `setEmitTouchEventsForMouse`
+#      input-e mouse ra be touch tabdil mikonad va safhe ba keshidan scroll mishavad.
+#   2) charkh-e mouse va keyboard (PageDown/End/arrow) ke hamishe kar mikonand.
+# Har do rooye panjere-ye robot sanjide shodand (lab/scripts/probe_dragscroll_safety.py):
+# drag 3/3, click-e vaghe'i salem mimanad, va ba'd az har navigation baghi mimanad.
+def install_manual_scroll(driver):
+    """Drag-ba-mouse baraye scroll-e dasti ra faal mikonad (best effort)."""
+    try:
+        driver.execute_cdp_cmd("Emulation.setEmitTouchEventsForMouse",
+                               {"enabled": True, "configuration": "mobile"})
+    except Exception as exc:
+        print(f">>> (faal-kardan-e scroll-e dasti na-shod: {exc})")
+    return driver
+
+
+# Nesbat-e viewport ke har bar scroll mishavad (0.85 = kami hamposhani ta
+# matn/dokme-i bein-e do scroll ja nayoftad).
+_SCROLL_STEP = 0.85
+
+
+def scroll_page(driver, direction="down"):
+    """Safhe-ye robot ra scroll mikonad: down | up | top | bottom.
+
+    Baraye baznagari-ye dasti va script-haye kontrol. False barmigardanad agar
+    session dar dastres nabashad (HARGEZ exception be biroon nemidahad).
+    """
+    if direction in ("down", "up"):
+        script = ("window.scrollBy({top: window.innerHeight * arguments[0],"
+                  " behavior: 'instant'});")
+        amount = _SCROLL_STEP if direction == "down" else -_SCROLL_STEP
+        args = (script, amount)
+    elif direction == "bottom":
+        args = ("window.scrollTo({top: document.documentElement.scrollHeight,"
+                " behavior: 'instant'});",)
+    elif direction == "top":
+        args = ("window.scrollTo({top: 0, behavior: 'instant'});",)
+    else:
+        raise ValueError(f"jahat-e na-motabar: {direction!r}")
+    try:
+        driver.execute_script(*args)
+        return True
+    except Exception:
+        return False
+
 
 
 # Hashiye-ye ezafe (be pixel-e CSS) ke az har taraf-e element-e captcha bishtar
@@ -505,7 +579,7 @@ def build_chrome(user_agent=None):
             mobile_emulation["userAgent"] = user_agent
         options.add_experimental_option("mobileEmulation", mobile_emulation)
         # dar halat-e mobile panjere-ra maximize nemikonim ta viewport dast-nakhorde bemanad.
-        options.add_argument(f"--window-size={MOBILE_METRICS['width']},{MOBILE_METRICS['height']}")
+        options.add_argument(window_size_arg())
     else:
         options.add_argument("--start-maximized")
         if user_agent:
@@ -530,7 +604,7 @@ def build_edge(user_agent=None):
         if user_agent:
             mobile_emulation["userAgent"] = user_agent
         options.add_experimental_option("mobileEmulation", mobile_emulation)
-        options.add_argument(f"--window-size={MOBILE_METRICS['width']},{MOBILE_METRICS['height']}")
+        options.add_argument(window_size_arg())
     else:
         options.add_argument("--start-maximized")
         if user_agent:
@@ -543,19 +617,23 @@ def build_driver(user_agent=None):
     """
     Sakht-e driver-e morurgar ba modiriat-e khata-ye download-e driver.
     Ebteda Chrome, va dar soorat-e shekast be tor-e khodkar Edge emtehan mishavad.
-    Zoom-e site (SITE_ZOOM) roo-ye har navigation e'mal mishavad.
+    Zoom-e site (SITE_ZOOM) roo-ye har navigation e'mal mishavad va scroll-e
+    dasti (drag ba mouse) baraye baznagari-ye karbar faal mishavad.
     """
+    def prepare(driver):
+        return install_manual_scroll(install_site_zoom(driver))
+
     if USE_EDGE:
-        return install_site_zoom(build_edge(user_agent))
+        return prepare(build_edge(user_agent))
 
     try:
-        return install_site_zoom(build_chrome(user_agent))
+        return prepare(build_chrome(user_agent))
     except Exception as e:
         print("!!! Sakht-e driver-e Chrome namovaffagh bood:")
         print(f"    {e}")
         print(">>> Talash baraye estefade az morurgar-e Edge be onvan-e jaygozin ...")
         try:
-            return install_site_zoom(build_edge(user_agent))
+            return prepare(build_edge(user_agent))
         except Exception as e2:
             print("!!! Sakht-e driver-e Edge ham namovaffagh bood:")
             print(f"    {e2}")

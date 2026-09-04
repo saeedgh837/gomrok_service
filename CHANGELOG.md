@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.5] - 2026-09-04
+
+Makes the robot's browser window reviewable by hand: the whole page is now inside
+the window, and it can be scrolled with the mouse.
+
+### Fixed
+
+- **Part of the page sat outside the window and could not be scrolled to.** The
+  mobile emulation pinned the layout viewport to 932 CSS px (a real iPhone's
+  height), but a 430x932 window is 516x932 in practice and 151 px of that is
+  browser chrome, so only 781 CSS px of page were ever visible. Two consequences,
+  both reported from the field on the customs login page: the bottom 151 CSS px
+  were permanently off-window, and on any page shorter than 932 CSS px
+  `scrollHeight` equalled `clientHeight`, so there was no scroll range at all --
+  mouse wheel and keyboard had nothing to move. The emulated viewport height is
+  now `0`, which CDP reads as "do not override this axis": the viewport equals the
+  window's real content area, nothing is clipped, the scroll range is correct, and
+  it follows a window resize. Layout width (430), pixel ratio (3.0) and the mobile
+  user agent are unchanged, so the sites keep serving their mobile pages.
+
+### Added
+
+- **Drag-to-scroll with the mouse**, like a finger on a phone. Mobile emulation
+  uses overlay scrollbars that occupy 0 px of layout and cannot be grabbed, and
+  no CSS or Chrome flag brings a classic scrollbar back (four approaches were
+  measured, all 0 px). `Emulation.setEmitTouchEventsForMouse` makes a mouse drag
+  scroll the page instead. Mouse wheel and keyboard (PageDown/End/arrows) work as
+  before.
+- `captcha_collector.scroll_page(driver, "down"|"up"|"top"|"bottom")` for scripted
+  or automated review scrolling.
+- `lab/scripts/live_check_manual_scroll.py` (16 checks) and
+  `lab/scripts/live_check_captcha_crop.py` (8 checks), which drive real Windows
+  mouse input through `SendInput` against the actual robot drivers.
+
+### Verified
+
+- Captcha cropping is **bit-identical** before and after the change: same crop
+  size and same SHA-256 of the pixel data (`lab/scripts/probe_crop_ab.py`). The
+  crop scale stays 3.0.
+- Every robot click path is unaffected with drag-to-scroll active: Selenium
+  `.click()`, the project's own touch/pointer/mouse dispatch chain, `send_keys`,
+  checkbox toggling and `scrollIntoView`
+  (`lab/scripts/probe_click_with_dragscroll.py`).
+- Real OS mouse wheel and real OS mouse drag both scroll the robot's window, for
+  the customs and HAMTA drivers alike; the bottom of a login-page-sized document
+  is fully reachable in both.
+
 ## [1.0.4] - 2026-09-04
 
 Fixes a release-only defect that made every inquiry and registration robot exit
