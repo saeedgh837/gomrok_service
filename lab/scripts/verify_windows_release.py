@@ -300,7 +300,10 @@ def main() -> int:
     ap.add_argument("--dist", default=str(default))
     args = ap.parse_args()
 
-    dist = Path(args.dist)
+    # Resolved before use: the checks below run subprocesses with `cwd=dist` and
+    # pass paths built from it, so a relative --dist would be re-resolved against
+    # the new working directory (dist/x/dist/x/...).
+    dist = Path(args.dist).resolve()
     if not dist.is_dir():
         print(f"FAIL  staged bundle not found: {dist}")
         print("      run lab/scripts/build_windows_release.py first")
