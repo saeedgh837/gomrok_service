@@ -3,6 +3,43 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.4] - 2026-09-04
+
+Fixes a release-only defect that made every inquiry and registration robot exit
+immediately on the user's machine while the panel reported "started".
+
+### Fixed
+
+- **Robots ran under a foreign interpreter.** The panel spawned every robot with
+  a hardcoded `C:\Program Files\Python310\python.exe`. Where that install exists
+  and carries PyTorch, the captcha solvers selected their torch backend, whose
+  modules (`solver/predict.py`, `Hamta-solver/model.py`) are deliberately not
+  shipped, so each robot died with `ModuleNotFoundError` before opening a
+  browser. Robots now run under the panel's own interpreter — the bundled
+  `python.exe` in a release — with `IRICA_ROBOT_PYTHON` as a development
+  override. Same fix in the Cloudflare relay launchers.
+- **Isolated runtime could not import project modules.** The bundled embedded
+  CPython is isolated: `PYTHONPATH` is ignored and a script argument does not put
+  its own directory on `sys.path`. `robot_launcher.py` and `panel.py` now repair
+  `sys.path` before the first project import; without it the launcher itself, and
+  the panel's lazy `import exitban` in `/exitban-inquiry`, failed at runtime.
+- **Solver backend selection required only `torch`.** Both solvers now verify the
+  whole torch backend (`predict` / `model` importable) before choosing it, so an
+  unrelated torch install cannot select a backend that cannot load.
+- **Child robots bypassed the launcher.** `estelam_all.py` and
+  `profile_inquiry.py` spawn their children through `robot_launcher.py`, so the
+  path repair and startup-traceback capture apply to them too.
+
+### Changed
+
+- Release gates run their probe **through `robot_launcher.py` with a script
+  argument** — the exact shape the panel uses. The previous `python -c` probe
+  supplied a manual `sys.path.insert(0, '.')`, which masked both failures above
+  and let v1.0.3 ship green.
+- New regression suite `lab/tests/test_robot_interpreter.py` (15 tests) covers
+  interpreter resolution, launcher bootstrap under `-I`, child spawns, and solver
+  backend selection.
+
 ## [1.0.3] - 2026-08-18
 
 Adds optional per-run system diagnostics for troubleshooting robot startup and
