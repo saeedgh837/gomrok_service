@@ -52,6 +52,10 @@ RUNTIME_REQS = [
     "selenium>=4.10.0",
     "Pillow>=10.0.0",
     "requests>=2.31.0",
+    "urllib3>=2.0.0",
+    "certifi>=2023.7.22",
+    "charset-normalizer>=3.2.0",
+    "idna>=3.4",
     "numpy>=1.24,<2",
     "opencv-python-headless>=4.8",
     "onnxruntime>=1.16",
@@ -90,6 +94,9 @@ setlocal
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
+set PYTHONNOUSERSITE=1
+call "%~dp0install.bat"
+if errorlevel 1 exit /b 1
 echo Starting the panel on http://127.0.0.1:8750 ...
 "%~dp0python\\python.exe" panel.py %*
 if errorlevel 1 (
@@ -97,6 +104,25 @@ if errorlevel 1 (
   echo The panel exited with an error. Scroll up for the reason.
   pause
 )
+endlocal
+"""
+
+INSTALL_BAT = """@echo off
+REM Verify the self-contained runtime before starting the panel.
+setlocal
+cd /d "%~dp0"
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
+set PYTHONNOUSERSITE=1
+"%~dp0python\\python.exe" -c "import requests,urllib3,certifi,charset_normalizer,idna; print('Runtime OK')"
+if errorlevel 1 (
+  echo.
+  echo Runtime is incomplete. Re-extract the release archive into a new folder.
+  echo No system Python installation is required.
+  pause
+  exit /b 1
+)
+echo Runtime verified.
 endlocal
 """
 
@@ -115,7 +141,9 @@ FIRST_RUN_TXT = """Before the first run
    relay_config.example.json only if you use a SOCKS5 proxy or the Cloudflare
    relay.
 
-4) Double-click run_panel.bat and open http://127.0.0.1:8750/site-1
+4) Double-click install.bat once to verify the bundled runtime.
+
+5) Double-click run_panel.bat and open http://127.0.0.1:8750/site-1
 
 Everything else (Python and all libraries) is already inside this folder.
 """
@@ -173,8 +201,15 @@ def build_runtime(stage: Path, cache: Path) -> Path:
         "--no-warn-script-location", script=True)
     log(f"  install {len(RUNTIME_REQS)} runtime dependencies")
     run(python, "-m", "pip", "install", "--no-warn-script-location",
+        "--target", str(py_dir / "Lib" / "site-packages"),
         "--index-url", PIP_INDEX, *RUNTIME_REQS)
+    verify_runtime(python)
     return python
+
+
+def verify_runtime(python: Path) -> None:
+    """Fail the build if the vendored requests closure is incomplete."""
+    run(python, "-c", "import requests,urllib3,certifi,charset_normalizer,idna; print('RUNTIME_OK')")
 
 
 def run(python: Path, *args, script: bool = False) -> None:
@@ -182,6 +217,7 @@ def run(python: Path, *args, script: bool = False) -> None:
                            else [str(a) for a in args])
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")}
+    env["PYTHONNOUSERSITE"] = "1"
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
     if res.returncode != 0:
         raise SystemExit(f"build step failed: {' '.join(cmd[:4])}\n"
@@ -228,6 +264,7 @@ def copy_app(stage: Path) -> None:
     shutil.copy2(hamta_onnx, hamta_dst / hamta_onnx.name)
 
     (stage / "run_panel.bat").write_text(RUN_PANEL_BAT, encoding="utf-8")
+    (stage / "install.bat").write_text(INSTALL_BAT, encoding="utf-8")
     (stage / "FIRST_RUN.txt").write_text(FIRST_RUN_TXT, encoding="utf-8")
 
 
@@ -269,6 +306,7 @@ def prune(stage: Path) -> None:
             dll.unlink(missing_ok=True)
         shutil.rmtree(cv2_dir / "data", ignore_errors=True)
     strip_caches(stage)
+    verify_runtime(stage / "python" / "python.exe")
 
 
 def smoke(stage: Path) -> None:

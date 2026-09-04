@@ -52,7 +52,7 @@ SECRET_PATTERNS = [
 ]
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
-    "run_panel.bat", "FIRST_RUN.txt", "README.md", "VERSION",
+    "run_panel.bat", "install.bat", "FIRST_RUN.txt", "README.md", "VERSION",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "telegram_config.example.json",
     "solver/onnx_solve.py", "solver/live_solve.py", "solver/preprocess.py",
@@ -181,7 +181,8 @@ def check_function(dist: Path) -> None:
         "mods = ('panel','gomrok','gomrok2','estelam_gomrok','estelam_hamta',\n"
         "        'estelam_all','profile_inquiry','robot_launcher','system_debug',\n"
         "        'exitban','telegram_notify','browser_window','browser_visibility',\n"
-        "        'selenium','cv2','numpy','PIL','onnxruntime','requests')\n"
+        "        'selenium','cv2','numpy','PIL','onnxruntime','requests',\n"
+        "        'urllib3','certifi','charset_normalizer','idna')\n"
         "for m in mods: importlib.import_module(m)\n"
         "assert 'torch' not in sys.modules\n"
         "import numpy as np\n"
