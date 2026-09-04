@@ -1,15 +1,22 @@
 """
 telegram_notify.py
 Ersal-e payam va aks be telegram az tarigh-e worker-e cloudflare (reverse-proxy).
-Config: telegram_config.json dar haman posheh.
+Config: telegram_config.json dar poshe-ye dade (app_paths.data_dir()) — birun az
+posheh-ye release, ta update-e barnameh tanzimat-ra pak nakonad.
 """
 import json
 import os
 import random
+import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_CFG_PATH = os.path.join(_HERE, "telegram_config.json")
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import app_paths  # noqa: E402  (needs _HERE on sys.path first)
+
+_CFG_PATH = app_paths.data_path("telegram_config.json")
 
 
 def _load_cfg():

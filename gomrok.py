@@ -28,6 +28,7 @@ import sys
 import time
 from collections import deque
 
+import app_paths
 import captcha_collector as cc
 import browser_visibility as bvis
 import system_debug
@@ -75,7 +76,7 @@ sys.path.insert(0, _SOLVER_DIR)
 from live_solve import load_solver  # noqa: E402
 
 _DEFAULT_CKPT = os.path.join(_SOLVER_DIR, "checkpoints", "best_real_v2.pt")
-_INPUTS_PATH = os.path.join(_HERE, "inputs.json")
+_INPUTS_PATH = app_paths.data_path("inputs.json")
 
 # file-haye dump-e halat-e debug (har marhale rooye inha neveshte mishavad)
 _DBG_HTML = os.path.join(_HERE, "_dbg_last.html")   # source-e kamel-e HTML-e safhe-ye fe'li
@@ -158,8 +159,8 @@ def _start_profile_heartbeat(profile_id, runner_id):
     return thread
 
 
-_LOGS_PATH = os.path.join(_HERE, "logs.jsonl")
-_SCREENSHOTS_DIR = os.path.join(_HERE, "screenshots")
+_LOGS_PATH = app_paths.data_path("logs.jsonl")
+_SCREENSHOTS_DIR = app_paths.data_subdir("screenshots")
 _CLAIMED_PROFILE_ID = ""
 _CLAIMED_RUNNER_ID = ""
 _CUSTOMER_TELEGRAM_CHAT_ID = ""

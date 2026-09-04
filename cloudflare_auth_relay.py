@@ -11,7 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "relay_config.json")
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
+CONFIG_PATH = app_paths.data_path("relay_config.json")
 UPSTREAM_HOST = "127.0.0.1"
 UPSTREAM_PORT = 8750
 LISTEN_HOST = "127.0.0.1"

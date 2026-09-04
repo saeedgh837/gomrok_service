@@ -5,11 +5,17 @@ import select
 import socket
 import socketserver
 import struct
+import sys
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 1) manba'-e ASLI: file-e DAKHEL-e proje (self-contained; dar git nemiravad)
-LOCAL_UPSTREAM_CONFIG = os.path.join(HERE, "upstream_proxy.json")
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
+# 1) manba'-e ASLI: file dar poshe-ye dade (birun az release; dar git nemiravad)
+LOCAL_UPSTREAM_CONFIG = app_paths.data_path("upstream_proxy.json")
 # 2) fallback-e ghadimi (mahalli — agar file-e proje nabud)
 UPSTREAM_CONFIG = r"D:\browser-agent\work-with-whatsapp\config.py"
 LISTEN_HOST = "127.0.0.1"

@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -9,7 +10,12 @@ from urllib.parse import urlsplit
 import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "relay_config.json")
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
+CONFIG_PATH = app_paths.data_path("relay_config.json")
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 8752
 TELEGRAM_ORIGIN = "https://api.telegram.org"

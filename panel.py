@@ -34,10 +34,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The packaged release runs on an embedded CPython that is ISOLATED (see
 # python*._pth): PYTHONPATH is ignored and the script's directory is NOT added to
 # sys.path. Top-level imports here are stdlib only, so the panel starts either
-# way, but the lazy project imports further down (`import exitban` in the
-# /exitban-inquiry route) would raise ModuleNotFoundError at request time.
+# way, but `app_paths` below and the lazy project imports further down
+# (`import exitban` in the /exitban-inquiry route) would raise
+# ModuleNotFoundError without this.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
+# Config, state and logs live outside the release folder so an update does not
+# require copying them by hand. Anything left inside an older release folder is
+# copied in once, here, before any path constant is resolved.
+_MIGRATED_FILES = app_paths.bootstrap()
+DATA_DIR = app_paths.data_dir()
 
 
 def _resolve_robot_python():
@@ -62,16 +71,16 @@ def _resolve_robot_python():
 
 ROBOT_PYTHON = _resolve_robot_python()
 
-ROBOT_LOG_PATH = os.path.join(HERE, "gomrok_worker.log")
-INPUTS_PATH = os.path.join(HERE, "inputs.json")
-PROFILES_PATH = os.path.join(HERE, "profiles.json")
-LOGS_PATH = os.path.join(HERE, "logs.jsonl")
-SITE2_NOTIF_PATH = os.path.join(HERE, "site2_notif.json")
-TELEGRAM_PATH = os.path.join(HERE, "telegram_config.json")
-TELEGRAM_HEALTH_PATH = os.path.join(HERE, "telegram_health.json")
-EXITBAN_ERRORS_PATH = os.path.join(HERE, "exitban_errors.jsonl")
-SYSTEM_LOG_DIR = os.path.join(HERE, "logs", "system")
-SYSTEM_DEBUG_CONFIG_PATH = os.path.join(HERE, "system_debug.json")
+ROBOT_LOG_PATH = app_paths.data_path("gomrok_worker.log")
+INPUTS_PATH = app_paths.data_path("inputs.json")
+PROFILES_PATH = app_paths.data_path("profiles.json")
+LOGS_PATH = app_paths.data_path("logs.jsonl")
+SITE2_NOTIF_PATH = app_paths.data_path("site2_notif.json")
+TELEGRAM_PATH = app_paths.data_path("telegram_config.json")
+TELEGRAM_HEALTH_PATH = app_paths.data_path("telegram_health.json")
+EXITBAN_ERRORS_PATH = app_paths.data_path("exitban_errors.jsonl")
+SYSTEM_LOG_DIR = app_paths.data_subdir("logs", "system")
+SYSTEM_DEBUG_CONFIG_PATH = app_paths.data_path("system_debug.json")
 HOST, PORT = "127.0.0.1", 8750
 _STORE_LOCK = threading.RLock()
 _STORE_LOCK_PATH = PROFILES_PATH + ".lock"
@@ -651,7 +660,7 @@ def start_profile_device_inquiry(profile_id, service):
 
 
 def start_exitban_process(profile_id):
-    log_path = os.path.join(HERE, "exitban_worker.log")
+    log_path = app_paths.data_path("exitban_worker.log")
     command = _robot_command(ROBOT_PYTHON, "exitban.py",
                              "--profile-id", profile_id, "--submit")
     log_file = open(log_path, "a", encoding="utf-8")
@@ -908,12 +917,22 @@ def load_telegram_config():
 
 def save_telegram_config(cfg):
     """Token faghat vaghti ke karbar meghdar-e JADID bedahad avaz mishavad.
-    (UI token-e zakhire-shode ra NEMIFRESTAD, pas khali = 'taghir nade')."""
+    (UI token-e zakhire-shode ra NEMIFRESTAD, pas khali = 'taghir nade').
+
+    `chat_ids` ham reshte (textarea-ye UI: har khat/comma) va ham list ra
+    mipazirad — /telegram-config dar khandan list barmigardanad, pas neveshtan
+    bayad haman shekl-ra ghabul konad.
+    """
     current = load_telegram_config()
     incoming_token = str(cfg.get("bot_token") or "").strip()
+    incoming_ids = cfg.get("chat_ids") or ""
+    if isinstance(incoming_ids, (list, tuple)):
+        raw_ids = [str(x) for x in incoming_ids]
+    else:
+        raw_ids = str(incoming_ids).replace(",", "\n").splitlines()
     clean = {"api_base": str(cfg.get("api_base") or "https://api.telegram.org").strip(),
              "bot_token": incoming_token or current.get("bot_token", ""),
-             "chat_ids": [x.strip() for x in str(cfg.get("chat_ids") or "").replace(",", "\n").splitlines() if x.strip()]}
+             "chat_ids": [x.strip() for x in raw_ids if x.strip()]}
     with open(TELEGRAM_PATH, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
     return public_telegram_config()
@@ -1081,8 +1100,8 @@ def load_site2_notif():
 
 
 # ---------------- servis-e ESTELAM-e dastgah (jaygozin-e site-2) ----------------
-ESTELAM_PATH = os.environ.get("IRICA_ESTELAM_STORE") or os.path.join(HERE, "estelam_store.json")
-ESTELAM_LOGS_PATH = os.path.join(HERE, "estelam_logs.jsonl")
+ESTELAM_PATH = os.environ.get("IRICA_ESTELAM_STORE") or app_paths.data_path("estelam_store.json")
+ESTELAM_LOGS_PATH = app_paths.data_path("estelam_logs.jsonl")
 _ESTELAM_LOCK = threading.RLock()
 
 ESTELAM_STATUS_FA = {
@@ -2607,12 +2626,13 @@ function renderTelegram(){
     ? '<span class="token-badge ok">🔒 توکن ذخیره شده و محافظت‌شده است</span>'
     : '<span class="token-badge warn">⚠ توکنی ثبت نشده است</span>';
   document.getElementById('view-telegram').innerHTML='<div class="settings-section"><h3>تنظیمات کلی</h3><p class="hint">تنظیمات عمومی پنل و ربات در این بخش قرار می‌گیرد.</p></div>'+
-    '<div class="settings-section system-debug-card"><div class="system-debug-row"><div><h3>Debug log سیستمی</h3><div class="system-debug-help">با فعال‌سازی، هر اجرای ربات یک فایل مستقل و تاریخ‌دار در پوشه logs/system پروژه می‌سازد.</div></div><label class="toggle"><input id="system-debug-toggle" type="checkbox" '+(SYSTEM_DEBUG.enabled?'checked':'')+' onchange="toggleSystemDebug(this.checked)"><span class="track"></span></label></div><div class="system-debug-row"><strong>لاگ‌های موجود</strong><button type="button" class="system-log-open" onclick="loadSystemLogs()">به‌روزرسانی فهرست</button></div><div id="system-log-list" class="system-log-list"></div><pre id="system-log-viewer" class="system-log-viewer">یک فایل لاگ را برای مشاهده انتخاب کنید.</pre></div>'+
+    '<div class="settings-section system-debug-card"><div class="system-debug-row"><div><h3>Debug log سیستمی</h3><div class="system-debug-help">با فعال‌سازی، هر اجرای ربات یک فایل مستقل و تاریخ‌دار در پوشه logs/system داخل پوشه‌ی داده می‌سازد.</div></div><label class="toggle"><input id="system-debug-toggle" type="checkbox" '+(SYSTEM_DEBUG.enabled?'checked':'')+' onchange="toggleSystemDebug(this.checked)"><span class="track"></span></label></div><div class="system-debug-row"><strong>لاگ‌های موجود</strong><button type="button" class="system-log-open" onclick="loadSystemLogs()">به‌روزرسانی فهرست</button></div><div id="system-log-list" class="system-log-list"></div><pre id="system-log-viewer" class="system-log-viewer">یک فایل لاگ را برای مشاهده انتخاب کنید.</pre></div>'+
     '<label>API Base</label><input id="tg_api" type="text" class="ltr" value="'+escHtml(TELEGRAM.api_base||'https://api.telegram.org')+'">'+
     '<label>توکن ربات</label>'+tokenState+
     '<input id="tg_token" type="password" class="ltr" autocomplete="off" placeholder="'+(TELEGRAM.token_set?'برای تغییر، توکن جدید را وارد کنید (خالی = بدون تغییر)':'توکن ربات را وارد کنید')+'">'+
     '<label>Chat IDها (هر کدام یک خط)</label><textarea id="tg_ids" class="ltr">'+escHtml((TELEGRAM.chat_ids||[]).join('\n'))+'</textarea>'+
-    '<button class="save" onclick="saveTelegram()">💾 ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>';
+    '<button class="save" onclick="saveTelegram()">💾 ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>'+
+    '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>';
   renderSystemLogs();
   loadSystemLogs();
 }
@@ -3726,11 +3746,19 @@ class Handler(BaseHTTPRequestHandler):
                 profiles = (_LAST_GOOD_STORE.get(PROFILES_PATH) or {}).get("profiles", [])
             profile = next((p for p in profiles if p.get("id") == pid), None)
             path = os.path.realpath((profile or {}).get(key) or "")
-            root = os.path.realpath(os.path.join(HERE, "screenshots"))
-            try:
-                allowed = os.path.commonpath([root, path]) == root
-            except ValueError:
-                allowed = False
+            # Screenshots now live in the data directory. Paths recorded by an
+            # older release point inside that release folder, so both roots are
+            # accepted -- containment is still enforced against each of them.
+            roots = [os.path.realpath(app_paths.data_subdir("screenshots")),
+                     os.path.realpath(os.path.join(HERE, "screenshots"))]
+            allowed = False
+            for root in roots:
+                try:
+                    if os.path.commonpath([root, path]) == root:
+                        allowed = True
+                        break
+                except ValueError:
+                    continue
             if profile and allowed and os.path.isfile(path):
                 with open(path, "rb") as f:
                     self._send(200, f.read(), "image/png")
@@ -3974,6 +4002,9 @@ def main():
     threading.Thread(target=_startup_telegram_bootstrap, daemon=True,
                      name="telegram-api-health").start()
     print(f">>> Panel bala amad: {url}")
+    print(f">>> Tanzimat va dade-ha: {DATA_DIR}")
+    if _MIGRATED_FILES:
+        print(f">>> Az nasKHe-ye ghabli montaghel shod: {', '.join(_MIGRATED_FILES)}")
     print(f">>> Profile-ha: {PROFILES_PATH}")
     print(f">>> Profile-e active -> {INPUTS_PATH} (gomrok.py az inja mikhanad)")
     print(f">>> Log-ha: {LOGS_PATH}")

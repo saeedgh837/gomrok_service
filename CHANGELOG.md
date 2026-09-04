@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.7] - 2026-09-04
+
+Settings survive an update. The Telegram token, profiles, device inquiries and
+logs no longer live inside the program folder, so replacing it never wipes them.
+
+### Fixed
+
+- Configuration, state and logs resolve to a per-user data directory outside the
+  release: `%LOCALAPPDATA%\irica` on Windows, `$XDG_DATA_HOME/irica` on POSIX,
+  overridable with `IRICA_DATA_DIR` for a portable install. Every module that
+  persists anything follows it — the panel, `telegram_notify`, both estelam
+  robots, `gomrok`, the Cloudflare relays and the SOCKS5 proxy reader.
+- Upgrading needs no manual copying: files found inside an older release folder
+  are imported on first run. Copies, not moves, so rolling back to the old build
+  still works, and an existing file in the data directory is never overwritten.
+- `save_telegram_config` now accepts a list of chat IDs as well as the UI's
+  newline/comma text, so what `/telegram-config` returns can be posted straight
+  back.
+- The screenshot route accepts both the new and the pre-upgrade screenshot roots;
+  containment is still enforced against each.
+
+### Added
+
+- `app_paths.py`: data-directory resolution, `data_path`/`data_subdir` (both
+  reject path traversal) and one-shot legacy migration.
+- The release verifier fails if any config or state path resolves inside the
+  bundle, and the release's `FIRST_RUN.txt` documents where settings live.
+
 ## [1.0.6] - 2026-09-04
 
 Makes the robot's browser window reviewable by hand: the whole page is now inside

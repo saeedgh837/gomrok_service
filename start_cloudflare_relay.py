@@ -7,6 +7,11 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
 # The interpreter running this script: the bundled python.exe in a release, the
 # developer's python during development. A hardcoded path breaks the release on
 # any machine without that exact install (see panel._resolve_robot_python).
@@ -14,9 +19,9 @@ PYTHON = sys.executable
 CLOUDFLARED = os.path.join(HERE, ".tools", "cloudflared.exe")
 AUTH_RELAY = os.path.join(HERE, "cloudflare_auth_relay.py")
 HTTP_PROXY_RELAY = os.path.join(HERE, "cloudflare_http_proxy.py")
-URL_PATH = os.path.join(HERE, "cloudflare_public_url.txt")
-LOG_PATH = os.path.join(HERE, "cloudflare_tunnel.log")
-CONFIG_PATH = os.path.join(HERE, "relay_config.json")
+URL_PATH = app_paths.data_path("cloudflare_public_url.txt")
+LOG_PATH = app_paths.data_path("cloudflare_tunnel.log")
+CONFIG_PATH = app_paths.data_path("relay_config.json")
 QUICK_TUNNEL_API = "https://api.trycloudflare.com/tunnel"
 
 

@@ -34,13 +34,25 @@ Installs the dependencies from `requirements.txt` into your system Python, then:
 python panel.py
 ```
 
-## Configuration
+## Configuration and data
 
-Copy each template and fill it in. None of these are committed:
+Configuration, profiles, state and logs live in a per-user data directory
+**outside** the program folder, so replacing the program on an update never
+touches them:
 
-- `telegram_config.example.json` → `telegram_config.json`
-- `upstream_proxy.example.json` → `upstream_proxy.json`
-- `relay_config.example.json` → `relay_config.json`
+| Platform | Location |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\irica` |
+| POSIX | `$XDG_DATA_HOME/irica` (default `~/.local/share/irica`) |
+| Override | `IRICA_DATA_DIR` (any path — use it for a portable install) |
+
+Set the Telegram bot token and chat IDs in the panel itself; they are written
+there. `relay_config.json` and `upstream_proxy.json` also belong in that
+directory — the `*.example.json` templates in this repo show their shape and are
+the only versions ever committed.
+
+Files left in an older release folder are copied into the data directory
+automatically on first run (copied, not moved, so a rollback still works).
 
 ## Versioning
 

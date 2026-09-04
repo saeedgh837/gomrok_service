@@ -26,6 +26,7 @@ import random
 import sys
 import time
 
+import app_paths
 import captcha_collector as cc
 import gomrok as G
 import system_debug
@@ -36,7 +37,7 @@ from selenium.webdriver.support import expected_conditions as EC
 G.ensure_utf8_stdio()
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or os.path.join(_HERE, "estelam_store.json")
+_STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or app_paths.data_path("estelam_store.json")
 
 PAGE_LOAD_SEC = 12
 CAPTCHA_WAIT_SEC = 10

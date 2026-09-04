@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import app_paths
 import system_debug
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -181,8 +182,8 @@ TRANSIENT_MARKERS = [
     "مقدور نمی‌باشد",
 ]
 
-_LOG_PATH = os.path.join(_HERE, "hamta_logs.jsonl")
-_STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or os.path.join(_HERE, "estelam_store.json")
+_LOG_PATH = app_paths.data_path("hamta_logs.jsonl")
+_STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or app_paths.data_path("estelam_store.json")
 
 # naghshe-ye status-e hamta -> status-e log-e panel (rang/icon-e moshtarak ba gomrok)
 _PANEL_LOG_STATUS = {

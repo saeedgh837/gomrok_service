@@ -31,6 +31,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -63,6 +64,7 @@ RUNTIME_REQS = [
 
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
+    "app_paths.py",
     "estelam_all.py", "estelam_gomrok.py", "estelam_hamta.py", "exitban.py",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
@@ -136,14 +138,36 @@ FIRST_RUN_TXT = """Before the first run
    and save it as  C:\\chromedriver.exe
    (Check your Chrome version at chrome://settings/help.)
 
-3) Copy telegram_config.example.json to telegram_config.json and fill in your
-   bot token and chat IDs. Do the same for upstream_proxy.example.json and
-   relay_config.example.json only if you use a SOCKS5 proxy or the Cloudflare
-   relay.
+3) Double-click install.bat once to verify the bundled runtime.
 
-4) Double-click install.bat once to verify the bundled runtime.
+4) Double-click run_panel.bat and open http://127.0.0.1:8750/site-1
 
-5) Double-click run_panel.bat and open http://127.0.0.1:8750/site-1
+5) Set the Telegram bot token and chat IDs INSIDE the panel, on its Telegram
+   settings page. They are saved outside this folder, so future updates keep
+   them.
+
+
+Where your settings and data live
+================================
+
+Not in this folder. Everything you configure -- the Telegram token, profiles,
+device inquiries, logs -- is stored in:
+
+   %LOCALAPPDATA%\\irica
+
+To upgrade, just unzip the new release into a new folder and run it. Nothing
+needs to be copied by hand. Upgrading from v1.0.6 or older also needs nothing:
+files found in the old release folder are imported automatically on first run
+(copied, not moved, so the old version keeps working if you go back).
+
+To keep the data next to the program instead (a portable install on a USB
+drive, for example), set IRICA_DATA_DIR before starting:
+
+   set IRICA_DATA_DIR=%~dp0data
+
+Advanced: relay_config.json and upstream_proxy.json also live in that data
+folder. The *.example.json templates here show their shape; only fill them in if
+you use a SOCKS5 proxy or the Cloudflare relay.
 
 Everything else (Python and all libraries) is already inside this folder.
 """
@@ -370,12 +394,17 @@ def smoke(stage: Path) -> None:
     probe_path.write_text(probe, encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME", "IRICA_ROBOT_PYTHON")}
+    # Importing panel resolves the data directory and would otherwise touch the
+    # developer's real %LOCALAPPDATA%\irica. Point it at a throwaway directory.
+    smoke_data = Path(tempfile.mkdtemp(prefix="irica-smoke-data-"))
+    env["IRICA_DATA_DIR"] = str(smoke_data)
     try:
         res = subprocess.run([str(python), str(stage / "robot_launcher.py"), str(probe_path)],
                              cwd=str(stage), capture_output=True, text=True,
                              timeout=300, env=env)
     finally:
         probe_path.unlink(missing_ok=True)
+        shutil.rmtree(smoke_data, ignore_errors=True)
     if "SMOKE_OK" not in res.stdout:
         raise SystemExit("bundle smoke test FAILED after prune:\n"
                          f"{res.stdout[-1500:]}\n{res.stderr[-1500:]}")

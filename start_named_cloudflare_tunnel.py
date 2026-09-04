@@ -4,6 +4,11 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import app_paths  # noqa: E402  (needs HERE on sys.path first)
+
 # The interpreter running this script: the bundled python.exe in a release, the
 # developer's python during development. A hardcoded path breaks the release on
 # any machine without that exact install (see panel._resolve_robot_python).
@@ -11,7 +16,7 @@ PYTHON = sys.executable
 CLOUDFLARED = os.path.join(HERE, ".tools", "cloudflared.exe")
 AUTH_RELAY = os.path.join(HERE, "cloudflare_auth_relay.py")
 CONFIG = os.path.join(HERE, "cloudflare_named_tunnel.yml")
-LOG = os.path.join(HERE, "cloudflare_named_tunnel.log")
+LOG = app_paths.data_path("cloudflare_named_tunnel.log")
 
 
 def wait_relay(url, expected_status, timeout=15):

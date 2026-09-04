@@ -52,6 +52,7 @@ SECRET_PATTERNS = [
 ]
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
+    "app_paths.py",
     "run_panel.bat", "install.bat", "FIRST_RUN.txt", "README.md", "VERSION",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "telegram_config.example.json",
@@ -81,10 +82,15 @@ def free_port() -> int:
     return port
 
 
-def env_clean() -> dict:
-    return {k: v for k, v in os.environ.items()
-            if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME",
-                         "IRICA_ROBOT_PYTHON")}
+def env_clean(data_dir: Path | None = None) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME",
+                        "IRICA_ROBOT_PYTHON", "IRICA_DATA_DIR")}
+    # Importing panel resolves the data directory. Every probe gets a throwaway
+    # one so verification never reads or writes the operator's real settings.
+    env["IRICA_DATA_DIR"] = str(data_dir or Path(
+        tempfile.mkdtemp(prefix="irica-verify-data-")))
+    return env
 
 
 # --------------------------------------------------------------------------- #
@@ -122,8 +128,15 @@ def check_safety(dist: Path) -> None:
     check("no secret-shaped strings in any bundled text file", not hits, str(hits[:5]))
 
     # national IDs / mobiles from the operator's real profiles must not appear.
-    store = ROOT / "profiles.json"
-    if store.exists():
+    # The store now lives in the data directory; the repo root is the pre-v1.0.7
+    # location and is still checked so this gate keeps working either way.
+    candidates = []
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "irica" / "profiles.json")
+    candidates.append(ROOT / "profiles.json")
+    store = next((c for c in candidates if c.exists()), None)
+    if store is not None:
         try:
             profiles = json.loads(store.read_text(encoding="utf-8")).get("profiles", [])
         except Exception:
@@ -142,7 +155,8 @@ def check_safety(dist: Path) -> None:
               not leaked, str(sorted(set(leaked))[:4]))
     else:
         check("live store present to diff PII against", False,
-              "profiles.json missing — PII check skipped")
+              "profiles.json not found in the data dir or the repo root — "
+              "PII check skipped")
 
 
 def check_completeness(dist: Path) -> None:
@@ -223,6 +237,17 @@ def check_function(dist: Path) -> None:
         "'national':'1','birth':'2','mobile':'3'})\n"
         "assert len(st['devices']) == 1 and st['devices'][0]['serial1'], st\n"
         "assert st['person']['national'] == '1', st\n"
+        # Config and state must resolve OUTSIDE the release folder, otherwise the
+        # next update wipes the operator's Telegram token and profile list again.
+        "import app_paths, os\n"
+        "here = os.path.normcase(os.path.dirname(os.path.abspath(panel.__file__)))\n"
+        "for name in ('TELEGRAM_PATH','PROFILES_PATH','INPUTS_PATH',"
+        "'ESTELAM_PATH','LOGS_PATH','SYSTEM_LOG_DIR'):\n"
+        "    v = os.path.normcase(getattr(panel, name))\n"
+        "    assert not v.startswith(here + os.sep), (name, v)\n"
+        "import telegram_notify as tn\n"
+        "assert os.path.normcase(tn._CFG_PATH) == os.path.normcase(panel.TELEGRAM_PATH)\n"
+        "assert os.environ['IRICA_DATA_DIR'] in panel.TELEGRAM_PATH, panel.TELEGRAM_PATH\n"
         "print('OK', len(mods), r, type(hs).__name__)\n"
     )
     probe_path.write_text(probe, encoding="utf-8")
@@ -236,10 +261,13 @@ def check_function(dist: Path) -> None:
         res.stdout.strip().splitlines()[-1].startswith("OK")
     check("robots launch under the bundled python and read a captcha", ok,
           res.stdout.strip()[-200:] or res.stderr.strip()[-200:])
+    check("config and state resolve outside the release folder",
+          ok, "asserted inside the bundled probe")
 
     # Serve the panel from a temp CWD so the real profiles.json is never touched.
     port = free_port()
     work = Path(tempfile.mkdtemp(prefix="release-panel-"))
+    data = Path(tempfile.mkdtemp(prefix="release-data-"))
     runner = work / "serve.py"
     runner.write_text(
         "import sys, os\n"
@@ -255,7 +283,7 @@ def check_function(dist: Path) -> None:
         encoding="utf-8")
     proc = subprocess.Popen([str(python), str(runner)], cwd=str(work),
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, env=env_clean())
+                            text=True, env=env_clean(data))
     try:
         up = False
         for _ in range(60):
