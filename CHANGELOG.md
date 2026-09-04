@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
-## [1.0.5] - 2026-09-04
+## [1.0.6] - 2026-09-04
 
 Makes the robot's browser window reviewable by hand: the whole page is now inside
 the window, and it can be scrolled with the mouse.
@@ -49,6 +49,20 @@ the window, and it can be scrolled with the mouse.
 - Real OS mouse wheel and real OS mouse drag both scroll the robot's window, for
   the customs and HAMTA drivers alike; the bottom of a login-page-sized document
   is fully reachable in both.
+
+## [1.0.5] - 2026-09-04
+
+Hardens the bundled Python runtime so a missing dependency cannot surface on the
+operator's machine.
+
+### Fixed
+
+- Added `install.bat` to verify the bundled Python runtime before startup, and
+  `run_panel.bat` now runs that verification automatically.
+- The `requests` runtime dependencies are installed explicitly and kept inside the
+  bundle: `urllib3`, `certifi`, `charset-normalizer`, `idna`.
+- Release builds disable user-site packages and verify the complete `requests`
+  import closure both before packaging and during bundle verification.
 
 ## [1.0.4] - 2026-09-04
 
