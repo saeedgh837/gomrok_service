@@ -1093,9 +1093,34 @@ def type_and_verify(driver, wicketpath, value, tries=3):
     return False
 
 
+def is_imei_fatal_error(messages):
+    """True agar khata-ye imeiStep DAEMI bashad (retry HICHVAQT javab nemidahad).
+
+    In tabe' YEK manba'-e vahed baraye tashkhis-e khata-ye koshande ast. Bayad
+    GHABL az har tasmim-e retry seda zade shavad, chon site khata-ye daemi-ra
+    dakhel-e hamun ghalef-e "خطا در استعلام imei از سامانه همتا" mifrestad ke
+    khata-ye MOVAGHAT-e hamta ham ba haman ghalef miayad. Namune-ye vaghe'i:
+
+        خطا در استعلام imei از سامانه همتا : شناسه (IMEI) وارد شده قبلا در
+        شبکه داخلی کشور ثبت و فعال شده و امکان ورود آن وجود ندارد
+
+    Agar in ghalef be tanhaei "retryable" hesab shavad, robot ba captcha-ye taze
+    bi-nahayat submit mikonad (max_attempts=None) va profile HARGEZ "gheyr-e
+    ghabel-e vorud" alamat nemikhorad.
+    """
+    text = " | ".join(str(x or "") for x in (messages or []))
+    if not text:
+        return False
+    return any(marker in text for marker in IMEI_FATAL_MARKERS)
+
+
 def is_imei_captcha_retry_error(messages):
     text = " | ".join(str(x or "") for x in (messages or []))
     low = text.lower()
+    # Khata-ye DAEMI hamishe barande ast: yek hoshdar-e captcha-ye mande roo-ye
+    # safhe nabayad IMEI-ye daemi-rad-shode-ra "ghabel-e talash-e dobare" konad.
+    if is_imei_fatal_error(messages):
+        return False
     return (
         "کد امنیتی صحیح" in text or
         "امنیتی صحیح" in text or
@@ -1108,7 +1133,7 @@ def is_imei_captcha_retry_error(messages):
 
 def is_imei_transient_error(messages):
     text = " | ".join(str(x or "") for x in (messages or []))
-    if not text or any(marker in text for marker in IMEI_FATAL_MARKERS):
+    if not text or is_imei_fatal_error(messages):
         return False
     return any(
         marker.lower() in text.lower() if marker.isascii() else marker in text
@@ -1117,6 +1142,8 @@ def is_imei_transient_error(messages):
 
 
 def is_imei_retryable_error(messages):
+    if is_imei_fatal_error(messages):
+        return False
     return (is_imei_captcha_retry_error(messages) or
             is_imei_transient_error(messages))
 
@@ -2505,6 +2532,28 @@ def main():
                     # farsi ra be console-e cp1252 nafrest (khata mide) -> repr-e ascii-safe
                     print("     -", m.encode("unicode_escape").decode("ascii"))
 
+            # Khata-ye DAEMI (mesl "IMEI qablan dar shabake-ye dakheli sabt va
+            # fa'al shode") ra GHABL az halghe-ye retry migirim: an halghe ba
+            # max_attempts=None ejra mishavad, pas yek tashkhis-e ghalat ya'ni
+            # submit-e bi-nahayat roo-ye site-e zende.
+            if is_imei_fatal_error(err):
+                err_text = " | ".join(err)
+                _mark_panel_profile_unusable(_CLAIMED_PROFILE_ID, err_text)
+                log_event("error",
+                          f"khata-ye KOSHANDE dar imeiStep (edame momken nist): {err_text}",
+                          step="marhale-1/imeiStep",
+                          title=title, national=national, imei=imei)
+                print(">>> KHATA-ye KOSHANDE roo-ye safhe-ye avval — in profile "
+                      "GHEYR-e GHABEL-e VORUD ast (retry fayde nadarad). "
+                      "ROBOT motevaghef mishavad:")
+                print("     " + err_text.encode("unicode_escape").decode("ascii"))
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+                return
+
             if is_imei_retryable_error(err):
                 if is_imei_transient_error(err):
                     log_event("warn",
@@ -2601,11 +2650,8 @@ def main():
                 By.CSS_SELECTOR, f'[wicketpath="{WP_HAMTA_CONTINUE}"]')
             if err and still_imei and no_hamta:
                 err_text = " | ".join(err)
-                fatal = any(mk in err_text for mk in IMEI_FATAL_MARKERS)
-                transient = (not fatal) and any(
-                    mk.lower() in err_text.lower() if mk.isascii()
-                    else mk in err_text
-                    for mk in IMEI_TRANSIENT_MARKERS)
+                fatal = is_imei_fatal_error(err)
+                transient = is_imei_transient_error(err)
                 if fatal:
                     _mark_panel_profile_unusable(_CLAIMED_PROFILE_ID, err_text)
                     log_event("error",

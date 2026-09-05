@@ -472,6 +472,7 @@ def clone_profile(profile_id):
         clone.update({
             "id": _new_id(), "title": f"{base} {number}",
             "registration_status": "pending", "success_at": "", "payment_link": "",
+            "runtime_error": "",
             "run_status": "idle", "runner_id": "", "busy_since": "", "runner_pid": 0,
             "heartbeat_at": "", "exitban_status": "not_checked", "exitban_result": "",
             "exitban_checked_at": "", "device_inquiry_pid": 0, "device_inquiry_service": "",

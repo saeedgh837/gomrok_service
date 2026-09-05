@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.9] - 2026-09-05
+
+An IMEI that is already active on the domestic network now blocks its profile
+instead of being retried forever.
+
+### Fixed
+
+- On the customs login page the site reports a permanently rejected device as
+  `خطا در استعلام imei از سامانه همتا : شناسه (IMEI) وارد شده قبلا در شبکه داخلی
+  کشور ثبت و فعال شده و امکان ورود آن وجود ندارد`. That wrapper is also how a
+  genuine transient HAMTA inquiry failure arrives, so the message was classified
+  as retryable: the robot refreshed the captcha and resubmitted without limit
+  (`max_attempts=None`), never reached the fatal branch, and never marked the
+  profile unusable. The permanent reason inside the wrapper now wins — the
+  profile is marked `blocked`, the busy claim is released, the reason is stored,
+  and the robot stops.
+- Fatal detection is now a single function, `is_imei_fatal_error()`, consulted
+  before every retry decision, so the retry classifier and the post-submit branch
+  can no longer disagree. A stale captcha warning sitting on the page alongside a
+  permanent rejection can no longer rescue it.
+- A HAMTA inquiry failure with no permanent reason (`خطا در دریافت پاسخ از سازمان
+  مربوطه`, `لطفا مجددا تلاش کنید`, `Invalid timestamp`) is still retried and
+  leaves the profile runnable.
+- Cloning a blocked profile now clears its `runtime_error` as well as its status.
+  The clone was already reset to `pending`, but it inherited the old reason and
+  the card kept showing "غیرقابل ورود" for a profile that was actually runnable.
+  The clone is the intended route back to a usable profile, since editing one
+  deliberately preserves runtime status.
+
 ## [1.0.8] - 2026-09-04
 
 Completes v1.0.7: the settings import now works for the upgrade path the release
