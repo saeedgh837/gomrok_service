@@ -2,7 +2,7 @@
 
 Packaged build of the IRICA registration panel and robots.
 Bundle: `irica-v1.0.9-win64.zip`
-SHA256: `PENDING`
+SHA256: `9c78d4b3f07a81e2ec80d5941767639e32c7e242dceabf5d58891966faf9a678`
 
 ## Why this release
 
