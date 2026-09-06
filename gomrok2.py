@@ -1279,7 +1279,7 @@ def _build_desktop_driver():
     options.add_argument("--start-maximized")
     options.add_argument(f"--user-agent={ua}")
 
-    path = getattr(cc, "CHROMEDRIVER_PATH", "")
+    path = cc.resolve_chromedriver()
     if path and os.path.isfile(path):
         return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
     return webdriver.Chrome(options=options)
@@ -1294,7 +1294,7 @@ def _attach_driver(address):
 
     options = Options()
     options.add_experimental_option("debuggerAddress", address)
-    path = getattr(cc, "CHROMEDRIVER_PATH", "")
+    path = cc.resolve_chromedriver()
     if path and os.path.isfile(path):
         return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
     return webdriver.Chrome(options=options)

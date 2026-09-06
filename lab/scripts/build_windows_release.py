@@ -81,6 +81,7 @@ APP_FILES = [
     "cloudflare_auth_relay.py", "cloudflare_http_proxy.py",
     "start_cloudflare_relay.py", "start_named_cloudflare_tunnel.py",
     "telegram_api_relay.py",
+    "panel_gui.pyw",
     "dashboard-new.html",
     "telegram_config.example.json", "upstream_proxy.example.json",
     "relay_config.example.json",
@@ -142,14 +143,19 @@ FIRST_RUN_TXT = """Before the first run
 
 1) Install Google Chrome.
 
-2) Download the chromedriver.exe that matches your Chrome MAJOR version from
+2) chromedriver: a matching copy is bundled in .tools\\chromedriver.exe, so
+   normally nothing to do. Only if Chrome auto-updated to a NEW major version
+   and the robots warn about a version mismatch, download the matching
+   chromedriver.exe from
    https://googlechromelabs.github.io/chrome-for-testing/
-   and save it as  C:\\chromedriver.exe
-   (Check your Chrome version at chrome://settings/help.)
+   and save it as  C:\\chromedriver.exe  (the override the robots check first;
+   check your Chrome version at chrome://settings/help.)
 
 3) Double-click install.bat once to verify the bundled runtime.
 
 4) Double-click run_panel.bat and open http://127.0.0.1:8750/site-1
+   (with the IRICA-Setup installer, use the "IRICA" shortcut instead — it
+   starts without a console window.)
 
 5) Set the Telegram bot token and chat IDs INSIDE the panel, on its Telegram
    settings page. They are saved outside this folder, so future updates keep
@@ -338,6 +344,23 @@ def copy_app(stage: Path) -> None:
     (stage / "run_panel.bat").write_text(RUN_PANEL_BAT, encoding="utf-8")
     (stage / "install.bat").write_text(INSTALL_BAT, encoding="utf-8")
     (stage / "FIRST_RUN.txt").write_text(FIRST_RUN_TXT, encoding="utf-8")
+
+    # Bundle chromedriver when a copy is available next to the build script or
+    # at the C:\ override the robots historically use. Optional by design: a
+    # build on a machine without the driver still ships a working bundle
+    # (Selenium Manager resolves it), it just keeps the FIRST_RUN manual step.
+    driver_candidates = [ROOT / ".tools" / "chromedriver.exe",
+                         Path(r"C:\chromedriver.exe")]
+    for candidate in driver_candidates:
+        if candidate.is_file():
+            tools = stage / ".tools"
+            tools.mkdir(exist_ok=True)
+            shutil.copy2(candidate, tools / "chromedriver.exe")
+            log(f"  chromedriver bundled: {candidate}")
+            break
+    else:
+        log("  WARN no chromedriver found to bundle "
+            "(.tools\\chromedriver.exe or C:\\chromedriver.exe)")
 
 
 def strip_caches(stage: Path) -> None:

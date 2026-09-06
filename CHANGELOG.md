@@ -3,6 +3,43 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.12] - 2026-09-06
+
+The installable release: a per-user Windows installer replaces the
+unzip-into-a-new-folder upgrade loop.
+
+### Added
+
+- `IRICA-Setup-vX.Y.Z.exe` built with Inno Setup (`lab/scripts/irica.iss`,
+  `lab/scripts/build_windows_installer.py`): per-user install to
+  `%LOCALAPPDATA%\Programs\IRICA`, no admin rights, in-place upgrades,
+  desktop/Start-Menu shortcuts launching `panel_gui.pyw` (console-less), an
+  optional autostart task, and an uninstaller that never touches
+  `%LOCALAPPDATA%\irica` user data.
+- Silent launcher `panel_gui.pyw`: runs the panel without a console window,
+  logs crashes to `%LOCALAPPDATA%\irica\panel_crash.log` and shows a
+  message box instead of dying silently.
+- chromedriver is bundled into `.tools\` by the release build when a copy is
+  available; the manual FIRST_RUN download step becomes optional.
+- Shared chromedriver resolution in `captcha_collector.resolve_chromedriver()`:
+  explicit override -> bundled `.tools` copy -> Selenium Manager. `gomrok2.py`,
+  `estelam_hamta.py` and `exitban.py` now route through it instead of their
+  own hardcoded paths.
+- Chrome/chromedriver version-compat check (`check_driver_compat`): a Persian
+  warning names both majors when the driver does not match the installed
+  Chrome, so post-Chrome-update robot failures are diagnosable immediately.
+- Single-instance gate in `panel.main()`: a second panel start detects the
+  running panel via an HTTP probe (including pre-1.0.11 panels via markup
+  markers), prints a clear message and opens the running panel instead of
+  crashing on the bind.
+
+### Notes
+
+- The installer is unsigned; SmartScreen shows "More info → Run anyway" on
+  first run.
+- Inno Setup is a build-time-only dependency (installed via winget on demand);
+  running the panel or the installer needs nothing beyond the bundle.
+
 ## [1.0.11] - 2026-09-06
 
 Panel polish: version badge, profile names on inquiry results, and a release

@@ -4105,7 +4105,51 @@ def clean_project_root():
             pass
 
 
+def start_gate_decision(probe_ok, probe_version):
+    """Pure decision for the single-instance gate.
+
+    (probe_ok, probe_version) is what the port probe observed. Returns
+    ("already-running", version) when another panel of this project answers
+    on the port, ("proceed", "") otherwise. Kept pure so tests cover the
+    logic without sockets."""
+    if probe_ok:
+        return ("already-running", str(probe_version or ""))
+    return ("proceed", "")
+
+
+def _panel_already_running(timeout=1.5):
+    """True when a panel of THIS project already answers on HOST:PORT.
+
+    New panels embed 'irica-version'; panels from releases older than 1.0.11
+    are still recognized via their Persian site-picker markers, so upgrading
+    over a running old install still refuses instead of crashing on bind.
+    An unrelated service on the port (different markup) does not block us.
+    """
+    probe_url = f"http://{HOST}:{PORT}/"
+    try:
+        import urllib.request
+        with urllib.request.urlopen(probe_url, timeout=timeout) as resp:
+            body = resp.read(65536).decode("utf-8", "replace")
+    except Exception:
+        return False
+    if "irica-version" in body or app_version_text() in body:
+        return True
+    # Pre-1.0.11 marker: the site picker's title + a site-1 link together
+    # are specific enough to be this project and nothing else.
+    return "سامانه مدیریت گمرک" in body and "/site-1" in body
+
+
 def main():
+    if _panel_already_running():
+        url = f"http://{HOST}:{PORT}"
+        print(f">>> Panel-e digari hamin port ast: {url}")
+        print(">>> Baraye start-e nuskhe-ye jadid, aval panel-e fe'li ra beband.")
+        try:
+            import webbrowser
+            webbrowser.open(url + "/site-1")
+        except Exception:
+            pass
+        return
     url = f"http://{HOST}:{PORT}"
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     load_store()  # motmaen sho profiles.json +inputs.json sakhte/sync shode-and

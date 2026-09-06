@@ -64,6 +64,22 @@ except Exception:
 # ---------------------------------------------------------------------------
 URL = "https://hamta.ntsw.ir/"
 CHROMEDRIVER_PATH = r"C:\chromedriver.exe"
+
+
+def cc_resolve_chromedriver():
+    """Hand-managed override first, then the shared bundled-copy resolver.
+
+    estelam_hamta.py does not import captcha_collector (it keeps its own
+    selenium setup), so the override logic is mirrored here and the bundled
+    copy comes from the shared resolver in captcha_collector."""
+    if CHROMEDRIVER_PATH and os.path.isfile(CHROMEDRIVER_PATH):
+        return CHROMEDRIVER_PATH
+    try:
+        import captcha_collector
+        return captcha_collector.resolve_chromedriver()
+    except Exception:
+        return ""
+
 USE_EDGE = False
 # height=0 ya'ni "in mehvar ra override nakon": viewport hamandaze-ye nahiye-ye
 # ghabel-e namayesh-e panjere mishavad. ba 932 (ghad-e vaghe'i-ye iPhone) 151 pixel-e
@@ -332,9 +348,12 @@ def build_driver():
     o.add_experimental_option("mobileEmulation",
                               {"deviceMetrics": MOBILE_METRICS, "userAgent": UA})
     o.add_argument(window_size_arg())
-    if CHROMEDRIVER_PATH:
+    # Shared resolver: C:\chromedriver.exe override -> bundled .tools copy ->
+    # Selenium Manager. Same order as captcha_collector.build_chrome.
+    driver_path = cc_resolve_chromedriver()
+    if driver_path:
         return install_manual_scroll(
-            webdriver.Chrome(service=ChromeService(executable_path=CHROMEDRIVER_PATH),
+            webdriver.Chrome(service=ChromeService(executable_path=driver_path),
                              options=o))
     return install_manual_scroll(webdriver.Chrome(options=o))
 

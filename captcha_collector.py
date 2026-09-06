@@ -16,6 +16,8 @@ import hashlib
 import io
 import os
 import random
+import re
+import subprocess
 import time
 
 from PIL import Image
@@ -58,10 +60,13 @@ MIN_DARK_RATIO = 0.15
 # ---------------------------------------------------------------------------
 # Tanzimat-e driver-e morurgar
 # ---------------------------------------------------------------------------
+HERE = os.path.dirname(os.path.abspath(__file__))
 # Masir-e dasti-ye chromedriver.
 # Agar Selenium natavanest khodkar driver ra download konad (server-e Google filter ast),
 # file chromedriver.exe motenaseb ba version-e Chrome khod ra download konid va masir-ash ra
 # inja vared konid. mesal:  CHROMEDRIVER_PATH = r"C:\chromedriver.exe"
+# Khali bemanad -> resolve_chromedriver() khodkar entekhab mikonad (override ->
+# nuskhe-ye bundel-shode dar .tools\ -> Selenium Manager).
 CHROMEDRIVER_PATH = r"C:\chromedriver.exe"
 
 # Agar mikhahid mostaghiman az morurgar-e Edge estefade shavad, in ra True konid:
@@ -563,12 +568,120 @@ def save_captcha_with_padding(driver, element, file_path: str,
     crop.save(file_path)
 
 
+def resolve_chromedriver():
+    """One shared chromedriver resolution for every robot in this project.
+
+    Order (first existing file wins):
+      1. Explicit CHROMEDRIVER_PATH override (e.g. C:\\chromedriver.exe) —
+         kept for machines that manage the driver by hand.
+      2. The bundled copy in <install>\\.tools\\chromedriver.exe (shipped by
+         the installer) so a fresh install needs no manual download.
+      3. Empty string -> Selenium Manager resolves/downloads the driver.
+
+    The order matters: the override must stay first or a hand-managed newer
+    driver would be shadowed by the bundled one after Chrome updates.
+    """
+    override = str(globals().get("CHROMEDRIVER_PATH", "") or "").strip()
+    if override and os.path.isfile(override):
+        return override
+    bundled = os.path.join(HERE, ".tools", "chromedriver.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    return ""
+
+
+def _read_major_version(exe_path):
+    """Chrome/ChromeDriver 'XXX.YY.ZZZZ.NNN' major from --version output.
+
+    Returns an int, or None when the version cannot be read (missing exe,
+    unreadable output). Never raises."""
+    if not exe_path or not os.path.isfile(exe_path):
+        return None
+    try:
+        out = subprocess.run([exe_path, "--version"], capture_output=True,
+                             text=True, timeout=15)
+        text = (out.stdout or "") + (out.stderr or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"(\d+)\.\d+\.\d+(\.\d+)?", text)
+    return int(match.group(1)) if match else None
+
+
+def _chrome_major_from_registry_or_path():
+    """Installed Chrome's major version on Windows (best effort, never raises)."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive,
+                                r"Software\Google\Chrome\BLBeacon") as key:
+                value, _ = winreg.QueryValueEx(key, "version")
+                match = re.match(r"(\d+)\.", str(value))
+                if match:
+                    return int(match.group(1))
+        except OSError:
+            continue
+    return None
+
+
+def driver_compat_problem(driver_version="", browser_version=""):
+    """Persian warning when chromedriver and Chrome majors do not line up.
+
+    Arguments accept either a version STRING ("152.0.7977.83") or a path to
+    an exe whose --version output carries the number. Empty/unknown versions
+    never produce a false alarm, but a readable driver against a DIFFERENT
+    readable browser major does — that mismatch is what kills the robots
+    with SessionNotCreatedException after a Chrome auto-update.
+    """
+    driver_version, browser_version = str(driver_version or ""), str(browser_version or "")
+    if not driver_version or not browser_version:
+        return ""
+    if driver_version.lower().endswith(".exe"):
+        driver_major = _read_major_version(driver_version)
+    else:
+        match = re.match(r"(\d+)\.", driver_version)
+        driver_major = int(match.group(1)) if match else None
+    browser_match = re.match(r"(\d+)\.", browser_version)
+    if driver_major is None or not browser_match:
+        return ""
+    browser_major = int(browser_match.group(1))
+    if driver_major == browser_major:
+        return ""
+    return (f"هشدار نسخه: ChromeDriver نسخه {driver_major} است اما Chrome "
+            f"نسخه {browser_major} — ربات ممکن است باز نشود. لطفاً chromedriver "
+            f"متناسب با Chrome {browser_major} را جایگزین کنید.")
+
+
+def check_driver_compat(driver_path=""):
+    """Log (and return) the compat warning for a resolved chromedriver path.
+
+    Browser version is read from the Windows registry; on failure the check
+    stays silent — this is a warning channel, never a blocker."""
+    problem = ""
+    driver_path = driver_path or resolve_chromedriver()
+    if driver_path:
+        browser_major = _chrome_major_from_registry_or_path()
+        if browser_major:
+            driver_major = _read_major_version(driver_path)
+            if driver_major and driver_major != browser_major:
+                problem = driver_compat_problem(str(driver_major),
+                                                str(browser_major))
+    if problem:
+        print("!!! " + problem)
+    return problem
+
+
 def build_chrome(user_agent=None):
     """Sakht-e driver-e Chrome (ba driver-e dasti dar soorat-e tanzim-e CHROMEDRIVER_PATH)."""
     options = Options()
     # baraye ejra bedun-e namayesh-e panjere, khat-e zir ra az comment kharej konid:
     # options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
+
+    resolved_driver = resolve_chromedriver()
+    check_driver_compat(resolved_driver)
 
     if MOBILE_EMULATION:
         # Emulation-e mobile-e Chrome (daghighan hamon-e DevTools ba resolution-e mobile).

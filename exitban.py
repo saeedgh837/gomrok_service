@@ -67,9 +67,14 @@ def ensure_complete(identity):
 def _build_driver():
     import captcha_collector as cc
 
-    if not os.path.isfile(DRIVER_PATH):
-        raise FileNotFoundError("ChromeDriver پروژه پیدا نشد")
-    cc.CHROMEDRIVER_PATH = DRIVER_PATH
+    # Shared resolution: the exitban-local .tools copy is only preferred when
+    # it actually exists; otherwise the resolver picks the C:\ override or the
+    # bundled copy, and Selenium Manager as the last resort (no hard failure).
+    if os.path.isfile(DRIVER_PATH):
+        cc.CHROMEDRIVER_PATH = DRIVER_PATH
+    else:
+        cc.CHROMEDRIVER_PATH = cc.resolve_chromedriver()
+    cc.check_driver_compat(cc.CHROMEDRIVER_PATH or DRIVER_PATH)
     return cc.build_driver(cc.USER_AGENTS[0])
 
 
