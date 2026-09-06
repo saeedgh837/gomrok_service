@@ -86,16 +86,77 @@ Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\panel_gui.pyw"""; \
 ; Only leftovers inside the install dir itself are removed by Inno anyway.
 
 [Code]
-// Ask the running panel to close before files are copied. The panel is a
-// python.exe/pythonw.exe process serving http://127.0.0.1:8750; a graceful
-// approach: detect, warn, and let the operator close it (the single-instance
-// gate then makes the post-install launch a no-op until they do).
-function InitializeSetup(): Boolean;
+// If the panel is running from the install dir, its python/pythonw processes
+// hold the bundled DLLs and file replacement fails with "DeleteFile failed;
+// code 5". Detect the panel (HTTP probe on 127.0.0.1:8750), warn the
+// operator, and force-stop every python process running from {app} — that
+// includes robot children launched by the panel. The profile store uses
+// atomic writes, so a force-stop between jobs is safe.
+
+function PanelIsRunning(): Boolean;
+var
+  Http: Variant;
+  Body: String;
 begin
-  Result := True;
+  Result := False;
+  try
+    Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
+    Http.SetTimeouts(1500, 1500, 1500, 1500);
+    Http.Open('GET', 'http://127.0.0.1:8750/', False);
+    Http.Send('');
+    // 200 + our markup = this project's panel; other services do not block us
+    if Http.Status = 200 then
+    begin
+      Body := Http.ResponseText;
+      Result := (Pos('site-1', Body) > 0);
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+procedure KillPanelProcesses(const AppDir: String);
+var
+  Script, ScriptPath: String;
+  ResultCode: Integer;
+begin
+  Script :=
+    '$ErrorActionPreference = ''SilentlyContinue''' + #13#10 +
+    '$dir = ''' + AppDir + '''' + #13#10 +
+    '$procs = Get-CimInstance Win32_Process -Filter "Name=''pythonw.exe'' OR Name=''python.exe''" | ' +
+    'Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }' + #13#10 +
+    'foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force }' + #13#10 +
+    'if ($procs) { Start-Sleep -Seconds 2 }' + #13#10;
+  ScriptPath := ExpandConstant('{tmp}\close-irica-panel.ps1');
+  SaveStringToFile(ScriptPath, Script, False);
+  Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  DeleteFile(ScriptPath);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+  // Close any python/pythonw launched from {app} even if the HTTP probe
+  // missed it (a crashed-but-locked process still holds the DLLs).
+  if PanelIsRunning() then
+  begin
+    if MsgBox('پنل IRICA در حال اجراست.' #13#10 #13#10 +
+              'نصب‌کننده پنل را می‌بندد و نصب را ادامه می‌دهد.' #13#10 +
+              'اگر ربات یا استعلامی در حال اجرا باشد ممکن است متوقف شود.' #13#10 #13#10 +
+              'ادامه می‌دهید؟', mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := 'نصب لغو شد — ابتدا پنل IRICA را ببندید و دوباره تلاش کنید.';
+      exit;
+    end;
+  end;
+  // Always sweep {app} processes: HTTP probe or not, they lock the DLLs.
+  KillPanelProcesses(ExpandConstant('{app}'));
+  if PanelIsRunning() then
+  begin
+    // Force-stopped panel still answering: give it one settle window.
+    Sleep(2000);
+    if PanelIsRunning() then
+      Result := 'پنل IRICA بسته نشد — لطفاً خودتان پنل را ببندید و دوباره تلاش کنید.';
+  end;
 end;
