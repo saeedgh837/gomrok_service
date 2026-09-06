@@ -451,6 +451,62 @@ def mark_profile_unusable(profile_id, error_text):
         return True
 
 
+def app_version_text():
+    """Version of the running panel, read once from VERSION beside this file."""
+    global _APP_VERSION
+    if not _APP_VERSION:
+        try:
+            with open(os.path.join(HERE, "VERSION"), encoding="utf-8") as f:
+                _APP_VERSION = f.read().strip()
+        except OSError:
+            _APP_VERSION = ""
+    return _APP_VERSION
+
+
+_APP_VERSION = ""
+
+
+def release_blocked_profile_with_reason(profile_id):
+    """Unblock a blocked profile so the operator can edit and rerun it.
+
+    Only a profile that is actually blocked AND not busy is reset. Everything
+    the start gate refuses on is cleared: registration_status -> pending,
+    runtime_error dropped, runtime bookkeeping reset, inquiry bookkeeping back
+    to not_checked, and the profile re-enabled (mark_profile_unusable disabled
+    it). Returns (ok, message) — message is Persian for the panel UI.
+    """
+    with _locked_store():
+        store = load_store()
+        profile = next((p for p in store.get("profiles", [])
+                        if p.get("id") == str(profile_id or "")), None)
+        if not profile:
+            return False, "پروفایلی با این شناسه پیدا نشد"
+        if profile.get("run_status") == "busy":
+            return False, "پروفایل در حال اجراست؛ اول ربات را متوقف کنید"
+        if profile.get("registration_status") != "blocked":
+            return False, "این پروفایل مسدود نیست؛ نیازی به آزادسازی ندارد"
+        profile["registration_status"] = "pending"
+        profile["runtime_error"] = ""
+        profile["run_status"] = "idle"
+        profile["runner_id"] = ""
+        profile["busy_since"] = ""
+        profile["runner_pid"] = 0
+        profile["heartbeat_at"] = ""
+        profile["device_inquiry_pid"] = 0
+        profile["device_inquiry_service"] = ""
+        profile["device_inquiry_started_at"] = ""
+        profile["gomrok_inquiry_status"] = "not_checked"
+        profile["hamta_inquiry_status"] = "not_checked"
+        profile["enabled"] = True
+        save_store(store)
+        return True, f"پروفایل «{profile.get('title') or profile_id}» آزاد شد"
+
+
+def release_blocked_profile(profile_id):
+    """Boolean wrapper kept for callers that ignore the reason message."""
+    return release_blocked_profile_with_reason(profile_id)[0]
+
+
 def merge_profile_update(current, submitted):
     """Field-haye runtime/status ra dar edit-e form az dast nemidahad."""
     merged = dict(current or {})
@@ -1912,6 +1968,15 @@ PAGE_HEAD = """<!DOCTYPE html>
   .log-item,.settings-section,.inquiry-card,.exitban-result-card { border-radius:9px; background:var(--card2); }
   .api-health-toast { border-radius:10px; box-shadow:0 18px 50px rgba(16,24,40,.16); }
   .p-badge { font-size:10px; padding:3px 8px; font-weight:600; }
+  .release-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px; padding:12px 14px;
+    border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line)); border-radius:10px;
+    background:color-mix(in srgb,var(--danger) 6%,var(--card)); }
+  .release-btn { background:var(--danger); color:#fff; border:0; border-radius:9px; padding:10px 16px;
+    font-weight:700; cursor:pointer; }
+  .release-btn:hover { filter:brightness(1.07); }
+  .release-hint { color:var(--muted); font-size:11.5px; line-height:1.7; }
+  .irica-version { display:inline-block; margin-top:6px; padding:2px 10px; border:1px solid var(--line);
+    border-radius:999px; color:var(--muted); font-size:10.5px; direction:ltr; }
   @media(max-width:1100px){
     .sidebar{width:360px}.main{padding:24px}.switches{grid-template-columns:1fr}
   }
@@ -1952,6 +2017,7 @@ PAGE_HEAD = """<!DOCTYPE html>
           </div>
         </div>
         <div class="active-profile-banner" id="subtitle">پروفایل فعال: در حال بارگذاری...</div>
+        <div class="irica-version">نسخه __VERSION__</div>
       </header>
       <div class="stats" id="stats" aria-label="خلاصه وضعیت پروفایل‌ها">
         <div class="stat s-total"   data-filter="all"     title="نمایش همه"><div class="n" id="st-total">۰</div><div class="l">کل</div></div>
@@ -2279,9 +2345,27 @@ function buildForm(p){
       '<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div>'+
       '<div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div>'+
     '</div>'+
+    (p.registration_status==='blocked'?'<div class="release-row"><button type="button" class="release-btn" onclick="releaseBlockedProfile(activeId)">🔓 آزادسازی و شروع مجدد</button><span class="release-hint">پروفایل آزاد می‌شود و بعد از ذخیرهٔ ویرایش می‌توانید دوباره ربات را اجرا کنید</span></div>':'')+
     '<button type="submit" class="save">💾 ذخیره پروفایل</button>'+
     '<div class="toast" id="toast"></div>'+
   '</form>';
+}
+
+function releaseBlockedProfile(id){
+  if(!confirm('آزادسازی این پروفایل و پاک شدن دلیل مسدودی؟')) return;
+  fetch('/release-blocked',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})
+    .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data};});})
+    .then(function(res){
+      if(!res.ok){alert(res.data.message||res.data.error||'آزادسازی انجام نشد');return;}
+      STORE=res.data.store||STORE;
+      if(res.data.store){STORE=res.data.store;activeId=STORE.active_id;}
+      var t=document.getElementById('toast');
+      if(t){t.style.color='var(--ok)';t.textContent='✓ '+res.data.message;t.classList.add('show');
+        setTimeout(function(){t.classList.remove('show');},3500);}
+      renderProfiles();
+      var p=getProf(id); if(p){editProfile(id);}
+    })
+    .catch(function(){alert('ارتباط با پنل برقرار نشد');});
 }
 
 function addImei(val){
@@ -2511,28 +2595,32 @@ function profileResultClass(status){
   if(status==='running'||status==='not_checked')return 'running';
   return ['healthy','good','registered','complete'].indexOf(status)>=0?'good':'bad';
 }
+function profileInquiryLabel(p,service){
+  var svc=service==='hamta'?'همتا':service==='gomrok'?'گمرک':'گمرک و همتا';
+  return (p.title||p.national||'بدون عنوان')+' — '+svc;
+}
 function buildServiceResults(p,service){
   var state=p[service+'_inquiry_status']||'not_checked';
   var rows=p[service+'_inquiry_results']||[];
   var error=p[service+'_inquiry_error']||'';
-  if(state==='not_checked'&&!rows.length)return '<div class="device-result running"><strong>'+(service==='hamta'?'همتا':'گمرک')+'</strong><div class="device-result-text">هنوز استعلامی برای سریال‌های این پروفایل ثبت نشده است.</div></div>';
-  if(state==='running'&&!rows.length)return '<div class="device-result running"><strong>در حال استعلام '+(service==='hamta'?'همتا':'گمرک')+'</strong><div class="device-result-text">نتیجه هر سریال پس از پایان ربات در همین بخش نمایش داده می‌شود.</div></div>';
+  if(state==='not_checked'&&!rows.length)return '<div class="device-result running"><strong>'+profileInquiryLabel(p,service)+'</strong><div class="device-result-text">هنوز استعلامی برای سریال‌های این پروفایل ثبت نشده است.</div></div>';
+  if(state==='running'&&!rows.length)return '<div class="device-result running"><strong>در حال استعلام '+profileInquiryLabel(p,service)+'</strong><div class="device-result-text">نتیجه هر سریال پس از پایان ربات در همین بخش نمایش داده می‌شود.</div></div>';
   var html=rows.map(function(row){
     var st=row.status||'error';
     var serialDisplay = escHtml(row.serial||'--');
     if (row.serial2) {
         serialDisplay += ' / ' + escHtml(row.serial2);
     }
-    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
+    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-profile">👤 پروفایل: '+escHtml(p.title||p.national||'بدون عنوان')+'</div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
   }).join('');
-  if(error)html+='<div class="device-result bad"><strong>خطای اجرا</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
+  if(error)html+='<div class="device-result bad"><strong>خطای اجرا — '+profileInquiryLabel(p,service)+'</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
   return html;
 }
 function buildDeviceInquiryPanel(p){
   var service=PROFILE_INQUIRY_SERVICE;
   var results=service==='all'?buildServiceResults(p,'gomrok')+buildServiceResults(p,'hamta'):buildServiceResults(p,service);
   var running=p.device_inquiry_pid&&((p.gomrok_inquiry_status==='running')||(p.hamta_inquiry_status==='running'));
-  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><div id="profile-inquiry-status" class="hint"></div></div>';
+  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها'+(p?' — '+profileInquiryLabel(p,service):'')+'</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><div id="profile-inquiry-status" class="hint"></div></div>';
 }
 function selectProfileInquiry(service){
   PROFILE_INQUIRY_SERVICE=service;
@@ -2692,7 +2780,10 @@ def render_page():
     js = js.replace("__STORE_JSON__", json.dumps(store, ensure_ascii=False))
     js = js.replace("__LOGS_JSON__", json.dumps(logs, ensure_ascii=False))
     js = js.replace("__TELEGRAM_JSON__", json.dumps(public_telegram_config(), ensure_ascii=False))
-    html = PAGE_HEAD +js +PAGE_TAIL
+    version = app_version_text() or "—"
+    head = PAGE_HEAD.replace("__VERSION__", version)
+    tail = PAGE_TAIL.replace("__VERSION__", version)
+    html = head + js + tail
     return html.encode("utf-8")
 
 
@@ -2725,9 +2816,10 @@ h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
 .go{position:absolute;left:26px;bottom:24px;font-size:26px;transition:.2s}.site:hover .go{transform:translateX(-6px)}
 .foot{margin-top:26px;text-align:center;color:#6c7c9e;font-size:12px}
 .foot b{color:#9ca8c7;font-weight:700}
+.irica-version{margin-top:10px;font-size:11.5px;color:#6c7c9e;border:1px solid #ffffff1a;border-radius:999px;padding:3px 12px;display:inline-block}
 @media(max-width:700px){.sites{grid-template-columns:1fr}.site{min-height:200px}.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:27px}}
 </style></head><body><main class="wrap">
-<div class="top"><h1>سامانه مدیریت گمرک</h1><p class="sub">سامانه موردنظر را انتخاب کنید</p></div>
+<div class="top"><h1>سامانه مدیریت گمرک</h1><p class="sub">سامانه موردنظر را انتخاب کنید</p><div class="irica-version">نسخه __VERSION__</div></div>
 <section class="stats" id="stats" aria-label="خلاصه وضعیت">
   <div class="stat total"><div class="n" id="s-total">—</div><div class="l">کل پروفایل‌ها</div></div>
   <div class="stat running"><div class="n" id="s-running">—</div><div class="l">در حال اجرا</div></div>
@@ -2766,7 +2858,10 @@ refresh();setInterval(refresh,5000);
 
 
 def render_home_page():
-    return HOME_PAGE.replace("__PANEL_URL__", f"{HOST}:{PORT}").encode("utf-8")
+    html = HOME_PAGE.replace("__PANEL_URL__", f"{HOST}:{PORT}")
+    html = html.replace("__VERSION_TAG__",
+                        f'<span class="irica-version">نسخه {app_version_text() or "—"}</span>')
+    return html.replace("__VERSION__", app_version_text() or "—").encode("utf-8")
 
 
 def render_site_two_page():
@@ -2834,6 +2929,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   a.back{color:var(--muted);text-decoration:none;font-size:13px;border:1px solid var(--line);
          padding:7px 12px;border-radius:10px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:18px}
+  .irica-version{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 12px;direction:ltr;align-self:center}
   .card h2{margin:0 0 4px;font-size:17px}
   .hint{color:var(--muted);font-size:12.5px;margin:0 0 14px}
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -3039,6 +3135,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="top">
     <h1>استعلام سلامت دستگاه</h1>
+    <div class="irica-version">نسخه __VERSION__</div>
     <div class="wbar">
       <span class="wlab">عرض کادر:</span>
       <button type="button" class="wbtn" data-w="1080" onclick="setWrapW(1080)">معمولی</button>
@@ -3661,6 +3758,7 @@ def render_estelam_page():
                         json.dumps(ESTELAM_STATUS_FA, ensure_ascii=False))
     html = html.replace("__BADGE_JSON__",
                         json.dumps(ESTELAM_BADGE_FA, ensure_ascii=False))
+    html = html.replace("__VERSION__", app_version_text() or "—")
     return html.encode("utf-8")
 
 
@@ -3898,6 +3996,14 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             cloned = clone_profile(str(data.get("id") or ""))
             self._json(load_store() if cloned else {"error": "profile not found"}, 200 if cloned else 404)
+
+        elif self.path == "/release-blocked":
+            data = self._read_json()
+            ok, message = release_blocked_profile_with_reason(str(data.get("id") or ""))
+            payload = {"ok": ok, "message": message}
+            if ok:
+                payload["store"] = load_store()
+            self._json(payload, 200 if ok else 409)
 
         elif self.path == "/delete":
             data = self._read_json()

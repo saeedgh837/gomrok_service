@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.11] - 2026-09-06
+
+Panel polish: version badge, profile names on inquiry results, and a release
+button for blocked profiles.
+
+### Added
+
+- The panel version (from the bundled `VERSION` file) is now shown on all three
+  pages: the site picker, the main dashboard header, and the device-inquiry
+  page header (`نسخه x.y.z`).
+- Inquiry result rows now carry the profile's own name. The device-inquiry card
+  heading shows `پروفایل — سرویس` and every result row prints
+  `👤 پروفایل: <name>`, so results are unambiguous when several profiles are
+  checked in one session.
+- Blocked profiles get a `🔓 آزادسازی و شروع مجدد` button in the edit form.
+  `POST /release-blocked` resets `registration_status` to `pending`, drops the
+  stored `runtime_error`, re-enables the profile, and clears runtime and
+  inquiry bookkeeping (including `device_inquiry_pid` and the
+  `running` inquiry statuses) so the profile can be edited and rerun.
+  Refusals (busy, not blocked, missing id) return 409 with a Persian message
+  and change nothing.
+
+### Notes
+
+- The release route refuses to touch a busy profile; stop the robot first.
+
 ## [1.0.10] - 2026-09-05
 
 Dual-SIM devices on the customs login page now work correctly.
