@@ -83,6 +83,9 @@ APP_FILES = [
     "telegram_api_relay.py",
     "panel_gui.pyw",
     "dashboard-new.html",
+    # The [Icons] entries in irica.iss reference {app}\irica.ico; the
+    # installer build copies it into dist/ but the STAGE must ship it too.
+    "lab/scripts/irica.ico -> irica.ico",
     "telegram_config.example.json", "upstream_proxy.example.json",
     "relay_config.example.json",
     "README.md", "CHANGELOG.md", "VERSION",
@@ -304,11 +307,14 @@ def run(python: Path, *args, script: bool = False) -> None:
 
 def copy_app(stage: Path) -> None:
     for name in APP_FILES:
-        src = ROOT / name
+        # "src -> dst" renames: source is repo-relative, dst is stage-relative.
+        src_name, _, dst_name = name.partition(" -> ")
+        dst_name = dst_name or src_name
+        src = ROOT / src_name
         if not src.exists():
-            log(f"  WARN missing {name}")
+            log(f"  WARN missing {src_name}")
             continue
-        shutil.copy2(src, stage / name)
+        shutil.copy2(src, stage / dst_name)
 
     solver_dst = stage / "solver" / "checkpoints"
     solver_dst.mkdir(parents=True, exist_ok=True)

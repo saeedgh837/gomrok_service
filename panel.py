@@ -292,6 +292,82 @@ def _backup_path():
     return PROFILES_PATH + ".bak"
 
 
+# Set by shutdown_everything(); main()'s serve loop polls it and exits cleanly.
+_SHUTDOWN_REQUESTED = threading.Event()
+
+
+def stop_profile_inquiry(profile_id):
+    """Stop the profile's device-inquiry robot (profile_inquiry.py tree).
+
+    Kills the tracked pid (device_inquiry_pid) when alive, resets the running
+    inquiry bookkeeping, and reports a calm no-op when nothing is running.
+    Returns (ok, message) — ok is False only when the profile does not exist.
+    """
+    profile_id = str(profile_id or "").strip()
+    with _locked_store():
+        store = load_store()
+        profile = next((p for p in store.get("profiles", [])
+                        if p.get("id") == profile_id), None)
+        if not profile:
+            return False, "پروفایل پیدا نشد"
+        pid = int(profile.get("device_inquiry_pid") or 0)
+        running = bool(pid and _pid_alive(pid))
+        services = [name for name in ("gomrok", "hamta")
+                    if profile.get(f"{name}_inquiry_status") == "running"]
+        if running:
+            profile["device_inquiry_pid"] = 0
+            profile["device_inquiry_service"] = ""
+            for name in services or ["gomrok", "hamta"]:
+                profile[f"{name}_inquiry_status"] = "not_checked"
+                profile[f"{name}_inquiry_error"] = "توقف دستی توسط کاربر"
+            save_store(store)
+    if running:
+        stop_profile_process(pid)
+        return True, "استعلام متوقف شد و مرورگر بسته شد"
+    return True, "استعلامی برای این پروفایل در حال اجرا نیست"
+
+
+def shutdown_everything():
+    """Stop every robot this panel spawned, then ask main() to exit.
+
+    Kills: busy gomrok/gomrok2 runners, per-profile device inquiries and the
+    estelam (site-2) run. Returns a small summary for the HTTP response.
+    """
+    stopped = []
+    with _locked_store():
+        store = load_store()
+        for profile in store.get("profiles", []):
+            pids = []
+            if profile.get("run_status") == "busy" and profile.get("runner_pid"):
+                pids.append(int(profile["runner_pid"]))
+            inquiry_pid = int(profile.get("device_inquiry_pid") or 0)
+            if inquiry_pid:
+                pids.append(inquiry_pid)
+                profile["device_inquiry_pid"] = 0
+                profile["device_inquiry_service"] = ""
+                for name in ("gomrok", "hamta"):
+                    if profile.get(f"{name}_inquiry_status") == "running":
+                        profile[f"{name}_inquiry_status"] = "not_checked"
+                        profile[f"{name}_inquiry_error"] = "بستن سامانه توسط کاربر"
+            if profile.get("run_status") == "busy":
+                profile["run_status"] = "idle"
+                profile["runner_id"] = ""
+                profile["busy_since"] = ""
+                profile["runner_pid"] = 0
+                profile["heartbeat_at"] = ""
+            if pids:
+                stopped.extend(pids)
+        save_store(store)
+    estelam_pid = int(estelam_load().get("run_pid") or 0)
+    if estelam_pid:
+        stopped.append(estelam_pid)
+        estelam_stop()
+    for pid in stopped:
+        stop_profile_process(pid)
+    _SHUTDOWN_REQUESTED.set()
+    return {"ok": True, "stopped": stopped}
+
+
 def _parse_store_file(path):
     """File ra parse mikonad. Barmigardanad store-e tamiz ya None (nabood/harab)."""
     if not os.path.exists(path):
@@ -1591,27 +1667,57 @@ PAGE_HEAD = """<!DOCTYPE html>
     display:flex; align-items:center; justify-content:space-between; }
   /* kadr-e SABET-e profile-ha (scroll dakheli) */
   #prof-list { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; min-height:200px;
-    padding:4px 4px 4px 2px; border:1px solid var(--line); border-radius:14px;
-    background:color-mix(in srgb,var(--card2) 55%,transparent); }
+    padding:6px 4px 6px 2px; border:1px solid var(--line); border-radius:14px;
+    background:color-mix(in srgb,var(--card2) 55%,transparent); scroll-behavior:smooth; }
   #prof-list::-webkit-scrollbar { width:9px; }
   #prof-list::-webkit-scrollbar-thumb { background:color-mix(in srgb,var(--brand) 35%,var(--line)); border-radius:9px; }
-  .prof-item {
-    background:var(--card2); border:1px solid var(--line); border-radius:12px;
-    padding:12px 13px; cursor:pointer; transition:.15s; margin-bottom:8px;
-  }
-  .prof-item:hover { border-color:var(--brand); }
-  .prof-item.active { border-color:var(--brand); box-shadow:0 0 0 2px rgba(109,139,255,.25);
-    background:linear-gradient(135deg,rgba(109,139,255,.12),rgba(157,109,255,.08)); }
-  .prof-title { font-size:14px; font-weight:bold; display:flex; align-items:center; gap:6px; }
-  .prof-title-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* --- profile cards: stable anatomy (avatar / identity / status+run / footer) --- */
+  .prof-item { position:relative; background:var(--card); border:1px solid var(--line);
+    border-radius:12px; padding:12px; transition:.16s; margin-bottom:9px;
+    box-shadow:0 1px 2px rgba(16,24,40,.04); }
+  .prof-item:hover { border-color:#c9cdd5; box-shadow:0 5px 16px rgba(16,24,40,.09); transform:translateY(-1px); }
+  html[data-theme="dark"] .prof-item:hover { border-color:#3a3e47; }
+  .prof-item:focus-within { border-color:var(--brand); }
+  .prof-item.active { border-color:var(--brand);
+    background:color-mix(in srgb,var(--brand) 6%,var(--card));
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 14%,transparent); }
+  .prof-item.active::before { content:""; position:absolute; inset-inline-start:-1px; top:10px; bottom:10px;
+    width:3px; border-radius:3px; background:linear-gradient(180deg,var(--brand),var(--brand2)); }
+  .prof-head { display:flex; align-items:center; gap:10px; min-width:0; }
+  .prof-avatar { flex:0 0 auto; width:38px; height:38px; border-radius:50%; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; color:#fff; font-size:16px; font-weight:800;
+    background:linear-gradient(135deg,hsl(var(--av,220) 62% 52%),hsl(calc(var(--av,220) + 42) 62% 42%));
+    user-select:none; }
+  .prof-item.active .prof-avatar { box-shadow:0 0 0 2px var(--card),0 0 0 4px color-mix(in srgb,var(--ok) 55%,transparent); }
+  .prof-id { flex:1 1 auto; min-width:0; }
+  .prof-title { font-size:13.5px; font-weight:bold; display:flex; align-items:center; gap:6px; min-width:0; }
+  .prof-title-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .prof-title-text:hover { color:var(--brand); }
+  .profile-number { display:inline-flex; min-width:22px; height:22px; padding:0 4px; align-items:center; justify-content:center;
+    border-radius:6px; background:var(--card2); border:1px solid var(--line); color:var(--muted); font-size:10.5px; font-weight:700; }
+  .prof-meta { font-size:11px; color:var(--muted); margin-top:3px; direction:ltr; text-align:right;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mdot { opacity:.55; }
+  .imei-chip { display:inline-block; font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:99px;
+    border:1px solid var(--line); background:var(--card2); color:var(--muted); }
+  .prof-side { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  .prof-alert { display:flex; gap:8px; align-items:flex-start; margin-top:9px; padding:8px 11px;
+    border-radius:9px; font-size:11.5px; line-height:1.6; }
+  .prof-alert .ai { flex:0 0 auto; font-size:13px; }
+  .prof-alert b { font-size:11.5px; }
+  .prof-alert .ad { margin-top:2px; opacity:.85; }
+  .prof-alert.danger { border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line));
+    background:color-mix(in srgb,var(--danger) 8%,var(--card)); color:var(--danger); }
+  .prof-alert.ok { border:1px solid color-mix(in srgb,var(--ok) 35%,var(--line));
+    background:color-mix(in srgb,var(--ok) 9%,var(--card)); color:var(--ok); }
   .mini-btn.profile-run-primary { flex:0 0 auto; min-width:112px; padding:9px 12px; border-radius:10px; font-size:13px; font-weight:800; white-space:nowrap; }
-  .prof-success { color:var(--ok); font-size:11px; font-weight:bold; margin-top:5px; }
-  .prof-blocked { color:#e53935; font-size:12px; font-weight:800; margin-top:6px; }
-  .prof-blocked-detail { color:#c62828; font-size:11px; line-height:1.6; margin-top:3px; }
-  .prof-meta { font-size:11px; color:var(--muted); margin-top:3px; direction:ltr; text-align:right; }
-  .profile-number { display:inline-flex; min-width:24px; height:24px; align-items:center; justify-content:center; border-radius:8px; background:var(--brand); color:#fff; font-size:11px; }
-  .artifact-links { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
-  .artifact-links a { color:var(--ok); text-decoration:none; font-size:10.5px; }
+  .prof-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .artifact-links { display:flex; flex-wrap:wrap; gap:5px; margin-top:0; }
+  .artifact-links a { display:inline-flex; align-items:center; gap:4px; padding:3px 9px; border-radius:99px;
+    border:1px solid color-mix(in srgb,var(--ok) 35%,var(--line));
+    background:color-mix(in srgb,var(--ok) 8%,var(--card));
+    color:var(--ok); text-decoration:none; font-size:10.5px; font-weight:700; transition:.15s; }
+  .artifact-links a:hover { background:color-mix(in srgb,var(--ok) 16%,var(--card)); }
   /* --- dokme-ye namayesh/makhfi-kardan-e morurgar-e robot-e dar hal-e ejra --- */
   .prof-browser-row { margin-top:7px; }
   .browser-btn { position:relative; width:100%; display:inline-flex; align-items:center;
@@ -1697,6 +1803,20 @@ PAGE_HEAD = """<!DOCTYPE html>
   .search-clear { position:absolute; left:9px; top:50%; transform:translateY(-50%); border:0; background:transparent; color:var(--muted); font-size:19px; cursor:pointer; display:none; }
   .search-clear.visible { display:block; }
   .profiles-empty { padding:24px 12px; border:1px dashed var(--line); border-radius:12px; text-align:center; color:var(--muted); font-size:13px; }
+  .profiles-empty .pe-icon { font-size:26px; margin-bottom:6px; }
+  .profiles-empty .pe-hint { font-size:11px; margin-top:5px; opacity:.8; }
+  /* view switcher (compact/comfortable) */
+  .view-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .view-switch button { border:0; background:var(--card); color:var(--muted); font-size:13px;
+    padding:4px 9px; cursor:pointer; transition:.15s; }
+  .view-switch button+button { border-inline-start:1px solid var(--line); }
+  .view-switch button.active { background:color-mix(in srgb,var(--brand) 14%,var(--card)); color:var(--brand); font-weight:700; }
+  /* compact list mode */
+  #prof-list.compact .prof-item { padding:8px 10px; margin-bottom:6px; }
+  #prof-list.compact .prof-avatar { width:30px; height:30px; font-size:13px; }
+  #prof-list.compact .prof-actions,
+  #prof-list.compact .prof-foot { display:none; }
+  #prof-list.compact .mini-btn.profile-run-primary { min-width:82px; padding:6px 9px; font-size:11px; }
   .nav-tabs { display:flex; gap:6px; margin-top:6px; }
   .nav-tab {
     flex:1; text-align:center; padding:9px; border-radius:10px; cursor:pointer;
@@ -1878,13 +1998,51 @@ PAGE_HEAD = """<!DOCTYPE html>
   .add-prof:hover { filter:none; transform:none; opacity:.88; }
   #profile-search { min-height:42px; padding:10px 38px 10px 32px; border-radius:9px; background:var(--card2); }
   #profile-search:focus { box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 16%,transparent); }
-  .prof-item { padding:12px; margin-bottom:8px; border-radius:10px; background:var(--card); box-shadow:0 1px 1px rgba(16,24,40,.02); }
-  .prof-item:hover { border-color:#c9cdd5; background:var(--card2); }
+  .prof-item { padding:12px; margin-bottom:9px; border-radius:10px; background:var(--card); box-shadow:0 1px 1px rgba(16,24,40,.02); }
+  .prof-item:hover { border-color:#c9cdd5; background:var(--card); }
   html[data-theme="dark"] .prof-item:hover { border-color:#3a3e47; }
   .prof-item.active { border-color:var(--brand); background:color-mix(in srgb,var(--brand) 7%,var(--card)); box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 14%,transparent); }
   .prof-title { gap:7px; font-size:13px; }
   .profile-number { min-width:22px; height:22px; border-radius:6px; background:var(--card2); border:1px solid var(--line); color:var(--muted); }
-  .prof-meta { margin-top:5px; font-size:10.5px; }
+  .prof-avatar { cursor:pointer; }
+  /* --- premium profile-card polish: skeleton rows + compact actions --- */
+  .prof-skeleton { display:flex; align-items:center; gap:10px; padding:12px; margin-bottom:9px;
+    border:1px solid var(--line); border-radius:10px; background:var(--card); }
+  .prof-skeleton .sk-av, .prof-skeleton .sk-l1, .prof-skeleton .sk-l2 { border-radius:7px;
+    background:linear-gradient(100deg,var(--card2) 40%,color-mix(in srgb,var(--brand) 8%,var(--card2)) 50%,var(--card2) 60%);
+    background-size:220% 100%; animation:skpulse 1.3s linear infinite; }
+  .prof-skeleton .sk-av { width:38px; height:38px; border-radius:50%; flex:0 0 auto; }
+  .prof-skeleton .sk-lines { flex:1; min-width:0; }
+  .prof-skeleton .sk-l1 { height:12px; width:55%; margin-bottom:7px; }
+  .prof-skeleton .sk-l2 { height:9px; width:80%; }
+  @keyframes skpulse { from{background-position:120% 0} to{background-position:-120% 0} }
+  @media (prefers-reduced-motion: reduce){ .prof-skeleton .sk-av,.prof-skeleton .sk-l1,.prof-skeleton .sk-l2{animation:none} }
+  .prof-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .ibtn { position:relative; width:34px; height:34px; flex:0 0 auto; display:inline-flex;
+    align-items:center; justify-content:center; font-size:15px; line-height:1; cursor:pointer;
+    border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--muted);
+    transition:.16s; }
+  .ibtn:hover { color:var(--txt); border-color:var(--brand); transform:translateY(-2px);
+    box-shadow:0 6px 16px rgba(16,24,40,.14); }
+  .ibtn.on { color:var(--ok); border-color:var(--ok); background:color-mix(in srgb,var(--ok) 12%,var(--input)); }
+  .ibtn.danger:hover { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d92f45,#f05b6b); }
+  .ibtn.warn:hover { color:#20160a; border-color:transparent; background:var(--warn,#f6b94b); }
+  .ibtn::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); right:50%;
+    transform:translate(50%,4px); white-space:nowrap; font-size:11px; font-weight:700;
+    padding:5px 9px; border-radius:8px; background:#111827; color:#fff; opacity:0;
+    pointer-events:none; transition:.16s; z-index:40; box-shadow:0 8px 20px rgba(0,0,0,.28); }
+  .ibtn::before { content:''; position:absolute; bottom:calc(100% + 2px); right:50%;
+    transform:translateX(50%); border:5px solid transparent; border-top-color:#111827;
+    opacity:0; pointer-events:none; transition:.16s; z-index:40; }
+  .ibtn:hover::after,.ibtn:focus-visible::after { opacity:1; transform:translate(50%,0); }
+  .ibtn:hover::before,.ibtn:focus-visible::before { opacity:1; }
+  .prof-foot { margin-top:9px; }
+  .prof-actions .ibtn:nth-child(n+4) { display:none; }
+  .prof-item.expanded .prof-actions .ibtn:nth-child(n+4) { display:inline-flex; }
+  .more-btn { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px;
+    border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--muted);
+    cursor:pointer; font-size:14px; transition:.16s; }
+  .more-btn:hover { color:var(--txt); border-color:var(--brand); }
   #prof-list { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; min-height:200px;
     padding:4px; border:1px solid var(--line); border-radius:14px; background:var(--card2); }
   .prof-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
@@ -1902,6 +2060,14 @@ PAGE_HEAD = """<!DOCTYPE html>
   .eyebrow { color:var(--muted); font-size:11px; font-weight:600; margin-bottom:1px; }
   .panel-title { font-size:24px; font-weight:700; letter-spacing:-.45px; }
   .home-btn,.theme-btn { position:static; min-height:38px; display:inline-flex; align-items:center; gap:6px; padding:8px 11px; border-radius:8px; font-size:12px; background:var(--card); box-shadow:0 1px 2px rgba(16,24,40,.03); }
+  .system-close-btn { min-height:38px; display:inline-flex; align-items:center; gap:6px; padding:8px 13px; border-radius:8px; font-size:12px; font-weight:bold;
+    border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line)); background:color-mix(in srgb,var(--danger) 8%,var(--card)); color:var(--danger); cursor:pointer; transition:.15s; }
+  .system-close-btn:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
+  .inquiry-actions { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; }
+  .inquiry-actions .save { flex:1; min-width:170px; margin-top:0; }
+  .inquiry-stop { flex:0 0 auto; min-width:150px; margin-top:0; padding:11px 18px; border-radius:8px; border:0; font-size:13px; font-weight:bold;
+    background:var(--danger); color:#fff; cursor:pointer; font-family:inherit; }
+  .inquiry-stop:disabled { opacity:.45; cursor:not-allowed; }
   .active-profile-banner { grid-column:1/-1; min-width:0; width:100%; padding:11px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--txt); font-size:13px; font-weight:600; box-shadow:none; text-align:right; }
   .active-profile-banner:before { content:""; display:inline-block; width:7px; height:7px; margin-left:8px; border-radius:50%; background:var(--ok); }
   .stats { gap:8px; margin:0 0 14px; }
@@ -2006,6 +2172,7 @@ PAGE_HEAD = """<!DOCTYPE html>
         <div class="head-actions">
           <a href="/" class="home-btn" title="بازگشت به انتخاب سامانه" aria-label="بازگشت به انتخاب سامانه">⌂ <span>سامانه‌ها</span></a>
           <button type="button" id="theme-toggle" class="theme-btn" onclick="toggleTheme()">حالت تاریک</button>
+          <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
         </div>
         <div class="product-lockup">
           <div class="logo" aria-hidden="true">
@@ -2037,14 +2204,14 @@ PAGE_HEAD = """<!DOCTYPE html>
     </div>
   </div>
   <div class="sidebar">
-    <div class="side-sec-title"><span>پروفایل‌ها</span><span id="profile-count"></span></div>
-    <button class="add-prof" onclick="newProfile()">+پروفایل جدید</button>
+    <div class="side-sec-title"><span>پروفایل‌ها</span><span style="display:inline-flex;align-items:center;gap:8px"><span id="profile-count"></span><span class="view-switch" role="group" aria-label="حالت نمایش لیست"><button type="button" id="vw-comfortable" aria-pressed="true" title="نمایش کارت کامل" onclick="setProfView('comfortable')">☰</button><button type="button" id="vw-compact" aria-pressed="false" title="نمایش فشرده" onclick="setProfView('compact')">≡</button></span></span></div>
+    <button class="add-prof" onclick="newProfile()">+ پروفایل جدید</button>
     <div class="profile-search-wrap">
       <span class="profile-search-icon">🔎</span>
       <input id="profile-search" type="search" autocomplete="off" placeholder="جستجو: نام، کد ملی، موبایل یا سریال" oninput="filterProfiles(this.value)">
       <button type="button" id="profile-search-clear" class="search-clear" aria-label="پاک کردن جستجو" onclick="clearProfileSearch()">×</button>
     </div>
-    <div id="prof-list"></div>
+    <div id="prof-list"><div class="prof-skeleton" aria-hidden="true"><div class="sk-av"></div><div class="sk-lines"><div class="sk-l1"></div><div class="sk-l2"></div></div></div><div class="prof-skeleton" aria-hidden="true"><div class="sk-av"></div><div class="sk-lines"><div class="sk-l1"></div><div class="sk-l2"></div></div></div><div class="prof-skeleton" aria-hidden="true"><div class="sk-av"></div><div class="sk-lines"><div class="sk-l1"></div><div class="sk-l2"></div></div></div></div>
   </div>
 </div>
 <div id="lognotif-wrap" class="lognotif-wrap" aria-live="polite"></div>
@@ -2145,6 +2312,8 @@ function profileMatchesSearch(p,query){
 
 function renderProfiles(){
   var el=document.getElementById('prof-list'); el.innerHTML='';
+  el.classList.toggle('compact',profView==='compact');
+  updateProfViewButtons();
   var input=document.getElementById('profile-search');
   var query=normalizeProfileSearch(input?input.value:'');
   var all=STORE.profiles||[];
@@ -2161,26 +2330,40 @@ function renderProfiles(){
     return profileMatchesSearch(p,query);
   });
   var count=document.getElementById('profile-count'); if(count)count.textContent=(profiles.length!==all.length)?(toFa(profiles.length)+' از '+toFa(all.length)):(toFa(all.length)+' مورد');
-  if(!profiles.length){el.innerHTML='<div class="profiles-empty">پروفایلی با این مشخصات پیدا نشد.</div>';return;}
+  if(!profiles.length){
+    el.innerHTML=(all.length?'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">🔍</div>پروفایلی با این مشخصات پیدا نشد.<div class="pe-hint">عبارت جستجو یا فیلتر وضعیت را تغییر دهید.</div></div>'
+                           :'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">👤</div>هنوز پروفایلی ثبت نشده است.<div class="pe-hint">با دکمه «+پروفایل جدید» اولین پروفایل را بسازید.</div></div>');
+    return;
+  }
   profiles.forEach(function(p){
     var isActive=(p.id===activeId);
     var profileNumber=STORE.profiles.indexOf(p)+1;
     var st=statusOf(p);
+    var imei=(p.imeis&&p.imeis[0])||'';
     var d=document.createElement('div');
     d.className='prof-item'+(isActive?' active':'');
     d.setAttribute('data-profile-id',p.id);
-    d.innerHTML='<div class="prof-title"><span class="profile-number">'+profileNumber+'</span>'+(isActive?'<span style="color:var(--ok)">●</span> ':'')+
-      '<span class="prof-title-text" onclick="viewProfile(\''+p.id+'\')">'+escHtml(p.title||p.national||'بدون عنوان')+'</span>'+
-      '<span class="p-badge '+st.cls+'"><span class="d"></span>'+st.label+'</span>'+profileRunButton(p,'profile-run-primary')+'</div>'+
-      '<div class="prof-meta">'+escHtml(p.national||'—')+(p.mobile?' • '+escHtml(p.mobile):'')+'</div>'+
-      (p.registration_status==='blocked'?'<div class="prof-blocked">⛔ غیرقابل ورود — تلاش متوقف شد</div><div class="prof-blocked-detail">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div>':'')+
-      (p.registration_status==='success'?'<div class="prof-success">✓ موفق — مرحله پرداخت</div>':'')+
-      (p.run_status==='busy'?'<div class="prof-browser-row">'+profileBrowserButton(p)+'</div>':'')+
-      '<div class="artifact-links">'+
-      (p.receipt_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=receipt">🧾 مشاهده رسید</a>':'')+
-      (p.payment_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=payment">💳 مشاهده پرداخت</a>':'')+
-      (p.payment_link?'<a target="_blank" href="'+escHtml(p.payment_link)+'">🔗 بازکردن لینک پرداخت</a>':'')+
+    // stable anatomy: avatar+identity+side(status,run) -> alerts -> footer(artifacts) -> actions
+    var artifacts=(p.receipt_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=receipt">🧾 رسید</a>':'')+
+      (p.payment_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=payment">💳 پرداخت</a>':'')+
+      (p.payment_link?'<a target="_blank" href="'+escHtml(p.payment_link)+'">🔗 لینک پرداخت</a>':'');
+    var alerts=
+      (p.registration_status==='blocked'?'<div class="prof-alert danger"><span class="ai">⛔</span><div><b>غیرقابل ورود — تلاش متوقف شد</b><div class="ad">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div></div></div>':'')+
+      (p.registration_status==='success'?'<div class="prof-alert ok"><span class="ai">✓</span><div><b>موفق — مرحله پرداخت</b></div></div>':'');
+    var browserRow=(p.run_status==='busy'?'<div class="prof-browser-row">'+profileBrowserButton(p)+'</div>':'');
+    d.innerHTML=
+      '<div class="prof-head">'+
+        '<div class="prof-avatar" style="--av:'+avatarColorOf(p)+'" aria-hidden="true" onclick="viewProfile(\''+p.id+'\')">'+escHtml(initialsOf(p))+'</div>'+
+        '<div class="prof-id">'+
+          '<div class="prof-title"><span class="profile-number" title="شماره پروفایل">'+toFa(profileNumber)+'</span>'+
+          '<span class="prof-title-text" onclick="viewProfile(\''+p.id+'\')" title="'+escHtml(p.title||p.national||'بدون عنوان')+'">'+escHtml(p.title||p.national||'بدون عنوان')+'</span></div>'+
+          '<div class="prof-meta">'+escHtml(p.national||'—')+(p.mobile?'<span class="mdot"> • </span>'+escHtml(p.mobile):'')+
+          (imei?'<span class="mdot"> • </span><span class="imei-chip" title="سریال اول: '+escHtml(imei)+'">'+escHtml(imei)+'</span>':'')+'</div>'+
+        '</div>'+
+        '<div class="prof-side"><span class="p-badge '+st.cls+'"><span class="d"></span>'+st.label+'</span>'+profileRunButton(p,'profile-run-primary')+'</div>'+
       '</div>'+
+      alerts+browserRow+
+      (artifacts?'<div class="prof-foot"><div class="artifact-links">'+artifacts+'</div></div>':'')+
       '<div class="prof-actions">'+
         '<button class="ibtn'+(p.enabled?' on':'')+'" data-tip="'+(p.enabled?'فعال است — کلیک: غیرفعال کردن':'غیرفعال است — کلیک: فعال کردن')+'" '+
           'onclick="toggleProfile(\''+p.id+'\','+(!p.enabled)+')">'+(p.enabled?'🟢':'⚪')+'</button>'+
@@ -2190,8 +2373,46 @@ function renderProfiles(){
         '<button class="ibtn" data-tip="ویرایش اطلاعات پروفایل" onclick="editProfile(\''+p.id+'\')">✏️</button>'+
         '<button class="ibtn" data-tip="کپی گرفتن از این پروفایل" onclick="cloneProfile(\''+p.id+'\')">📋</button>'+
         '<button class="ibtn danger" data-tip="حذف کامل این پروفایل" onclick="deleteProfile(\''+p.id+'\')">🗑</button>'+
+        '<button type="button" class="more-btn" data-tip="اکشن‌های بیشتر" aria-expanded="false" onclick="toggleCardMore(this)">⋯</button>'+
       '</div>';
     el.appendChild(d);
+  });
+}
+
+/* avatar: رنگ پایدار از کدملی/نام + حروف اول نام */
+function avatarColorOf(p){
+  var s=String(p.national||p.title||p.id||'x');
+  var h=0; for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0;}
+  return h%360;
+}
+function initialsOf(p){
+  var t=String(p.title||'').trim();
+  if(t)return t.slice(0,2);
+  var n=String(p.national||'').trim();
+  return n?n.slice(0,2):'؟';
+}
+/* progressive disclosure: ویرایش/کپی/حذف پشت دکمه ⋯ */
+function toggleCardMore(btn){
+  var card=btn.closest('.prof-item'); if(!card)return;
+  card.classList.toggle('expanded');
+  var open=card.classList.contains('expanded');
+  btn.textContent=open?'×':'⋯';
+  btn.setAttribute('aria-expanded',open?'true':'false');
+  btn.setAttribute('data-tip',open?'بستن اکشن‌ها':'اکشن‌های بیشتر');
+}
+/* حالت نمایش لیست: کارت کامل یا فشرده (persist) */
+var profView=localStorage.getItem('irica-profview')||'comfortable';
+function setProfView(v){
+  profView=(v==='compact')?'compact':'comfortable';
+  localStorage.setItem('irica-profview',profView);
+  renderProfiles();
+}
+function updateProfViewButtons(){
+  ['vw-comfortable','vw-compact'].forEach(function(id){
+    var b=document.getElementById(id); if(!b)return;
+    var on=(id==='vw-compact')===(profView==='compact');
+    b.classList.toggle('active',on);
+    b.setAttribute('aria-pressed',on?'true':'false');
   });
 }
 
@@ -2620,7 +2841,7 @@ function buildDeviceInquiryPanel(p){
   var service=PROFILE_INQUIRY_SERVICE;
   var results=service==='all'?buildServiceResults(p,'gomrok')+buildServiceResults(p,'hamta'):buildServiceResults(p,service);
   var running=p.device_inquiry_pid&&((p.gomrok_inquiry_status==='running')||(p.hamta_inquiry_status==='running'));
-  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها'+(p?' — '+profileInquiryLabel(p,service):'')+'</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><div id="profile-inquiry-status" class="hint"></div></div>';
+  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها'+(p?' — '+profileInquiryLabel(p,service):'')+'</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><div class="inquiry-actions"><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><button type="button" class="inquiry-stop" id="profile-inquiry-stop" '+(running?'':'disabled')+' onclick="stopProfileDeviceInquiry(activeId)">⛔ توقف استعلام</button></div><div id="profile-inquiry-status" class="hint"></div></div>';
 }
 function selectProfileInquiry(service){
   PROFILE_INQUIRY_SERVICE=service;
@@ -2649,6 +2870,38 @@ function runProfileDeviceInquiry(id){
       if(status)status.textContent='استعلام شروع شد؛ نتایج در همین بخش به‌روز می‌شوند.';
       refreshProfileDeviceInquiry(id,Date.now());
     }).catch(function(){if(status)status.textContent='خطا در ارتباط با پنل';});
+}
+
+function stopProfileDeviceInquiry(id){
+  var status=document.getElementById('profile-inquiry-status');
+  if(!confirm('استعلام این پروفایل متوقف شود؟ مرورگر و فرآیند استعلام بسته می‌شوند.'))return;
+  if(status)status.textContent='در حال توقف استعلام…';
+  fetch('/profile-device-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})
+    .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data};});})
+    .then(function(res){
+      if(!res.ok){if(status)status.textContent=res.data.message||res.data.error||'توقف استعلام انجام نشد';return;}
+      if(status)status.textContent=res.data.message||'استعلام متوقف شد.';
+      STORE=res.data.store||STORE;
+      renderProfiles();
+      var p=getProf(id);
+      if(p){var card=document.getElementById('device-inquiry-card');
+        if(card){var wrap=document.createElement('div');wrap.innerHTML=buildDeviceInquiryPanel(p);card.replaceWith(wrap.firstChild);}}
+    }).catch(function(){if(status)status.textContent='خطا در ارتباط با پنل';});
+}
+
+function closeWholeSystem(){
+  if(!confirm('کل سامانه بسته شود؟ همهٔ ربات‌ها و استعلام‌های در حال اجرا متوقف می‌شوند و پنل خاموش می‌شود.'))return;
+  fetch('/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+    .catch(function(){});
+  var banner=document.createElement('div');
+  banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;'+
+    'padding:14px;text-align:center;font-family:Tahoma,sans-serif;font-size:14px;font-weight:bold';
+  banner.textContent='در حال بستن سامانه… همهٔ ربات‌ها متوقف شدند؛ این صفحه تا چند ثانیه دیگر در دسترس نخواهد بود.';
+  document.body.appendChild(banner);
+  setTimeout(function(){
+    banner.textContent='سامانه بسته شد. برای اجرای مجدد، میان‌بر IRICA را باز کنید.';
+    setTimeout(function(){location.reload();},4000);
+  },1500);
 }
 
 function refreshExitbanResult(id, startedAt){
@@ -2930,6 +3183,10 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
          padding:7px 12px;border-radius:10px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:18px}
   .irica-version{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 12px;direction:ltr;align-self:center}
+  .system-close-btn{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:10px;font-size:12.5px;font-weight:700;
+    border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line));background:color-mix(in srgb,var(--danger) 8%,var(--card));
+    color:var(--danger);cursor:pointer;font-family:inherit;transition:.15s;align-self:center}
+  .system-close-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
   .card h2{margin:0 0 4px;font-size:17px}
   .hint{color:var(--muted);font-size:12.5px;margin:0 0 14px}
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -3143,6 +3400,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
       <button type="button" class="wbtn" data-w="max" onclick="setWrapW('max')">تمام‌عرض</button>
       <button type="button" class="tbtn" id="theme-btn" onclick="toggleTheme()">🌙 حالت تاریک</button>
       <a class="back" href="/">← انتخاب سامانه</a>
+      <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
     </div>
   </div>
   <div class="wgrip r" id="wgrip-r" title="کشیدن برای تغییر عرض"></div>
@@ -3404,6 +3662,21 @@ function stopRun(){
     });
 }
 
+function closeWholeSystem(){
+  if(!confirm('کل سامانه بسته شود؟ همهٔ ربات‌ها و استعلام‌های در حال اجرا متوقف می‌شوند و پنل خاموش می‌شود.'))return;
+  fetch('/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+    .catch(function(){});
+  var banner=document.createElement('div');
+  banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;'+
+    'padding:14px;text-align:center;font-family:Tahoma,sans-serif;font-size:14px;font-weight:bold';
+  banner.textContent='در حال بستن سامانه… همهٔ ربات‌ها متوقف شدند؛ این صفحه تا چند ثانیه دیگر در دسترس نخواهد بود.';
+  document.body.appendChild(banner);
+  setTimeout(function(){
+    banner.textContent='سامانه بسته شد. برای اجرای مجدد، میان‌بر IRICA را باز کنید.';
+    setTimeout(function(){location.reload();},4000);
+  },1500);
+}
+ 
 function restartRun(){
   fetch('/estelam-restart',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
     .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
@@ -3943,6 +4216,17 @@ class Handler(BaseHTTPRequestHandler):
                 str(data.get("id") or ""), str(data.get("service") or ""))
             self._json(payload, status)
 
+        elif self.path == "/profile-device-stop":
+            data = self._read_json()
+            ok, message = stop_profile_inquiry(str(data.get("id") or ""))
+            payload = {"ok": ok, "message": message}
+            if ok:
+                payload["store"] = load_store()
+            self._json(payload, 200 if ok else 404)
+
+        elif self.path == "/shutdown":
+            self._json(shutdown_everything())
+
         elif self.path == "/exitban-inquiry":
             data = self._read_json()
             profile_id = str(data.get("id") or "").strip()
@@ -4172,7 +4456,17 @@ def main():
     except Exception:
         pass
     try:
-        srv.serve_forever()
+        # serve_forever runs on a helper thread; the main thread polls the
+        # /shutdown flag so "بستن سامانه" can stop the panel cleanly
+        # (robots already killed by shutdown_everything()).
+        serve_thread = threading.Thread(target=srv.serve_forever,
+                                        name="panel-serve", daemon=True)
+        serve_thread.start()
+        while not _SHUTDOWN_REQUESTED.is_set():
+            _SHUTDOWN_REQUESTED.wait(timeout=0.5)
+        print(">>> Panel ba dastoor-e karbar (بستن سامانه) khamoosh shod.")
+        srv.shutdown()
+        serve_thread.join(timeout=5)
     except KeyboardInterrupt:
         print("\n>>> Panel baste shod.")
         srv.shutdown()

@@ -47,8 +47,8 @@ class DashboardRewriteTests(unittest.TestCase):
         html = panel.render_page().decode("utf-8")
         for marker in (
             'data-theme="dark"', "toggleTheme", "localStorage.getItem('irica-theme')",
-            "panel-title", "active-profile-banner", "🌙", "🧾 مشاهده رسید",
-            "💳 مشاهده پرداخت", "🔗 بازکردن لینک پرداخت",
+            "panel-title", "active-profile-banner", "🌙", "🧾 رسید",
+            "💳 پرداخت", "🔗 لینک پرداخت",
             "استعلام آنلاین خروج از کشور",
         ):
             self.assertIn(marker, html)

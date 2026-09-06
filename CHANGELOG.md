@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.13] - 2026-09-07
+
+Inquiry stop button and whole-system shutdown.
+
+### Added
+
+- Device-inquiry card stop button: `POST /profile-device-stop` kills the
+  running `profile_inquiry.py` process tree (tracked via
+  `device_inquiry_pid`), resets the profile's inquiry state, and reports
+  success/failure as a toast; the UI button switches between Run/Stop based
+  on live state.
+- "بستن سامانه" (close whole system) button on both panels (`/site-1`
+  header actions and `/site-2` beside the width/theme buttons):
+  `POST /shutdown` kills every running robot/profile process via
+  `shutdown_everything()`, then sets `_SHUTDOWN_REQUESTED`; the serve loop
+  (`serve_forever` on a helper thread, main thread polling the event) exits
+  the panel process cleanly with code 0.
+- `system-close-btn` styling shared across both pages.
+
+### Changed
+
+- Profile list redesign from the UI session: stable card anatomy (avatar
+  with per-profile hue, identity block, status + run button, footer with
+  receipt/payment chips), active-state accent bar, hover elevation, smooth
+  inner scroll; `test_dashboard_rewrite.py` updated markers.
+
 ## [1.0.12] - 2026-09-06
 
 The installable release: a per-user Windows installer replaces the

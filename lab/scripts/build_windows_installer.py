@@ -88,7 +88,15 @@ def main() -> int:
         iss_text = re.sub(r",?\s*IconFilename: \"\{app\}\\\\irica\.ico\"", "",
                           iss_text, flags=re.M)
     else:
+        # ISCC resolves SetupIconFile relative to the rendered .iss (dist/),
+        # and the [Icons] entries reference {app}\irica.ico — so the icon is
+        # both placed beside the rendered script and shipped into the bundle.
         iss_text = (SCRIPTS / "irica.iss").read_text(encoding="utf-8")
+        shutil.copy2(icon, DIST / "irica.ico")
+        stage_icon = STAGE / "irica.ico"
+        if not stage_icon.is_file():
+            log("WARN: irica.ico not in the staged bundle — [Icons] entries "
+                "reference {app}\\irica.ico; re-run build_windows_release.py")
 
     iss_text = iss_text.replace("__VERSION__", version)
     rendered = DIST / f"_irica-{version}.iss"
