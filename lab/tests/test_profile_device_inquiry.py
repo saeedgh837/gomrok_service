@@ -64,7 +64,10 @@ class ProfileDeviceInquiryTests(unittest.TestCase):
                    "birth": "1360/01/01", "mobile": "09120000000",
                    "imeis": ["350358333315545", "350358333315552"]}
         data = profile_inquiry._store(profile)
-        self.assertEqual([d["serial1"] for d in data["devices"]], profile["imeis"])
+        # One device, dual-SIM: serial1=first IMEI, serial2=second IMEI
+        self.assertEqual(len(data["devices"]), 1)
+        self.assertEqual(data["devices"][0]["serial1"], "350358333315545")
+        self.assertEqual(data["devices"][0]["serial2"], "350358333315552")
         self.assertEqual(data["person"]["national"], profile["national"])
 
     def test_rendered_page_has_three_modes_results_and_endpoint(self):

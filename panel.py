@@ -263,6 +263,7 @@ def record_profile_device_inquiry(profile_id, service, results, error=""):
     for item in results:
         if isinstance(item, dict):
             clean.append({"serial": str(item.get("serial") or "").strip(),
+                          "serial2": str(item.get("serial2") or "").strip(),
                           "status": str(item.get("status") or "error").strip(),
                           "result": str(item.get("result") or "").strip(),
                           "checked_at": str(item.get("checked_at") or "").strip()})
@@ -2518,7 +2519,11 @@ function buildServiceResults(p,service){
   if(state==='running'&&!rows.length)return '<div class="device-result running"><strong>در حال استعلام '+(service==='hamta'?'همتا':'گمرک')+'</strong><div class="device-result-text">نتیجه هر سریال پس از پایان ربات در همین بخش نمایش داده می‌شود.</div></div>';
   var html=rows.map(function(row){
     var st=row.status||'error';
-    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+escHtml(row.serial||'--')+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
+    var serialDisplay = escHtml(row.serial||'--');
+    if (row.serial2) {
+        serialDisplay += ' / ' + escHtml(row.serial2);
+    }
+    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
   }).join('');
   if(error)html+='<div class="device-result bad"><strong>خطای اجرا</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
   return html;

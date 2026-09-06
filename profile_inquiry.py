@@ -38,16 +38,21 @@ def _profile(profile_id):
 
 def _store(profile):
     now = __import__("time").strftime("%Y-%m-%d %H:%M:%S")
+    imei_list = [str(s).strip() for s in (profile.get("imeis") or []) if s and str(s).strip()]
+    # Build ONE device with both IMEIs (dual-SIM). The customs page expects
+    # both serials on the same form; splitting them into separate devices
+    # causes "دستگاه شما دارای دو اسلات است" on the second attempt.
     devices = []
-    for index, serial in enumerate(profile.get("imeis") or [], 1):
-        serial = str(serial or "").strip()
-        if serial:
-            devices.append({
-                "id": f"{profile['id']}-{index}", "name": profile.get("title") or "",
-                "serial1": serial, "serial2": "", "status": "pending", "result": "",
-                "messages": [], "hamta_status": "pending", "hamta_result": "",
-                "created": now, "updated": now, "gomrok_at": "", "hamta_at": "",
-            })
+    if imei_list:
+        devices.append({
+            "id": f"{profile['id']}-device",
+            "name": profile.get("title") or "",
+            "serial1": imei_list[0] if len(imei_list) > 0 else "",
+            "serial2": imei_list[1] if len(imei_list) > 1 else "",
+            "status": "pending", "result": "",
+            "messages": [], "hamta_status": "pending", "hamta_result": "",
+            "created": now, "updated": now, "gomrok_at": "", "hamta_at": "",
+        })
     return {"person": {"national": profile.get("national") or "",
                        "birth": profile.get("birth") or "",
                        "mobile": profile.get("mobile") or ""},
@@ -60,15 +65,17 @@ def _record(profile_id, service, data, error=""):
     if service in ("gomrok", "all"):
         panel.record_profile_device_inquiry(
             profile_id, "gomrok",
-            [{"serial": d.get("serial1"), "status": d.get("status"),
-              "result": d.get("result"), "checked_at": d.get("gomrok_at")} for d in devices],
+            [{"serial": d.get("serial1"), "serial2": d.get("serial2"),
+              "status": d.get("status"), "result": d.get("result"),
+              "checked_at": d.get("gomrok_at")} for d in devices],
             error=error,
         )
     if service in ("hamta", "all"):
         panel.record_profile_device_inquiry(
             profile_id, "hamta",
-            [{"serial": d.get("serial1"), "status": d.get("hamta_status"),
-              "result": d.get("hamta_result"), "checked_at": d.get("hamta_at")} for d in devices],
+            [{"serial": d.get("serial1"), "serial2": d.get("serial2"),
+              "status": d.get("hamta_status"), "result": d.get("hamta_result"),
+              "checked_at": d.get("hamta_at")} for d in devices],
             error=error,
         )
 

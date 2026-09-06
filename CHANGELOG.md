@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.10] - 2026-09-05
+
+Dual-SIM devices on the customs login page now work correctly.
+
+### Fixed
+
+- The customs login page shows `دستگاه شما دارای دو اسلات است لطفا شناسه دیگر را نیز
+  وارد نمایید` when a device has two SIM slots and the second IMEI is missing. This
+  message was unclassified: not fatal, not retryable, not transient. The robot fell
+  into the "other error" branch — logged, restarted the browser, and looped forever
+  without ever filling the second slot. The marker `دو اسلات` is now in
+  `IMEI_FATAL_MARKERS`, so the profile is blocked with the reason shown on the
+  card (and the operator can use 📄 کپی to start clean with both IMEIs).
+- `fill_imeis` already supports two IMEIs (the profile stores `imeis` as a list of
+  up to 2). When `len(imeis) >= 2`, it clicks the "+" button to add the second
+  row, fills both, and `verify_imeis` checks both rows. This path was already
+  correct; the bug was only the missing fatal classification that caused the
+  infinite restart loop before the second slot was ever filled.
+
 ## [1.0.9] - 2026-09-05
 
 An IMEI that is already active on the domestic network now blocks its profile

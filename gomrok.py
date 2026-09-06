@@ -301,6 +301,7 @@ IMEI_FATAL_MARKERS = [
     "قبلا در شبکه داخلی کشور ثبت و فعال شده",
     "قبلاً در شبکه داخلی کشور ثبت و فعال شده",
     "امکان ورود آن وجود ندارد",
+    "دو اسلات",         # "dastgah-e shoma dar do slot ast..." - dual-SIM required, both must be entered
 ]
 
 # khata-haye MOVAGHAT-e imeiStep / load: retry sari' (F5 ya restart-e sabok).
