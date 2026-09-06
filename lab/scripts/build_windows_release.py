@@ -82,6 +82,7 @@ APP_FILES = [
     "start_cloudflare_relay.py", "start_named_cloudflare_tunnel.py",
     "telegram_api_relay.py",
     "panel_gui.pyw",
+    "panel_tray.pyw",
     "dashboard-new.html",
     # The [Icons] entries in irica.iss reference {app}\irica.ico; the
     # installer build copies it into dist/ but the STAGE must ship it too.

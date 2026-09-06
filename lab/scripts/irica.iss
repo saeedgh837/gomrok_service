@@ -60,10 +60,10 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdir
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; \
-  Parameters: """{app}\panel_gui.pyw"""; WorkingDir: "{app}"; \
+  Parameters: """{app}\panel_tray.pyw"""; WorkingDir: "{app}"; \
   Comment: "پنل IRICA"; IconFilename: "{app}\irica.ico"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; \
-  Parameters: """{app}\panel_gui.pyw"""; WorkingDir: "{app}"; \
+  Parameters: """{app}\panel_tray.pyw"""; WorkingDir: "{app}"; \
   Tasks: desktopicon; Comment: "پنل IRICA"; IconFilename: "{app}\irica.ico"
 Name: "{autoprograms}\{#AppName}\پوشهٔ داده"; Filename: "{localappdata}\irica"; \
   Comment: "پوشهٔ دادهٔ پنل (تنظیمات، پروفایل‌ها، لاگ‌ها)"
@@ -77,7 +77,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   Tasks: autostart; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\panel_gui.pyw"""; \
+Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\panel_tray.pyw"""; \
   WorkingDir: "{app}"; Description: "اجرای پنل IRICA"; \
   Flags: nowait postinstall skipifsilent
 

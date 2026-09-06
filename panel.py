@@ -3110,6 +3110,136 @@ refresh();setInterval(refresh,5000);
 </body></html>"""
 
 
+LAUNCH_PAGE = r"""<!DOCTYPE html>
+<html lang="fa" dir="rtl" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRICA — سرویس رجیستری</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --card2:#1d212b; --line:#2a2f3a;
+    --fg:#e8eaf0; --muted:#8a91a0; --brand:#6d8bff; --brand2:#9d6dff;
+    --ok:#3ba776; --danger:#e5484d; --warn:#f5a524;
+  }
+  html[data-theme="light"]{
+    --bg:#f4f5f8; --card:#ffffff; --card2:#eef0f4; --line:#d9dde5;
+    --fg:#1a1d24; --muted:#5d6470;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    font-family:"Segoe UI",Tahoma,sans-serif; background:var(--bg); color:var(--fg);
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    padding:24px; transition:background .3s;
+  }
+  .card{
+    width:100%; max-width:430px; background:var(--card); border:1px solid var(--line);
+    border-radius:18px; padding:28px 26px; box-shadow:0 18px 50px rgba(0,0,0,.35);
+  }
+  .logo{width:56px; height:56px; border-radius:14px; margin:0 auto 14px;
+    background:linear-gradient(135deg,var(--brand),var(--brand2));
+    display:flex; align-items:center; justify-content:center;
+    color:#fff; font-size:26px; font-weight:800;}
+  h1{font-size:17px; text-align:center; margin-bottom:4px;}
+  .status{
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    font-size:13.5px; font-weight:700; margin:10px 0 20px; padding:9px 12px;
+    border-radius:10px; background:color-mix(in srgb,var(--ok) 12%,transparent);
+    color:var(--ok); border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);
+  }
+  .status.off{background:color-mix(in srgb,var(--danger) 12%,transparent);
+    color:var(--danger); border-color:color-mix(in srgb,var(--danger) 35%,transparent);}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--ok);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent);
+    animation:pulse 2s infinite;}
+  .status.off .dot{background:var(--danger); animation:none;
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 25%,transparent);}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .stats{display:flex; gap:8px; margin-bottom:20px;}
+  .stat{flex:1; text-align:center; background:var(--card2); border:1px solid var(--line);
+    border-radius:12px; padding:10px 6px;}
+  .stat b{display:block; font-size:19px;}
+  .stat span{font-size:10.5px; color:var(--muted);}
+  .btn{width:100%; display:flex; align-items:center; justify-content:center; gap:9px;
+    border:none; border-radius:12px; padding:13px; font-size:14.5px; font-weight:800;
+    cursor:pointer; margin-bottom:10px; color:#fff; transition:.15s;
+    font-family:inherit;}
+  .btn:hover{filter:brightness(1.12); transform:translateY(-1px);}
+  .btn:disabled{opacity:.55; cursor:wait; transform:none;}
+  .b-open{background:linear-gradient(135deg,var(--brand),var(--brand2));}
+  .b-estelam{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
+  .b-stop{background:color-mix(in srgb,var(--danger) 88%,black);}
+  .foot{margin-top:14px; display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; color:var(--muted); direction:ltr;}
+  .badge{padding:2px 9px; border-radius:99px; border:1px solid var(--line);
+    background:var(--card2); font-weight:700;}
+  .off-msg{display:none; text-align:center; font-size:13px; color:var(--muted);
+    line-height:1.9; padding:12px 0 4px;}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">I</div>
+  <h1>سرویس رجیستری IRICA</h1>
+  <div class="status" id="status"><span class="dot"></span><span id="status-text">در حال بررسی…</span></div>
+  <div class="stats">
+    <div class="stat"><b id="s-total">—</b><span>پروفایل</span></div>
+    <div class="stat"><b id="s-run">—</b><span>در حال کار</span></div>
+    <div class="stat"><b id="s-success">—</b><span>موفق</span></div>
+    <div class="stat"><b id="s-blocked">—</b><span>مسدود</span></div>
+  </div>
+  <button class="btn b-open" id="btn-open" onclick="location.href='/site-1'">
+    🏦 بازکردن پنل گمرک</button>
+  <button class="btn b-estelam" id="btn-estelam" onclick="location.href='/site-2'">
+    🔍 پنل استعلام‌ها</button>
+  <button class="btn b-stop" id="btn-stop">⏻ بستن سرویس</button>
+  <div class="off-msg" id="off-msg">سرویس خاموش شد.<br>این صفحه را ببندید؛ برای اجرای دوباره، میان‌بر دسکتاپ را اجرا کنید.</div>
+  <div class="foot">
+    <span>127.0.0.1:8750</span>
+    <span class="badge">نسخه <span id="v">…</span></span>
+  </div>
+</div>
+<script>
+var toFa=function(n){return String(n).replace(/\d/g,function(d){return '۰۱۲۳۴۵۶۷۸۹'[d]})};
+function fill(s){
+  var ps=s.profiles||[];
+  var running=ps.filter(function(p){return p.runner_pid||p.device_inquiry_pid}).length;
+  var ok=ps.filter(function(p){return p.registration_status==='success'}).length;
+  var bl=ps.filter(function(p){return p.registration_status==='blocked'}).length;
+  document.getElementById('s-total').textContent=toFa(ps.length);
+  document.getElementById('s-run').textContent=toFa(running);
+  document.getElementById('s-success').textContent=toFa(ok);
+  document.getElementById('s-blocked').textContent=toFa(bl);
+}
+fetch('/state').then(function(r){return r.json()}).then(fill).catch(function(){});
+fetch('/site-1').then(function(r){return r.text()}).then(function(t){
+  var m=t.match(/نسخه\s*([0-9.]+)/);
+  document.getElementById('v').textContent=m?m[1]:'?';
+  document.getElementById('status-text').textContent='سرویس رجیستری فعال است';
+}).catch(function(){
+  document.getElementById('status').classList.add('off');
+  document.getElementById('status-text').textContent='سرویس در دسترس نیست';
+});
+document.getElementById('btn-stop').onclick=function(){
+  var b=this; b.disabled=true; b.textContent='در حال بستن…';
+  fetch('/shutdown',{method:'POST'}).then(function(r){return r.json()}).then(function(){
+    b.textContent='سرویس بسته شد ✓'; b.style.filter='grayscale(.4)';
+    document.getElementById('status').classList.add('off');
+    document.getElementById('status-text').textContent='سرویس خاموش شد';
+    document.getElementById('off-msg').style.display='block';
+  }).catch(function(){
+    b.disabled=false; b.textContent='⏻ بستن سرویس';
+  });
+};
+</script>
+</body></html>"""
+
+
+def render_launch_page():
+    return LAUNCH_PAGE.encode("utf-8")
+
+
 def render_home_page():
     html = HOME_PAGE.replace("__PANEL_URL__", f"{HOST}:{PORT}")
     html = html.replace("__VERSION_TAG__",
@@ -4073,6 +4203,14 @@ class Handler(BaseHTTPRequestHandler):
         route = urlsplit(self.path).path
         if route in ("/", "/index.html"):
             self._send(200, render_home_page())
+        elif route == "/launch":
+            self._send(200, render_launch_page())
+        elif route == "/favicon.ico":
+            svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+                   "<rect width='32' height='32' rx='7' fill='%236d8bff'/>"
+                   "<text x='16' y='22' font-size='16' font-family='sans-serif' "
+                   "font-weight='bold' fill='white' text-anchor='middle'>I</text></svg>")
+            self._send(200, svg.encode("utf-8"), "image/svg+xml")
         elif route == "/site-1":
             self._send(200, render_page())
         elif route == "/site-2":

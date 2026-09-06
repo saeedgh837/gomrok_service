@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.14] - 2026-09-07
+
+Visible launch feedback: the desktop shortcut now shows that the service
+started, where its UI is, and how to stop it.
+
+### Added
+
+- `panel_tray.pyw` launcher: probes the panel, spawns it detached when down
+  (25s bounded poll), fires a Windows toast ("سرویس رجیستری فعال شد"), and
+  opens the new `/launch` page in the default browser. Falls back to
+  `/site-1` on panels older than 1.0.14; MessageBox on start failure.
+- `GET /launch`: self-contained Persian RTL launcher card — live status
+  (profiles / running / success / blocked from `/state`), version badge,
+  buttons for both panels and a "بستن سرویس" button that POSTs `/shutdown`
+  and flips the card to a "service stopped" state.
+- `GET /favicon.ico` (inline SVG) to quiet browser 404 noise.
+
+### Changed
+
+- Installer shortcuts and the post-install run now launch `panel_tray.pyw`;
+  the autostart task intentionally stays silent (`panel_gui.pyw`).
+- The bundle ships `panel_tray.pyw` alongside `panel_gui.pyw`.
+
 ## [1.0.13] - 2026-09-07
 
 Inquiry stop button and whole-system shutdown.
