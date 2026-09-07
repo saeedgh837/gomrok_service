@@ -1586,6 +1586,42 @@ def crm_html_to_pdf(html, timeout_s=60):
                 pass
 
 
+_CRM_SCHEDULER_THREAD = None
+_CRM_SCHEDULER_STOP = threading.Event()
+
+
+def _crm_scheduler_loop():
+    """60s cadence scheduler beat (plan section 5). Daemon thread; IRICA_CRM_
+    SCHEDULER_OFF=1 is the operator kill-switch. Exceptions never kill the
+    loop — they are logged and the beat is skipped."""
+    while not _CRM_SCHEDULER_STOP.wait(60):
+        try:
+            crm_scheduler_tick()
+            crm_auto_advance_scan()
+        except Exception as exc:
+            try:
+                crm.crm_log("error", "scheduler_exception", detail=str(exc))
+            except Exception:
+                pass
+
+
+def crm_scheduler_start():
+    global _CRM_SCHEDULER_THREAD
+    if os.environ.get("IRICA_CRM_SCHEDULER_OFF") == "1":
+        return None
+    if _CRM_SCHEDULER_THREAD and _CRM_SCHEDULER_THREAD.is_alive():
+        return _CRM_SCHEDULER_THREAD
+    _CRM_SCHEDULER_STOP.clear()
+    _CRM_SCHEDULER_THREAD = threading.Thread(target=_crm_scheduler_loop,
+                                             name="crm-scheduler", daemon=True)
+    _CRM_SCHEDULER_THREAD.start()
+    return _CRM_SCHEDULER_THREAD
+
+
+def crm_scheduler_stop():
+    _CRM_SCHEDULER_STOP.set()
+
+
 def crm_scheduler_tick(origin="scheduler"):
     """One scheduler beat: start at most ONE due watch-stage device per tick
     (runs are serialized by the estelam is-running gate)."""

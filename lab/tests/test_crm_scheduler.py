@@ -238,3 +238,30 @@ class TestMigration(CrmSchedulerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSchedulerThreadLifecycle(unittest.TestCase):
+    """Regression: main() calls crm_scheduler_start(); the definition and the
+    daemon thread must really exist (v1.1.0 shipped a panel whose main()
+    raised NameError on startup because the thread block was lost)."""
+
+    def test_crm_scheduler_start_spots_daemon_thread(self):
+        with patch.dict(os.environ, {"IRICA_CRM_SCHEDULER_OFF": ""}), \
+                patch.object(panel, "crm_scheduler_tick", return_value={"ok": False}), \
+                patch.object(panel, "crm_auto_advance_scan",
+                             return_value={"ok": True, "moved": [], "started": []}):
+            thread = panel.crm_scheduler_start()
+            self.assertIsNotNone(thread)
+            self.assertTrue(thread.is_alive())
+            self.assertEqual(thread.name, "crm-scheduler")
+            self.assertTrue(thread.daemon)
+            stopped = panel.crm_scheduler_stop()
+            self.assertIsNone(stopped)
+
+    def test_kill_switch_blocks_start(self):
+        with patch.dict(os.environ, {"IRICA_CRM_SCHEDULER_OFF": "1"}):
+            self.assertIsNone(panel.crm_scheduler_start())
+
+    def test_main_wires_scheduler_start(self):
+        import inspect
+        self.assertIn("crm_scheduler_start()", inspect.getsource(panel.main))
