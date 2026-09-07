@@ -150,3 +150,31 @@ class TestCrmRoutes(CrmApiHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCrmPageUi(CrmApiHarness):
+    """Phase E: the full CRM page serves all six tabs and wires the actions."""
+
+    def test_page_contains_six_tabs_and_key_markers(self):
+        status, body, _ = self._get("/crm")
+        self.assertEqual(status, 200)
+        for marker in (
+                "دستگاه‌ها", "مشتریان", "مالکان", "استخر هویت",
+                "تراکنش‌ها", "گزارش‌ها",
+                "/crm-tick", "/crm-start-payment", "/crm-state",
+                "irica-theme", "پرداخت خودکار", "crm-report-telegram"):
+            self.assertIn(marker, body)
+
+    def test_transaction_action_roundtrip(self):
+        _, body = self._post("/crm-customer", {"action": "add", "full_name": "مریم"})
+        cid = body["record"]["id"]
+        status, body = self._post("/crm-customer", {
+            "action": "tx", "id": cid, "amount": 1500000, "note": "پیش‌پرداخت"})
+        self.assertEqual(status, 200)
+        status, body = self._post("/crm-customer", {
+            "action": "tx", "id": cid, "amount": "-500000", "note": "بدهی"})
+        self.assertEqual(status, 200)
+        _, state, _ = self._get("/crm-state")
+        cust = next(c for c in state["customers"] if c["id"] == cid)
+        self.assertEqual(len(cust["transactions"]), 2)
+        self.assertEqual(sum(t["amount"] for t in cust["transactions"]), 1000000)
