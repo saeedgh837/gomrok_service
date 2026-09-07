@@ -52,7 +52,7 @@ SECRET_PATTERNS = [
 ]
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
-    "app_paths.py",
+    "app_paths.py", "crm.py",
     "run_panel.bat", "install.bat", "FIRST_RUN.txt", "README.md", "VERSION",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "telegram_config.example.json",
