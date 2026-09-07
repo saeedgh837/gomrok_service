@@ -119,47 +119,57 @@ class TestStabilityWait(unittest.TestCase):
 class TestConfidenceGate(unittest.TestCase):
     def test_min_conf_default(self):
         sys.path.insert(0, ROOT)
+        import gomrok as G
+        self.assertAlmostEqual(G.MIN_CONFIDENCE, 0.6)
+
+    def test_estelam_reuses_shared_solver_gate(self):
+        sys.path.insert(0, ROOT)
         import estelam_gomrok as est
-        self.assertAlmostEqual(est.MIN_CONFIDENCE, 0.6)
+        import gomrok as G
+        self.assertIs(est.solve_confidently, G.solve_confidently)
 
     def test_solve_confidently_submits_high_conf(self):
         sys.path.insert(0, ROOT)
-        import estelam_gomrok as est
+        import gomrok as G
         solver = mock.Mock()
         solver.read_pil_conf.return_value = ("ab3de", 0.95)
         crop = mock.Mock()
-        with mock.patch.object(est.cc, "crop_captcha_with_padding",
+        wait = mock.Mock()
+        with mock.patch.object(G.cc, "crop_captcha_with_padding",
                                return_value=crop), \
-             mock.patch.object(est.cc, "click_refresh", return_value=True) as cr:
-            text, conf = est.solve_confidently(mock.Mock(), mock.Mock(), solver)
+             mock.patch.object(G.cc, "click_refresh", return_value=True) as cr:
+            text, conf = G.solve_confidently(mock.Mock(), mock.Mock(), solver,
+                                             wait)
             self.assertEqual(text, "ab3de")
-            self.assertGreaterEqual(conf, est.MIN_CONFIDENCE)
+            self.assertGreaterEqual(conf, G.MIN_CONFIDENCE)
             cr.assert_not_called()
 
     def test_solve_confidently_refreshes_low_conf(self):
         sys.path.insert(0, ROOT)
-        import estelam_gomrok as est
+        import gomrok as G
         solver = mock.Mock()
         solver.read_pil_conf.side_effect = [("xxxxx", 0.2), ("ab3de", 0.9)]
         crop = mock.Mock()
-        with mock.patch.object(est.cc, "crop_captcha_with_padding",
+        wait = mock.Mock()
+        with mock.patch.object(G.cc, "crop_captcha_with_padding",
                                return_value=crop), \
-             mock.patch.object(est.cc, "click_refresh", return_value=True) as cr:
-            text, conf = est.solve_confidently(mock.Mock(), mock.Mock(), solver)
+             mock.patch.object(G.cc, "click_refresh", return_value=True) as cr:
+            text, conf = G.solve_confidently(mock.Mock(), mock.Mock(), solver,
+                                             wait)
             self.assertEqual(text, "ab3de")
             cr.assert_called_once()
 
     def test_solve_confidently_gives_up_after_bounds(self):
         sys.path.insert(0, ROOT)
-        import estelam_gomrok as est
+        import gomrok as G
         solver = mock.Mock()
         solver.read_pil_conf.return_value = ("xxxxx", 0.1)
         crop = mock.Mock()
-        with mock.patch.object(est.cc, "crop_captcha_with_padding",
+        with mock.patch.object(G.cc, "crop_captcha_with_padding",
                                return_value=crop), \
-             mock.patch.object(est.cc, "click_refresh", return_value=True):
-            text, conf = est.solve_confidently(mock.Mock(), mock.Mock(), solver,
-                                               max_rereads=2)
+             mock.patch.object(G.cc, "click_refresh", return_value=True):
+            text, conf = G.solve_confidently(mock.Mock(), mock.Mock(), solver,
+                                             mock.Mock(), max_rereads=2)
             # returns the last (still low-conf) answer rather than crashing
             self.assertEqual(conf, 0.1)
 
@@ -168,6 +178,12 @@ class TestConfidenceGate(unittest.TestCase):
         self.assertIn("read_conf", src)
         est = read(EST)
         self.assertIn("read_conf=solve_confidently", est)
+
+    def test_registration_flow_uses_confident_solve(self):
+        src = read(os.path.join(ROOT, "gomrok.py"))
+        self.assertIn("answer, _conf = solve_confidently(driver, captcha, "
+                      "solver, wait)", src)
+        self.assertIn("read_conf=solve_confidently)", src)
 
 
 class TestSyntax(unittest.TestCase):

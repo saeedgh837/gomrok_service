@@ -7,8 +7,9 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Fewer wrong-captcha submissions in the customs inquiry flow (logged at
-  ~29% of submits). Two root causes addressed:
+- Fewer wrong-captcha submissions in BOTH the customs inquiry and the
+  customs registration flows (inquiry logged at ~29% of submits). Two
+  root causes addressed:
   - The OCR decoder now attaches a confidence score to every read; reads
     below 0.6 (tunable via `IRICA_CAPTCHA_MIN_CONF`) trigger a free captcha
     refresh + re-read (max 3) instead of submitting a fabricated guess.
@@ -16,8 +17,9 @@ This project uses [Semantic Versioning](https://semver.org/).
     consecutive fingerprints (bounded 10s), closing the race where the
     page swaps the image between OCR and submit after a slow load / F5
     (12 of 16 logged wrong-captcha retries followed such dirty loads).
-- Applies to both the first attempt and the in-place retry loop; the
-  registration robot's behavior is unchanged.
+- The confidence gate lives in `gomrok.py` (`solve_confidently`) and is
+  shared by both robots; the registration robot's main read and its
+  in-place retry loop now use it too.
 
 ## [1.0.15] - 2026-09-07
 

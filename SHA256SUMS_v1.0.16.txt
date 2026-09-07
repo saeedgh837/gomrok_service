@@ -1,2 +1,2 @@
-6e4c7cf3e38d2cf84b96ffbe47398faf1b62ceb86109e80496ed749eb433ee86  irica-v1.0.16-win64.zip
-039bb053206b29cf56b69217da400e8a2c500f27e3eae9a5aaed1740fdef90bf  IRICA-Setup-v1.0.16.exe
+8ca151bbe2946b4ef71a4d5b7bbb03a1faa5ea89b1e78540a5941e4b9dc7a16a  irica-v1.0.16-win64.zip
+4d056c8fa7aeca4bd25085976488dc11f4daea24b5c491c67308fab3cd8a1305  IRICA-Setup-v1.0.16.exe

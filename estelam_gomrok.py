@@ -41,11 +41,6 @@ _STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or app_paths.data_path("este
 
 PAGE_LOAD_SEC = 12
 CAPTCHA_WAIT_SEC = 10
-# Submit only confident OCR reads. A wrong submit costs a full form round-trip
-# plus a site-side captcha failure; a refresh costs nothing. Override with
-# IRICA_CAPTCHA_MIN_CONF (e.g. 0.45 to submit more aggressively).
-MIN_CONFIDENCE = float(os.environ.get("IRICA_CAPTCHA_MIN_CONF", "0.6") or 0.6)
-CAPTCHA_MAX_REREADS = 3
 OPEN_GET_TRIES = 4
 SUBMIT_DEADLINE_SEC = 120
 RETRY_MAX_ATTEMPTS = 25
@@ -318,47 +313,8 @@ def hamta_present(driver):
         By.CSS_SELECTOR, f'[wicketpath="{G.WP_HAMTA_CONTINUE}"]'))
 
 
-def solve_confidently(driver, captcha, solver, min_conf: float = None,
-                      max_rereads: int = None):
-    """Read the captcha only when the model is confident AND the image stable.
-
-    Returns (answer, conf). Low-confidence reads trigger click_refresh +
-    re-read (bounded by max_rereads); after the bound the LAST read is
-    returned so the flow still attempts a submit (retry loop handles the
-    site-side rejection as before). Stability wait closes the post-reload
-    race where the img swaps between crop and submit (12/16 logged wrong
-    captcha errors followed a dirty load).
-    """
-    if min_conf is None:
-        min_conf = MIN_CONFIDENCE
-    if max_rereads is None:
-        max_rereads = CAPTCHA_MAX_REREADS
-
-    answer, conf = None, 0.0
-    for reread in range(max_rereads + 1):
-        try:
-            cc.wait_captcha_stable(driver, captcha)
-        except Exception:
-            pass
-        cc.prepare_captcha_for_shot(driver, captcha)
-        crop = cc.crop_captcha_with_padding(driver, captcha)
-        if hasattr(solver, "read_pil_conf"):
-            answer, conf = solver.read_pil_conf(crop)
-        else:  # third-party solver without the conf API — behave as before
-            answer, conf = solver.read_pil(crop), 1.0
-        if conf >= min_conf:
-            return answer, conf
-        print(f">>> conf-e captcha kam bood ({conf:.2f} < {min_conf:.2f}) "
-              f"— captcha-ye taze ...")
-        if reread < max_rereads:
-            try:
-                if not cc.click_refresh(driver, WebDriverWait(driver, CAPTCHA_WAIT_SEC),
-                                        captcha):
-                    break
-                captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
-            except Exception:
-                break
-    return answer, conf
+# solve_confidently lives in gomrok.py (shared with the registration flow).
+solve_confidently = G.solve_confidently
 
 
 def inquire_device(driver, wait, solver, person, device, no_confirm_check=False):
@@ -389,7 +345,7 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
     except Exception as re_:
         print(f">>> (refresh-e captcha na-shod: {re_})")
     cc.prepare_captcha_for_shot(driver, captcha)
-    answer, _conf = solve_confidently(driver, captcha, solver)
+    answer, _conf = solve_confidently(driver, captcha, solver, wait)
     G.type_and_verify(driver, G.WP_CAPTCHA, answer)
     try:
         submitted_ref = cc.snapshot_captcha(driver, captcha)

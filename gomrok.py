@@ -1158,17 +1158,60 @@ def is_registrant_end_error(etext):
             "توسط شخص دیگری" in text)
 
 
+# --- Confidence-gated captcha reading (shared by estelam + registration) ----
+# Submit only confident OCR reads. A wrong submit costs a full form round-trip
+# plus a site-side captcha failure; a refresh costs nothing. Override with
+# IRICA_CAPTCHA_MIN_CONF (e.g. 0.45 to submit more aggressively).
+MIN_CONFIDENCE = float(os.environ.get("IRICA_CAPTCHA_MIN_CONF", "0.6") or 0.6)
+CAPTCHA_MAX_REREADS = 3
+
+
+def solve_confidently(driver, captcha, solver, wait, min_conf: float = None,
+                      max_rereads: int = None):
+    """Read the captcha only when the model is confident AND the image stable.
+
+    Returns (answer, conf). Low-confidence reads trigger click_refresh +
+    re-read (bounded by max_rereads); after the bound the LAST read is
+    returned so the flow still attempts a submit (retry loop handles the
+    site-side rejection as before). Stability wait closes the post-reload
+    race where the img swaps between crop and submit (12/16 logged wrong
+    captcha errors followed a dirty load).
+    """
+    if min_conf is None:
+        min_conf = MIN_CONFIDENCE
+    if max_rereads is None:
+        max_rereads = CAPTCHA_MAX_REREADS
+
+    answer, conf = None, 0.0
+    for reread in range(max_rereads + 1):
+        try:
+            cc.wait_captcha_stable(driver, captcha)
+        except Exception:
+            pass
+        cc.prepare_captcha_for_shot(driver, captcha)
+        crop = cc.crop_captcha_with_padding(driver, captcha)
+        if hasattr(solver, "read_pil_conf"):
+            answer, conf = solver.read_pil_conf(crop)
+        else:  # third-party solver without the conf API — behave as before
+            answer, conf = solver.read_pil(crop), 1.0
+        if conf >= min_conf:
+            return answer, conf
+        print(f">>> conf-e captcha kam bood ({conf:.2f} < {min_conf:.2f}) "
+              f"— captcha-ye taze ...")
+        if reread < max_rereads:
+            try:
+                if not cc.click_refresh(driver, wait, captcha):
+                    break
+                captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+            except Exception:
+                break
+    return answer, conf
+
+
 def retry_imei_captcha_in_place(driver, wait, solver, old_captcha_ref,
                                 submit, read_result, max_attempts=5,
                                 retryable=None, prepare_form=None,
                                 read_conf=None):
-    """Retry loop with fresh captchas in the same browser.
-
-    `read_conf(driver, captcha_element, solver) -> (answer, conf)` lets the
-    caller inject a confidence-gated reader (estelam_gomrok.solve_confidently);
-    when omitted the plain solver.read_pil path is used (registration robot
-    keeps its current behavior).
-    """
     errors = []
     captcha_ref = old_captcha_ref
     attempt = 0
@@ -1211,7 +1254,7 @@ def retry_imei_captcha_in_place(driver, wait, solver, old_captcha_ref,
 
         captcha_ref = cc.snapshot_captcha(driver, captcha)
         if read_conf is not None:
-            answer, _conf = read_conf(driver, captcha, solver)
+            answer, _conf = read_conf(driver, captcha, solver, wait)
         else:
             answer = solver.read_pil(cc.crop_captcha_with_padding(driver, captcha))
         if not type_and_verify(driver, WP_CAPTCHA, answer):
@@ -2302,9 +2345,7 @@ def main():
                 captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
             except Exception as _re:
                 print(f">>> (refresh-e captcha na-shod, ba hamin captcha edame: {_re})")
-            cc.prepare_captcha_for_shot(driver, captcha)
-            crop = cc.crop_captcha_with_padding(driver, captcha)
-            answer = solver.read_pil(crop)
+            answer, _conf = solve_confidently(driver, captcha, solver, wait)
             cap_ok = type_and_verify(driver, WP_CAPTCHA, answer)
             if not cap_ok:
                 print(">>> KHATA: captcha dar field neshaste NASHOD (bad az chand talash).")
@@ -2642,7 +2683,8 @@ def main():
                     driver, wait, solver, old_ref, _retry_submit, _retry_result,
                     max_attempts=None,
                     retryable=is_imei_retryable_error,
-                    prepare_form=_prepare_imei_form_for_retry)
+                    prepare_form=_prepare_imei_form_for_retry,
+                    read_conf=solve_confidently)
                 print(f">>> retry-e captcha/hamta/movaghat tamam: "
                       f"advanced={retry_advanced} attempts={retry_count}")
                 if retry_advanced:
