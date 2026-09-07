@@ -178,3 +178,59 @@ class TestCrmPageUi(CrmApiHarness):
         cust = next(c for c in state["customers"] if c["id"] == cid)
         self.assertEqual(len(cust["transactions"]), 2)
         self.assertEqual(sum(t["amount"] for t in cust["transactions"]), 1000000)
+
+
+class TestCrmReports(CrmApiHarness):
+    """Phase F: PDF via headless Edge with HTML fallback + telegram gate."""
+
+    def _seed_device(self):
+        import crm
+        rec, _ = crm.add_device({"name": "iPhone 13", "serial1": "356938035643809"})
+        return rec
+
+    def test_pdf_route_serves_pdf_or_html_fallback(self):
+        self._seed_device()
+        try:
+            with urllib.request.urlopen(self._url("/crm-report?fmt=pdf"), timeout=90) as resp:
+                raw = resp.read()
+                ctype = resp.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as error:
+            raw, ctype = error.read(), error.headers.get("Content-Type", "")
+        if "pdf" in ctype:
+            self.assertGreater(len(raw), 500)
+            self.assertEqual(raw[:4], b"%PDF")
+        else:
+            # Edge missing -> HTML fallback with the print note
+            self.assertIn("html", ctype)
+            self.assertIn("Print", raw.decode("utf-8"))
+
+    def test_telegram_honors_full_data_setting(self):
+        self._seed_device()
+        import crm as crm_mod
+        sent = []
+        fake = type("tg", (), {"send_message": staticmethod(
+            lambda text, timeout=20: sent.append(text) or True)})
+        with patch.dict("sys.modules", {"telegram_notify": fake}):
+            status, body = self._post("/crm-report-telegram", {"full_data": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["chunks"], len(sent))
+        self.assertTrue(sent)
+
+    def test_telegram_never_contains_card_number(self):
+        """Plan section 6: logs and telegram NEVER contain card numbers."""
+        import crm as crm_mod
+        device, _ = crm_mod.add_device({"name": "x", "serial1": "356938035643809"})
+        crm_mod.add_owner({"first_name": "رضا", "last_name": "محمدی",
+                           "national": "0012345679", "birth": "1375/04/29",
+                           "mobile": "09121234567", "card_no": "6219861012345678"})
+        crm_mod.advance(device["id"], "queue_inquiry")
+        crm_mod.advance(device["id"], "mark_ready")
+        crm_mod.advance(device["id"], "attach_owner",
+                        owner_id=crm_mod.store_read()["owners"][0]["id"])
+        state = panel.crm_state_payload()
+        text = crm_mod.build_report(state, fmt="txt", plain=True, full_data=True)
+        self.assertNotIn("6219861012345678", text)
+        self.assertIn("001***5679", text)   # first3 + *** + last4 (F16)
+        # explicit artifacts keep the full identity
+        full = crm_mod.build_report(state, fmt="txt", plain=False, full_data=True)
+        self.assertIn("6219861012345678", full)

@@ -1540,6 +1540,52 @@ def _crm_is_due(device, settings):
     return (time.time() - last_ts) >= hours * 3600
 
 
+def crm_html_to_pdf(html, timeout_s=60):
+    """Render HTML to PDF with headless Edge (--print-to-pdf); None when Edge
+    is unavailable so callers fall back to the printable HTML (plan §6)."""
+    import shutil
+    import subprocess
+    import tempfile
+    edge = shutil.which("msedge")
+    if not edge:
+        for candidate in (
+                os.path.join(os.environ.get("PROGRAMFILES(X86)", ""),
+                             "Microsoft\\Edge\\Application\\msedge.exe"),
+                os.path.join(os.environ.get("PROGRAMFILES", ""),
+                             "Microsoft\\Edge\\Application\\msedge.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                             "Microsoft\\Edge\\Application\\msedge.exe")):
+            if candidate and os.path.isfile(candidate):
+                edge = candidate
+                break
+    if not edge:
+        return None
+    fd, html_path = tempfile.mkstemp(suffix=".html")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(html)
+        pdf_path = html_path + ".pdf"
+        command = [edge, "--headless", "--disable-gpu",
+                   "--no-pdf-header-footer",
+                   f"--print-to-pdf={pdf_path}", html_path]
+        try:
+            subprocess.run(command, timeout=timeout_s,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            return None
+        if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) < 200:
+            return None
+        with open(pdf_path, "rb") as handle:
+            return handle.read()
+    finally:
+        for path in (html_path, html_path + ".pdf"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def crm_scheduler_tick(origin="scheduler"):
     """One scheduler beat: start at most ONE due watch-stage device per tick
     (runs are serialized by the estelam is-running gate)."""
@@ -5107,8 +5153,11 @@ class Handler(BaseHTTPRequestHandler):
     def _crm_report_telegram(self, full_data):
         import crm as crm_mod
         state = crm_state_payload()
+        allow_full = bool((state.get("settings") or {})
+                          .get("telegram_report_full_data", True)) \
+            and bool(full_data)
         text = crm_mod.build_report(state, fmt="txt",
-                                    full_data=bool(full_data), plain=True)
+                                    full_data=allow_full, plain=True)
         chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
         sent = 0
         try:
@@ -5124,14 +5173,15 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "chunks": sent})
 
     def _crm_report(self, query):
-        """Devices report; fmt=txt (download) | html (printable). PDF in phase F."""
+        """Devices report; fmt=txt (download) | html (printable) | pdf
+        (headless Edge --print-to-pdf; HTML fallback with a print note)."""
         import crm as crm_mod
         fmt = (query.get("fmt") or ["txt"])[0]
         stages = (query.get("stage") or [""])[0]
         stage_filter = [s for s in stages.split(",") if s] or None
         state = crm_state_payload()
         report = crm_mod.build_report(state, stage_filter=stage_filter,
-                                      fmt="html" if fmt == "html" else "txt")
+                                      fmt="html" if fmt in ("html", "pdf") else "txt")
         if fmt == "txt":
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream; charset=utf-8")
@@ -5139,6 +5189,23 @@ class Handler(BaseHTTPRequestHandler):
                              'attachment; filename="crm-report.txt"')
             self.end_headers()
             self.wfile.write(report.encode("utf-8"))
+            return
+        if fmt == "pdf":
+            pdf_bytes = crm_html_to_pdf(report)
+            if pdf_bytes:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition",
+                                 'inline; filename="crm-report.pdf"')
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+                return
+            report = report.replace(
+                "</body>",
+                "<script>window.onload=()=>setTimeout(()=>window.print(),300)"
+                "</script></body>")
+            self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
             return
         self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 

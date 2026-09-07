@@ -845,6 +845,9 @@ def build_report(state, stage_filter=None, fmt="txt", full_data=True, plain=Fals
             if full_data and not plain:
                 parts.append(f"کد ملی کامل: {owner.get('national')}"
                              f" | کارت: {owner.get('card_no')}")
+            elif full_data and plain:
+                # Telegram/report bodies: masked national, NEVER the card (§6)
+                parts.append(f"کد ملی ماسک‌شده: {mask_national(owner.get('national'))}")
         est = device.get("estelam") or {}
         if est:
             parts.append(f"استعلام گمرک: {_STAGE_RESULT_FA.get(est.get('status'), est.get('status') or '—')}"
