@@ -234,3 +234,24 @@ class TestCrmReports(CrmApiHarness):
         # explicit artifacts keep the full identity
         full = crm_mod.build_report(state, fmt="txt", plain=False, full_data=True)
         self.assertIn("6219861012345678", full)
+
+
+class TestCrmEntryPoints(CrmApiHarness):
+    """The operator must find /crm from the home picker and both site pages."""
+
+    def _get_text(self, path):
+        with urllib.request.urlopen(self._url(path), timeout=10) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    def test_home_picker_links_to_crm(self):
+        body = self._get_text("/")
+        self.assertIn('href="/crm"', body)
+        self.assertIn("مدیریت مشتریان و پرونده‌ها", body)
+
+    def test_site1_page_links_to_crm(self):
+        body = self._get_text("/site-1")
+        self.assertIn('href="/crm"', body)
+
+    def test_site2_page_links_to_crm(self):
+        body = self._get_text("/site-2")
+        self.assertIn('href="/crm"', body)

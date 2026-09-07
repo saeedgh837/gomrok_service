@@ -2640,6 +2640,7 @@ PAGE_HEAD = """<!DOCTYPE html>
       <header class="head">
         <div class="head-actions">
           <a href="/" class="home-btn" title="بازگشت به انتخاب سامانه" aria-label="بازگشت به انتخاب سامانه">⌂ <span>سامانه‌ها</span></a>
+          <a href="/crm" class="home-btn" title="مدیریت مشتریان و پرونده‌ها" aria-label="مدیریت مشتریان و پرونده‌ها">👥 <span>CRM</span></a>
           <button type="button" id="theme-toggle" class="theme-btn" onclick="toggleTheme()">حالت تاریک</button>
           <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
         </div>
@@ -3551,6 +3552,7 @@ h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
 <div class="sites">
 <a class="site" data-site="1" href="/site-1"><span class="num">۱</span><h2>سایت اول گمرک</h2><p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p><div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div><span class="go">←</span></a>
 <a class="site" data-site="2" href="/site-2"><span class="num">۲</span><h2>استعلام سلامت دستگاه</h2><p>استعلام وضعیت دستگاه از سایت گمرک (فقط صفحه اول) با یک پروفایل شخص و لیست دستگاه‌ها.</p><div class="tags"><span class="tag">استعلام سلامت</span><span class="tag">افزودن عمده</span><span class="tag">ترتیب تصادفی</span></div><span class="go">←</span></a>
+<a class="site" data-site="crm" href="/crm"><span class="num">۳</span><h2>مدیریت مشتریان و پرونده‌ها</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مالک، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
 </div>
 <div class="foot">پنل روی <b>__PANEL_URL__</b> در حال اجراست · به‌روزرسانی خودکار هر ۵ ثانیه</div>
 </main>
@@ -3999,6 +4001,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
       <button type="button" class="wbtn" data-w="max" onclick="setWrapW('max')">تمام‌عرض</button>
       <button type="button" class="tbtn" id="theme-btn" onclick="toggleTheme()">🌙 حالت تاریک</button>
       <a class="back" href="/">← انتخاب سامانه</a>
+      <a class="back" href="/crm">👥 مدیریت پرونده‌ها</a>
       <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
     </div>
   </div>
