@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-09-07
+
+### Added
+
+- Customer & case management (CRM) at `/crm`, built plan-first with an
+  independent design review (20 findings merged) and TDD throughout
+  (83 new tests; suite 233 -> 316):
+  - `crm.py`: customers with a Toman ledger, owners (Iranian mod-11
+    national checksum, shamsi age 15..99, 16-digit card), a random
+    pre-registration identity pool, devices, and a 9-stage case machine
+    with timestamped idempotent ticks. Store writes are atomic with a
+    seeded `.bak` and corrupt-main recovery.
+  - `/crm-*` API routes on the panel; the CRM page (6 tabs) with the
+    panel-wide theme; `/crm-report` txt/html/PDF (headless Edge with an
+    auto-print HTML fallback) and a telegram report that masks national
+    codes and never carries card numbers.
+  - Identity-scoped inquiries: pre-registration intake runs under a
+    random VALID pool identity; the watch re-inquiry after handover runs
+    under the device OWNER's identity (the customs site only reports
+    registration to the registering code). Devices at watch stages
+    without an owner are rejected, never silently re-identified.
+  - Per-device, serialized runs only: CRM never starts the unscoped
+    estelam sweep, and its queue sync leaves manual site-2 rows
+    byte-identical. `estelam_store.json` saves are atomic with `.bak`.
+  - A 60s scheduler beat (kill switch `IRICA_CRM_SCHEDULER_OFF=1`)
+    re-inquires due watch devices every configured interval (1..72h,
+    default 2) and auto-advances registered devices to payment ONLY on a
+    confirmed robot start (attempts capped at 6).
+  - Handover auto-links or auto-creates the site-1 registration profile
+    (dedupe by IMEI or owner national code — pre-CRM manual devices are
+    linked, not duplicated). `crm_store.json` joins the release
+    migration list.
+
 ## [1.0.16] - 2026-09-07
 
 ### Fixed
