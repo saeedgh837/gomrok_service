@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.15] - 2026-09-07
+
+### Changed
+
+- Softer dark theme across all panel pages: near-black backgrounds
+  (`#0b0c0f` / `#0d1220` / `#0f1115` / `#0b1020`) replaced with a lighter
+  graphite-indigo family (`#171a26` base, `#1f2333` cards, `#363d57`
+  lines), with brighter muted text and lighter shadows for contrast.
+  Applies to the launcher card, the customs panel (dark mode), the inquiry
+  panel (dark mode), and the home picker.
+
 ## [1.0.14] - 2026-09-07
 
 Visible launch feedback: the desktop shortcut now shows that the service

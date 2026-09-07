@@ -1644,9 +1644,9 @@ PAGE_HEAD = """<!DOCTYPE html>
     --input:#ffffff;
   }
   html[data-theme="dark"] {
-    --bg:#0d1220; --card:#151b2d; --card2:#1b2338; --line:#303a58;
-    --txt:#edf1ff; --muted:#a7afc9; --brand:#758cff; --brand2:#a06cff;
-    --ok:#3ad28b; --danger:#ff6678; --warn:#f6b94b; --input:#11182a;
+    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
+    --txt:#eef1fb; --muted:#aeb6d0; --brand:#7d95ff; --brand2:#a878ff;
+    --ok:#3ad28b; --danger:#ff6678; --warn:#f6b94b; --input:#1a1e2e;
   }
   * { box-sizing:border-box; }
   body {
@@ -1981,10 +1981,10 @@ PAGE_HEAD = """<!DOCTYPE html>
     --shadow:0 1px 2px rgba(16,24,40,.03),0 12px 32px rgba(16,24,40,.06);
   }
   html[data-theme="dark"] {
-    --bg:#0b0c0f; --card:#111216; --card2:#16181d; --line:#272a31;
-    --txt:#f3f4f6; --muted:#9298a5; --brand:#7c7cf2; --brand2:#7c7cf2;
-    --ok:#34b583; --danger:#ef6a6a; --warn:#e4a43a; --input:#13151a;
-    --shadow:0 1px 1px rgba(0,0,0,.2),0 18px 42px rgba(0,0,0,.22);
+    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
+    --txt:#eef1fb; --muted:#aeb6d0; --brand:#7d8cff; --brand2:#7d8cff;
+    --ok:#34b583; --danger:#ef6a6a; --warn:#e4a43a; --input:#1a1e2e;
+    --shadow:0 1px 1px rgba(0,0,0,.14),0 18px 42px rgba(0,0,0,.16);
   }
   html { scrollbar-gutter:stable; }
   body { font-family:"Segoe UI",Tahoma,system-ui,sans-serif; background:var(--bg); font-size:14px; line-height:1.65; }
@@ -1994,7 +1994,7 @@ PAGE_HEAD = """<!DOCTYPE html>
   .sidebar { width:430px; padding:24px 18px; gap:12px; background:var(--card); border-inline-start:1px solid var(--line); overflow:hidden; }
   .side-sec-title { margin:0; font-size:12px; font-weight:700; letter-spacing:.01em; color:var(--muted); }
   .add-prof { padding:11px 14px; border-radius:9px; font-size:14px; font-weight:700; background:var(--txt); box-shadow:none; }
-  html[data-theme="dark"] .add-prof { color:#111216; background:#f3f4f6; }
+  html[data-theme="dark"] .add-prof { color:#1f2333; background:#f3f4f6; }
   .add-prof:hover { filter:none; transform:none; opacity:.88; }
   #profile-search { min-height:42px; padding:10px 38px 10px 32px; border-radius:9px; background:var(--card2); }
   #profile-search:focus { box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 16%,transparent); }
@@ -3045,19 +3045,19 @@ HOME_PAGE = """<!doctype html>
 <title>انتخاب سامانه گمرک</title><style>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:grid;place-items:center;padding:28px 16px;
-  background:radial-gradient(1100px 560px at 82% -12%,#1b2a52 0,transparent 60%),radial-gradient(820px 480px at 6% 4%,#241a49 0,transparent 55%),#0b1020;
+  background:radial-gradient(1100px 560px at 82% -12%,#25386b 0,transparent 60%),radial-gradient(820px 480px at 6% 4%,#31245c 0,transparent 55%),#131830;
   color:#eef2ff;font-family:Tahoma,"Segoe UI",sans-serif}
 .wrap{width:min(960px,94vw)}
 .top{text-align:center;margin-bottom:26px}
 h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
 /* live stats strip */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 auto 30px;max-width:640px}
-.stat{background:#141d33;border:1px solid #28385a;border-radius:16px;padding:14px 10px;text-align:center}
+.stat{background:#1c2540;border:1px solid #28385a;border-radius:16px;padding:14px 10px;text-align:center}
 .stat .n{font-size:26px;font-weight:900;line-height:1.1}
 .stat .l{font-size:11.5px;color:#98a8ca;margin-top:3px}
 .stat.total .n{color:#6f83ff}.stat.running .n{color:#f2b34a}.stat.success .n{color:#1fb883}.stat.blocked .n{color:#ef5b6b}
 .sites{display:grid;grid-template-columns:repeat(2,1fr);gap:22px}
-.site{position:relative;overflow:hidden;display:block;min-height:250px;padding:28px;border:1px solid #2d3858;border-radius:24px;color:inherit;text-decoration:none;background:linear-gradient(145deg,#18213b,#11182c);box-shadow:0 24px 70px #0007;transition:.2s}
+.site{position:relative;overflow:hidden;display:block;min-height:250px;padding:28px;border:1px solid #38445f;border-radius:24px;color:inherit;text-decoration:none;background:linear-gradient(145deg,#202a44,#1a2338);box-shadow:0 24px 70px #0007;transition:.2s}
 .site:hover{transform:translateY(-6px);border-color:#788cff;box-shadow:0 30px 80px #0009}
 .site[data-site="2"]{background:linear-gradient(145deg,#12382f,#10251f);border-color:#276453}
 .site[data-site="2"]:hover{border-color:#3fd39a}
@@ -3119,8 +3119,8 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
 <link rel="icon" href="/favicon.ico">
 <style>
   :root{
-    --bg:#0f1115; --card:#171a21; --card2:#1d212b; --line:#2a2f3a;
-    --fg:#e8eaf0; --muted:#8a91a0; --brand:#6d8bff; --brand2:#9d6dff;
+    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
+    --fg:#eef1fb; --muted:#a5adc6; --brand:#6d8bff; --brand2:#9d6dff;
     --ok:#3ba776; --danger:#e5484d; --warn:#f5a524;
   }
   html[data-theme="light"]{
@@ -3135,7 +3135,7 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   }
   .card{
     width:100%; max-width:430px; background:var(--card); border:1px solid var(--line);
-    border-radius:18px; padding:28px 26px; box-shadow:0 18px 50px rgba(0,0,0,.35);
+    border-radius:18px; padding:28px 26px; box-shadow:0 18px 50px rgba(0,0,0,.22);
   }
   .logo{width:56px; height:56px; border-radius:14px; margin:0 auto 14px;
     background:linear-gradient(135deg,var(--brand),var(--brand2));
@@ -3271,9 +3271,9 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
     --pill-warn-bg:#fcefd6;--pill-warn-fg:#9a5c08;
   }
   html[data-theme="dark"]{
-    --bg:#0d1220;--card:#151b2d;--card2:#1b2338;--line:#303a58;--txt:#edf1ff;
-    --muted:#a7afc9;--brand:#758cff;--brand2:#a06cff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
-    --logbg:#0f1526;--scroll:#2c3350;--sn:#8ea2d8;--shadow:rgba(0,0,0,.45);
+    --bg:#171a26;--card:#1f2333;--card2:#262b3f;--line:#363d57;--txt:#eef1fb;
+    --muted:#aeb6d0;--brand:#7d95ff;--brand2:#a878ff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
+    --logbg:#1b2033;--scroll:#3a4260;--sn:#8ea2d8;--shadow:rgba(0,0,0,.32);
     --pill-neutral-bg:#243050;--pill-neutral-fg:#a9b7e0;
     --pill-ok-bg:#12321f;--pill-ok-fg:#3ad28b;
     --pill-danger-bg:#3a1620;--pill-danger-fg:#ff6678;
