@@ -1302,6 +1302,99 @@ def estelam_save(data):
         return data
 
 
+def set_profile_enabled(profile_id, enabled):
+    """Enable/disable a profile unless it is busy (used by CRM device delete)."""
+    with _locked_store():
+        store = load_store()
+        changed = False
+        for profile in store.get("profiles", []):
+            if profile.get("id") == str(profile_id) and profile.get("run_status") != "busy":
+                profile["enabled"] = bool(enabled)
+                changed = True
+        if changed:
+            save_store(store)
+        return changed
+
+
+def load_crm_logs(limit=300):
+    """CRM JSONL event log tail (newest last), same shape as estelam logs."""
+    import crm as crm_mod
+    out = []
+    path = crm_mod.log_path()
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        continue
+    except OSError:
+        return []
+    return out[-limit:]
+
+
+def crm_state_payload():
+    """crm store + joined per-device estelam results for /crm-state."""
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    est = estelam_load()
+    est_by_id = {str(d.get("id")): d for d in est.get("devices", [])}
+    enriched = []
+    for device in data.get("devices", []):
+        row = dict(device)
+        est_row = est_by_id.get(str(device.get("id"))) or {}
+        row["estelam"] = {k: est_row.get(k, "") for k in
+                          ("status", "result", "hamta_status", "hamta_result",
+                           "gomrok_at", "hamta_at", "updated")}
+        enriched.append(row)
+    out = dict(data)
+    out["devices"] = enriched
+    return out
+
+
+def crm_advance_logged(device_id, action, **payload):
+    """Stage machine + CRM event log (plan section 12)."""
+    import crm as crm_mod
+    device, errors = crm_mod.advance(device_id, action, **payload)
+    if not errors:
+        crm_mod.crm_log("info", "stage", device_id=device_id, action=action,
+                        to_stage=str((device or {}).get("stage") or ""))
+    else:
+        crm_mod.crm_log("warn", "stage_rejected", device_id=device_id,
+                        action=action, errors="; ".join(errors))
+    return device, errors
+
+
+def crm_update_settings(fields):
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    settings = data.get("settings") or {}
+    errors = []
+    if "watch_interval_hours" in fields:
+        try:
+            hours = int(crm_mod.normalize_digits(fields["watch_interval_hours"]))
+        except (TypeError, ValueError):
+            hours = 0
+        if not 1 <= hours <= 72:
+            errors.append("بازهٔ استعلام باید بین ۱ تا ۷۲ ساعت باشد")
+        else:
+            settings["watch_interval_hours"] = hours
+    for key in ("scheduler_enabled", "auto_advance_default", "telegram_report_full_data"):
+        if key in fields:
+            settings[key] = bool(fields[key])
+    if errors:
+        return None, errors
+    data["settings"] = settings
+    crm_mod.store_write(data)
+    crm_mod.crm_log("info", "settings", interval=settings.get("watch_interval_hours"),
+                    scheduler=settings.get("scheduler_enabled"))
+    return settings, []
+
+
 def validate_estelam_person(person):
     """Barmigardanad list-e khata-haye farsi (khali = motabar)."""
     errors = []
@@ -4152,6 +4245,65 @@ checkApiHealth();
 """
 
 
+CRM_PAGE = r"""<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>مدیریت مشتریان و پرونده‌ها (CRM)</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{--bg:#eef1f9;--card:#ffffff;--line:#d9deef;--txt:#1b2036;--muted:#5c6484;--brand:#4f6bef}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:Tahoma,"Segoe UI",sans-serif;padding:22px 14px 60px}
+  .wrap{width:min(1280px,98vw);margin:0 auto}
+  h1{font-size:20px;margin:0 0 14px}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .tab{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 16px;cursor:pointer}
+  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:right}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;background:#e6eaf7;color:#5c6484;font-size:12px}
+  .btn{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:6px 14px;cursor:pointer}
+  .btn.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .muted{color:var(--muted);font-size:12px}
+  input,select{font-family:inherit;border:1px solid var(--line);border-radius:8px;padding:6px 9px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>مدیریت مشتریان و پرونده‌ها</h1>
+  <div class="tabs" id="tabs"></div>
+  <div id="view"></div>
+</div>
+<script>
+/* Phase E fills this; the shell loads state so operators see data early. */
+let STATE = null;
+async function refresh(){
+  try { STATE = await (await fetch('/crm-state')).json(); } catch(e) {}
+  render();
+}
+function render(){
+  const view = document.getElementById('view');
+  if(!STATE){ view.textContent = '...'; return; }
+  const rows = (STATE.devices||[]).map(d =>
+    '<tr><td>'+(d.name||'')+'</td><td>'+(d.serial1||'')+'</td>'
+    +'<td><span class="pill">'+(d.stage||'')+'</span></td>'
+    +'<td class="muted">'+((d.estelam||{}).status||'—')+'</td></tr>').join('');
+  view.innerHTML = '<div class="card"><table><tr><th>دستگاه</th><th>سریال</th><th>مرحله</th><th>استعلام</th></tr>'+rows+'</table></div>';
+}
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>"""
+
+
+def render_crm_page():
+    """CRM page (full UI in phase E); minimal functional shell for now."""
+    return CRM_PAGE
+
+
 def render_estelam_page():
     state = estelam_load()
     state["runtime"] = estelam_runtime()
@@ -4184,6 +4336,134 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except Exception:
             return {}
+
+    def _crm_entity(self, route, data):
+        """Dispatch add/update/delete for the four CRM entity routes."""
+        import crm as crm_mod
+        action = str(data.get("action") or "").strip().lower()
+        record_id = str(data.get("id") or "").strip()
+        entity = route.rsplit("-", 1)[1]          # customer|owner|identity|device
+        record, errors, extra = None, [], {}
+        if entity == "customer":
+            if action == "add":
+                record, errors = crm_mod.add_customer(data)
+            elif action == "update":
+                record, errors = crm_mod.update_customer(record_id, data)
+            elif action == "delete":
+                ok, errors = crm_mod.delete_customer(record_id, force=bool(data.get("force")))
+                record = {"ok": ok} if ok else None
+            else:
+                errors = ["کنش نامعتبر است"]
+        elif entity == "owner":
+            if action == "add":
+                record, errors = crm_mod.add_owner(data)
+            elif action == "update":
+                record, errors = crm_mod.update_owner(record_id, data)
+            elif action == "delete":
+                ok, errors = crm_mod.delete_owner(record_id)
+                record = {"ok": ok} if ok else None
+            else:
+                errors = ["کنش نامعتبر است"]
+        elif entity == "identity":
+            if action == "add":
+                record, errors = crm_mod.add_identity(data)
+            elif action == "update":
+                record, errors = crm_mod.update_identity(record_id, data)
+            elif action == "delete":
+                ok, errors = crm_mod.delete_identity(record_id)
+                record = {"ok": ok} if ok else None
+            else:
+                errors = ["کنش نامعتبر است"]
+        else:  # device
+            if action == "add":
+                inline = data.get("customer") if isinstance(data.get("customer"), dict) else None
+                record, errors = crm_mod.add_device(data, customer=inline)
+            elif action == "update":
+                record, errors = crm_mod.update_device(record_id, data)
+            elif action == "delete":
+                ok, errors = crm_mod.delete_device(record_id)
+                record = {"ok": ok} if ok else None
+            else:
+                errors = ["کنش نامعتبر است"]
+        if errors:
+            crm_mod.crm_log("warn", f"{entity}_{action}_rejected",
+                            entity_id=record_id, errors="; ".join(errors))
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        crm_mod.crm_log("info", f"{entity}_{action}",
+                        entity_id=str((record or {}).get("id") or record_id))
+        payload = {"ok": True, "record": record}
+        if entity == "device" and action == "add":
+            payload["device"] = record
+        payload.update(extra)
+        self._json(payload)
+
+    def _crm_start_payment(self, device_id):
+        """Advance to payment. Explicit linked profile_id ONLY (review F18/F9):
+        start_profile() with no id pool-claims ANY free profile."""
+        import crm as crm_mod
+        data = crm_mod.store_read()
+        device = next((d for d in data.get("devices", [])
+                       if d.get("id") == device_id), None)
+        if not device:
+            self._json({"ok": False, "errors": ["دستگاه پیدا نشد"]}, 404)
+            return
+        profile_id = str(device.get("profile_id") or "").strip()
+        if not profile_id:
+            self._json({"ok": False,
+                        "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است"]}, 400)
+            return
+        status, payload = start_profile(profile_id)
+        if status != 200:
+            crm_mod.crm_log("error", "payment_start_failed", device_id=device_id,
+                            profile_id=profile_id, detail=str(payload))
+            message = "شروع ربات انجام نشد"
+            if isinstance(payload, dict):
+                message = str(payload.get("error") or message)
+            self._json({"ok": False, "errors": [message]}, status)
+            return
+        device, errors = crm_mod.advance(device_id, "start_payment")
+        crm_mod.crm_log("info", "payment_started", device_id=device_id,
+                        profile_id=profile_id)
+        self._json({"ok": True, "device": device, "pid": payload.get("pid")})
+
+    def _crm_report_telegram(self, full_data):
+        import crm as crm_mod
+        state = crm_state_payload()
+        text = crm_mod.build_report(state, fmt="txt",
+                                    full_data=bool(full_data), plain=True)
+        chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
+        sent = 0
+        try:
+            import telegram_notify as tg
+            for chunk in chunks:
+                if tg.send_message(chunk, timeout=20):
+                    sent += 1
+        except Exception as exc:
+            crm_mod.crm_log("error", "report_telegram_failed", detail=str(exc))
+            self._json({"ok": False, "errors": ["ارسال تلگرام ناموفق بود"]}, 502)
+            return
+        crm_mod.crm_log("info", "report_telegram_sent", chunks=sent)
+        self._json({"ok": True, "chunks": sent})
+
+    def _crm_report(self, query):
+        """Devices report; fmt=txt (download) | html (printable). PDF in phase F."""
+        import crm as crm_mod
+        fmt = (query.get("fmt") or ["txt"])[0]
+        stages = (query.get("stage") or [""])[0]
+        stage_filter = [s for s in stages.split(",") if s] or None
+        state = crm_state_payload()
+        report = crm_mod.build_report(state, stage_filter=stage_filter,
+                                      fmt="html" if fmt == "html" else "txt")
+        if fmt == "txt":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="crm-report.txt"')
+            self.end_headers()
+            self.wfile.write(report.encode("utf-8"))
+            return
+        self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 
     def _state_json(self, code=200):
         """load_store-e amn baraye route-haye read: agar file lahze-i kharab bood,
@@ -4279,6 +4559,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, f.read(), "image/png")
             else:
                 self._send(404, b"not found", "text/plain")
+        elif route == "/crm":
+            self._send(200, render_crm_page().encode("utf-8"))
+        elif route == "/crm-state":
+            self._json(crm_state_payload())
+        elif route == "/crm-logs":
+            self._json({"logs": load_crm_logs()})
+        elif route == "/crm-report":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._crm_report(query)
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -4491,6 +4781,34 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/estelam-clear-logs":
             self._json(clear_estelam_logs())
+
+        elif self.path in ("/crm-customer", "/crm-owner", "/crm-identity",
+                           "/crm-device"):
+            self._crm_entity(self.path, self._read_json())
+
+        elif self.path == "/crm-tick":
+            data = self._read_json()
+            device, errors = crm_advance_logged(str(data.get("device_id") or ""),
+                                                str(data.get("action") or ""),
+                                                owner_id=data.get("owner_id") or "")
+            if errors:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                self._json({"ok": True, "device": device})
+
+        elif self.path == "/crm-start-payment":
+            self._crm_start_payment(str(self._read_json().get("device_id") or ""))
+
+        elif self.path == "/crm-settings":
+            data = self._read_json()
+            settings, errors = crm_update_settings(data)
+            if errors:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                self._json({"ok": True, "settings": settings})
+
+        elif self.path == "/crm-report-telegram":
+            self._crm_report_telegram(bool(self._read_json().get("full_data")))
 
         else:
             self._send(404, b"not found", "text/plain")

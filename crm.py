@@ -328,6 +328,31 @@ def _store_write(data):
     os.replace(tmp, path)
 
 
+def log_path():
+    base = os.environ.get("IRICA_CRM_STORE") or ""
+    if base:
+        return base + ".logs.jsonl"
+    import app_paths
+    return app_paths.data_path("crm_logs.jsonl")
+
+
+def crm_log(level, event, **detail):
+    """Append one CRM event line. Never logs personal data: callers pass ids
+    and masked strings only (plan §12)."""
+    entry = {"at": _now(), "level": str(level), "event": str(event)}
+    entry.update({k: v for k, v in detail.items() if v})
+    try:
+        path = log_path()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return entry
+
+
 def store_read():
     with STORE_LOCK:
         return _store_read()
@@ -760,3 +785,96 @@ def advance(device_id, action, **payload):
 
 def stage_of(device):
     return str((device or {}).get("stage") or "new")
+
+
+# --------------------------------------------------------------------------
+# Reports (plan section 6; PDF via Edge lands in phase F)
+# --------------------------------------------------------------------------
+
+_STAGE_FA = {
+    "new": "جدید",
+    "inquiry": "در انتظار استعلام",
+    "problem": "دارای اشکال",
+    "ready_owner": "سالم — نیازمند مالک",
+    "handed": "تحویل‌شده به مسئول سایت",
+    "to_payment": "ثبت‌شده — در انتظار پرداخت",
+    "payment": "در حال پرداخت",
+    "payment_done": "پرداخت تأییدشده",
+    "done": "تکمیل‌شده",
+}
+
+
+def _esc(text):
+    """HTML-escape every store-derived field (review F11)."""
+    return (str(text if text is not None else "")
+            .replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def mask_national(national):
+    national = normalize_digits(national)
+    if len(national) < 7:
+        return "***"
+    return f"{national[:3]}***{national[-4:]}"
+
+
+def build_report(state, stage_filter=None, fmt="txt", full_data=True, plain=False):
+    """Devices report grouped by stage. Identities appear ONLY when
+    full_data=True; card numbers are excluded from telegram (plain=True) even
+    then — they belong to the explicit file artifacts only (plan section 6)."""
+    devices = state.get("devices") or []
+    if stage_filter:
+        devices = [d for d in devices if d.get("stage") in stage_filter]
+    customers = {c.get("id"): c for c in state.get("customers") or []}
+    owners = {o.get("id"): o for o in state.get("owners") or []}
+
+    def line(device):
+        customer = customers.get(device.get("customer_id")) or {}
+        owner = owners.get(device.get("owner_id")) or {}
+        parts = [
+            f"دستگاه: {device.get('name')}",
+            f"سریال: {device.get('serial1')}" +
+            (f" / {device.get('serial2')}" if device.get("serial2") else ""),
+            f"مشتری: {customer.get('full_name') or '—'}",
+        ]
+        if owner:
+            parts.append(f"مالک: {owner.get('first_name')} {owner.get('last_name')}"
+                         f" | کد ملی: {mask_national(owner.get('national'))}"
+                         f" | تولد: {owner.get('birth')}"
+                         f" | موبایل: {owner.get('mobile')}")
+            if full_data and not plain:
+                parts.append(f"کد ملی کامل: {owner.get('national')}"
+                             f" | کارت: {owner.get('card_no')}")
+        est = device.get("estelam") or {}
+        if est:
+            parts.append(f"استعلام گمرک: {_STAGE_RESULT_FA.get(est.get('status'), est.get('status') or '—')}"
+                         f" | همتا: {est.get('hamta_status') or '—'}")
+        parts.append(f"مرحله: {_STAGE_FA.get(device.get('stage'), device.get('stage'))}")
+        return " | ".join(parts)
+
+    report_items = [line(d) for d in devices]
+    header = f"گزارش دستگاه‌ها — {time.strftime('%Y-%m-%d %H:%M')} — {len(devices)} مورد"
+    if fmt == "html":
+        rows = "".join(
+            f"<tr><td>{_esc(device.get('name'))}</td>"
+            f"<td>{_esc(device.get('serial1'))}</td>"
+            f"<td>{_esc((customers.get(device.get('customer_id')) or {}).get('full_name'))}</td>"
+            f"<td>{_esc(device.get('stage'))}</td></tr>"
+            for device in devices)
+        return ("<!DOCTYPE html><html lang=\"fa\" dir=\"rtl\"><head><meta charset=\"utf-8\">"
+                "<title>گزارش دستگاه‌ها</title></head><body>"
+                f"<h1>{_esc(header)}</h1>"
+                "<table border=\"1\" cellpadding=\"6\"><tr><th>دستگاه</th><th>سریال</th>"
+                "<th>مشتری</th><th>مرحله</th></tr>" + rows + "</table></body></html>")
+    body = "\n".join(f"{i}. {item}" for i, item in enumerate(report_items, 1))
+    return header + "\n" + body
+
+
+_STAGE_RESULT_FA = {
+    "healthy": "سالم",
+    "problem": "دارای اشکال",
+    "advanced": "ثبت‌شده در گمرک",
+    "error": "بدون پاسخ",
+    "pending": "در انتظار",
+    "running": "در حال استعلام",
+}
