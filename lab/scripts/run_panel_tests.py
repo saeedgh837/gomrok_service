@@ -28,6 +28,7 @@ DEFAULT = [
     "test_v1_0_16_captcha_confidence",
     "test_crm_validation", "test_crm_store", "test_crm_api",
     "test_crm_inquiry_pool",
+    "test_crm_scheduler",
     "test_dashboard_rewrite",
     "test_system_debug_logs",
     "test_robot_interpreter", "test_manual_scroll", "test_app_paths",

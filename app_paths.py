@@ -42,6 +42,9 @@ MIGRATED_FILES = (
     "inputs.json",
     "estelam_store.json",
     "estelam_store.json.bak",
+    "crm_store.json",
+    "crm_store.json.bak",
+    "crm_logs.jsonl",
     # runtime state and logs
     "site2_notif.json",
     "telegram_health.json",

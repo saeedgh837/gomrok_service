@@ -1471,6 +1471,185 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
     return result
 
 
+def crm_ensure_registration_profile(device_id):
+    """At handover: link the site-1 profile or create one (review F9).
+    Dedupe first — an operator-registered device links to its EXISTING
+    profile instead of creating a duplicate. Returns the profile id or "".
+    """
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    device = next((d for d in data.get("devices", [])
+                   if d.get("id") == device_id), None)
+    if not device:
+        return ""
+    if device.get("profile_id"):
+        store = load_store()
+        if next((p for p in store.get("profiles", [])
+                 if p.get("id") == device["profile_id"]), None):
+            return device["profile_id"]          # already linked (idempotent)
+    owner = next((o for o in data.get("owners", [])
+                  if o.get("id") == device.get("owner_id")), None)
+    serial1 = str(device.get("serial1") or "").strip()
+    store = load_store()
+    profile = None
+    if serial1 or (owner and owner.get("national")):
+        profile = next((p for p in store.get("profiles", [])
+                        if serial1 and serial1 in (p.get("imeis") or []))
+                       or (owner and str(p.get("national") or "") ==
+                           str(owner.get("national") or "")), None)
+    if profile is None:
+        profile = {
+            "id": uuid.uuid4().hex[:12],
+            "title": f"{device.get('name')} — "
+                     f"{(owner or {}).get('first_name', '')} "
+                     f"{(owner or {}).get('last_name', '')}".strip(" —"),
+            "national": (owner or {}).get("national", ""),
+            "birth": (owner or {}).get("birth", ""),
+            "mobile": (owner or {}).get("mobile", ""),
+            "imeis": [s for s in (serial1, device.get("serial2") or "") if s],
+            "enabled": False,
+            "registration_status": "pending",
+        }
+        store.setdefault("profiles", []).append(profile)
+        save_store(store)
+        crm_mod.crm_log("info", "profile_created", device_id=device_id,
+                        profile_id=profile["id"])
+    else:
+        crm_mod.crm_log("info", "profile_linked", device_id=device_id,
+                        profile_id=profile["id"])
+    with crm_mod.STORE_LOCK:
+        data = crm_mod.store_read()
+        dev = next((d for d in data.get("devices", [])
+                    if d.get("id") == device_id), None)
+        if dev:
+            dev["profile_id"] = profile["id"]
+            dev["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            crm_mod.store_write(data)
+    return profile["id"]
+
+
+def _crm_is_due(device, settings):
+    last = str(device.get("last_inquiry_at") or "")
+    if not last:
+        return True
+    try:
+        last_ts = time.mktime(time.strptime(last, "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return True
+    hours = int(settings.get("watch_interval_hours") or 2)
+    return (time.time() - last_ts) >= hours * 3600
+
+
+def crm_scheduler_tick(origin="scheduler"):
+    """One scheduler beat: start at most ONE due watch-stage device per tick
+    (runs are serialized by the estelam is-running gate)."""
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    if not (data.get("settings") or {}).get("scheduler_enabled"):
+        return {"ok": False, "started": []}
+    if estelam_is_running():
+        crm_mod.crm_log("info", "scheduler_skipped_running")
+        return {"ok": False, "started": []}
+    watch = {"handed", "to_payment"}
+    started = []
+    for device in data.get("devices", []):
+        if device.get("stage") not in watch:
+            continue
+        if not _crm_is_due(device, data.get("settings") or {}):
+            continue
+        result = crm_start_inquiry(device["id"], service="gomrok",
+                                   origin=origin)
+        if result.get("ok"):
+            started.append({"device_id": device["id"],
+                            "pid": result.get("pid")})
+            crm_mod.crm_log("info", "scheduler_started",
+                            device_id=device["id"])
+        else:
+            crm_mod.crm_log("warn", "scheduler_start_failed",
+                            device_id=device["id"],
+                            detail="; ".join(result.get("errors") or []))
+        break                      # one device per tick — serialized runs
+    return {"ok": bool(started), "started": started}
+
+
+def crm_auto_advance_scan():
+    """Join 'advanced' watch rows to to_payment, and (when the device has
+    auto_advance) start payment. The stage moves to payment ONLY on a 200
+    from start_profile (review F5); failures keep the device in to_payment
+    with advance_attempts capped at 6 (operator-visible give-up). Retry
+    scans pick to_payment devices with attempts>0 back up (F5)."""
+    import crm as crm_mod
+    moved, started, errors = [], [], []
+    if estelam_is_running():
+        return {"ok": False, "moved": moved, "started": started}
+    est = estelam_load()
+    advanced_ids = {str(d.get("id")) for d in est.get("devices", [])
+                    if str(d.get("status") or "") == "advanced"}
+    data = crm_mod.store_read()
+    for device in data.get("devices", []):
+        stage = device.get("stage")
+        attempts = int(device.get("advance_attempts") or 0)
+        is_new = stage == "handed" and str(device.get("id")) in advanced_ids
+        is_retry = stage == "to_payment" and attempts > 0 and attempts < 6
+        if is_new:
+            with crm_mod.STORE_LOCK:
+                fresh = crm_mod.store_read()
+                dev = next((d for d in fresh.get("devices", [])
+                            if d.get("id") == device.get("id")), None)
+                if not dev:
+                    continue
+                dev["stage"] = "to_payment"
+                dev["advance_attempts"] = 0
+                dev["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                crm_mod.store_write(fresh)
+            moved.append(device["id"])
+            crm_mod.crm_log("info", "registered_detected", device_id=device["id"])
+        elif not is_retry:
+            continue
+        if not device.get("auto_advance"):
+            continue
+        if attempts >= 6:
+            crm_mod.crm_log("error", "auto_advance_gave_up",
+                            device_id=device["id"])
+            continue
+        profile_id = crm_ensure_registration_profile(device["id"])
+        if not profile_id:
+            errors.append({"device_id": device["id"],
+                           "error": "پروفایل ثبت‌نام ساخته نشد"})
+            continue
+        status, payload = start_profile(profile_id)
+        if status == 200:
+            with crm_mod.STORE_LOCK:
+                fresh = crm_mod.store_read()
+                dev = next((d for d in fresh.get("devices", [])
+                            if d.get("id") == device.get("id")), None)
+                if dev:
+                    dev["stage"] = "payment"
+                    dev["advance_attempts"] = 0
+                    dev["payment_started_at"] = time.strftime(
+                        "%Y-%m-%d %H:%M:%S")
+                    crm_mod.store_write(fresh)
+            started.append(device["id"])
+            crm_mod.crm_log("info", "auto_payment_started",
+                            device_id=device["id"], profile_id=profile_id)
+        else:
+            detail = str((payload or {}).get("error") or status) \
+                if isinstance(payload, dict) else str(status)
+            with crm_mod.STORE_LOCK:
+                fresh = crm_mod.store_read()
+                dev = next((d for d in fresh.get("devices", [])
+                            if d.get("id") == device.get("id")), None)
+                if dev:
+                    dev["advance_attempts"] = int(
+                        dev.get("advance_attempts") or 0) + 1
+                    crm_mod.store_write(fresh)
+            crm_mod.crm_log("warn", "auto_payment_failed",
+                            device_id=device["id"], detail=detail,
+                            attempt=attempts + 1)
+            errors.append({"device_id": device["id"], "error": detail})
+    return {"ok": True, "moved": moved, "started": started, "errors": errors}
+
+
 def crm_advance_logged(device_id, action, **payload):
     """Stage machine + CRM event log (plan section 12)."""
     import crm as crm_mod
@@ -5031,6 +5210,7 @@ def main():
     load_store()  # motmaen sho profiles.json +inputs.json sakhte/sync shode-and
     clear_stale_busy_profiles()
     clean_project_root()
+    crm_scheduler_start()
     threading.Thread(target=_startup_telegram_bootstrap, daemon=True,
                      name="telegram-api-health").start()
     print(f">>> Panel bala amad: {url}")
