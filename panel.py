@@ -4632,92 +4632,200 @@ CRM_PAGE = r"""<!DOCTYPE html>
 <title>مدیریت مشتریان و پرونده‌ها (CRM)</title>
 <link rel="icon" href="data:,">
 <style>
-  :root{--bg:#eef1f9;--card:#ffffff;--card2:#f4f6fc;--line:#d9deef;--txt:#1b2036;
-    --muted:#5c6484;--brand:#4f6bef;--ok:#12a05f;--danger:#e0455a;--warn:#c97a10;
-    --pill-neutral-bg:#e6eaf7;--pill-neutral-fg:#5c6484;
-    --pill-ok-bg:#dbf3e6;--pill-ok-fg:#0f7d4a;
-    --pill-danger-bg:#fbe0e5;--pill-danger-fg:#c22a3f;
-    --pill-warn-bg:#fcefd6;--pill-warn-fg:#9a5c08;}
-  html[data-theme="dark"]{--bg:#171a26;--card:#1f2333;--card2:#262b3f;--line:#363d57;--txt:#eef1fb;
-    --muted:#aeb6d0;--brand:#7d95ff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
-    --pill-neutral-bg:#243050;--pill-neutral-fg:#a9b7e0;
-    --pill-ok-bg:#12321f;--pill-ok-fg:#3ad28b;
-    --pill-danger-bg:#3a1620;--pill-danger-fg:#ff6678;
-    --pill-warn-bg:#3a2f12;--pill-warn-fg:#f6b94b;}
+
+  :root{
+    --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;--faint:#8a91ad;
+    --brand:#4f6bef;--brand-hover:#3d59d9;--brand-soft:rgba(79,107,239,.10);
+    --on-brand:#ffffff;
+    --ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+    --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
+    --warn:#b9770e;--warn-soft:rgba(185,119,14,.13);
+    --pill-neutral-bg:rgba(27,32,54,.06);--pill-neutral-fg:#5c6484;
+    --pill-ok-bg:rgba(15,157,99,.13);--pill-ok-fg:#0b7a4d;
+    --pill-danger-bg:rgba(217,55,82,.12);--pill-danger-fg:#b72740;
+    --pill-warn-bg:rgba(185,119,14,.14);--pill-warn-fg:#92590a;
+    --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+    --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+    --ring:0 0 0 3px rgba(79,107,239,.28);
+  }
+  html[data-theme="dark"]{
+    --bg:#101322;--card:#181c2e;--card2:#1f2438;--line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.14);--txt:#eef1fb;--muted:#aeb6d0;--faint:#7c84a3;
+    --brand:#7d95ff;--brand-hover:#93a7ff;--brand-soft:rgba(125,149,255,.12);
+    --on-brand:#0e1330;
+    --ok:#3ad28b;--ok-soft:rgba(58,210,139,.13);
+    --danger:#ff6678;--danger-soft:rgba(255,102,120,.13);
+    --warn:#f6b94b;--warn-soft:rgba(246,185,75,.13);
+    --pill-neutral-bg:rgba(255,255,255,.07);--pill-neutral-fg:#a9b7e0;
+    --pill-ok-bg:rgba(58,210,139,.14);--pill-ok-fg:#3ad28b;
+    --pill-danger-bg:rgba(255,102,120,.14);--pill-danger-fg:#ff6678;
+    --pill-warn-bg:rgba(246,185,75,.14);--pill-warn-fg:#f6b94b;
+    --shadow-1:0 1px 2px rgba(0,0,0,.35),0 1px 6px rgba(0,0,0,.25);
+    --shadow-2:0 6px 18px rgba(0,0,0,.45),0 2px 5px rgba(0,0,0,.3);
+    --ring:0 0 0 3px rgba(125,149,255,.30);
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font-family:Tahoma,"Segoe UI",sans-serif;padding:20px 14px 60px}
-  .wrap{width:min(1280px,98vw);margin:0 auto}
-  .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-  h1{font-size:19px;margin:0;flex:1}
-  a.back{color:var(--brand);text-decoration:none;font-size:13px}
-  .btn{border:1px solid var(--line);background:var(--card);color:var(--txt);border-radius:9px;padding:6px 14px;cursor:pointer;font-family:inherit;font-size:13px}
-  .btn:hover{border-color:var(--brand)}
-  .btn.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
-  .btn.danger{color:var(--danger);border-color:var(--danger)}
-  .btn.mini{padding:3px 10px;font-size:12px;border-radius:7px}
-  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-  .tab{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 16px;cursor:pointer;font-family:inherit;font-size:13px;color:var(--txt)}
-  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  html{color-scheme:light}
+  html[data-theme="dark"]{color-scheme:dark}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:Vazirmatn,"Segoe UI",Tahoma,"Segoe UI",sans-serif;
+    font-size:14px;line-height:1.6;padding:24px 18px 70px;
+    -webkit-font-smoothing:antialiased}
+  .wrap{width:min(1240px,98vw);margin:0 auto}
+  a.back{color:var(--muted);text-decoration:none;font-size:13px;padding:6px 2px;border-radius:6px}
+  a.back:hover{color:var(--brand)}
+  :is(a,button,input,select,textarea,summary):focus-visible{outline:none;box-shadow:var(--ring)}
+  /* header */
+  .head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .head h1{font-size:20px;font-weight:650;margin:0;flex:1;letter-spacing:-.2px}
+  .head .sub{font-size:12px;color:var(--muted);margin-top:2px;font-weight:400}
+  .iconbtn{border:1px solid var(--line);background:var(--card);color:var(--txt);
+    border-radius:9px;padding:7px 12px;cursor:pointer;font-family:inherit;font-size:13px}
+  .iconbtn:hover{border-color:var(--line-strong);background:var(--card2)}
+  /* buttons */
+  .btn{border:1px solid var(--line);background:var(--card);color:var(--txt);border-radius:9px;
+    padding:8px 16px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;
+    transition:background .15s,border-color .15s,color .15s;min-height:32px}
+  .btn:hover{border-color:var(--line-strong);background:var(--card2)}
+  .btn.primary{background:var(--brand);border-color:transparent;color:var(--on-brand)}
+  .btn.primary:hover{background:var(--brand-hover);border-color:transparent}
+  .btn.danger{color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft)}
+  .btn.danger:hover{border-color:var(--danger)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--brand)}
+  .btn.ghost:hover{background:var(--brand-soft);border-color:transparent}
+  .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  /* KPI strip */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+    box-shadow:var(--shadow-1);cursor:pointer;text-align:right;transition:border-color .15s}
+  .kpi:hover{border-color:var(--line-strong)}
+  .kpi .n{font-size:24px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:12px;color:var(--muted)}
+  .kpi.attention .n{color:var(--warn)}
+  .kpi.k-problem .n{color:var(--danger)}
+  .kpi.k-ok .n{color:var(--ok)}
+  /* tabs */
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:0}
+  .tab{background:transparent;border:none;border-bottom:2px solid transparent;border-radius:8px 8px 0 0;
+    padding:9px 15px 7px;cursor:pointer;font-family:inherit;font-size:13.5px;color:var(--muted);font-weight:500}
+  .tab:hover{color:var(--txt);background:var(--brand-soft)}
+  .tab.active{color:var(--brand);border-bottom-color:var(--brand);background:transparent}
+  .tab .cnt{font-size:11px;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
+    border-radius:999px;padding:1px 7px;margin-inline-start:5px;font-variant-numeric:tabular-nums}
+  /* cards & tables */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
+    margin-bottom:14px;box-shadow:var(--shadow-1)}
+  .card .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{border-bottom:1px solid var(--line);padding:7px 9px;text-align:right;vertical-align:top}
-  th{color:var(--muted);font-weight:600;font-size:12px;white-space:nowrap}
+  th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:right;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:11.5px;white-space:nowrap;text-transform:none}
+  tbody tr:hover td{background:var(--card2)}
   tr:last-child td{border-bottom:none}
-  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;white-space:nowrap}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11.5px;white-space:nowrap;font-weight:500}
   .pill.n{background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
   .pill.ok{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .pill.bad{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
   .pill.warn{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
-  .muted{color:var(--muted);font-size:12px}
-  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  input,select,textarea{font-family:inherit;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:var(--card);color:var(--txt)}
+  .muted{color:var(--muted);font-size:12.5px}
+  .kbd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .chip{display:inline-block;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
+    border-radius:7px;padding:2px 9px;font-size:11.5px}
+  /* device cards */
+  .devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+  .dev{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px;
+    box-shadow:var(--shadow-1);display:flex;flex-direction:column;gap:10px}
+  .dev.needs-action{border-color:var(--warn)}
+  .dev .devhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .dev .devhead b{font-size:15px}
+  .dev .ser{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--faint);direction:ltr;unicode-bidi:embed}
+  .dev .meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  /* 9-step stage rail */
+  .rail{display:flex;gap:3px;align-items:center;margin:2px 0}
+  .rail .step{flex:1;height:5px;border-radius:3px;background:var(--pill-neutral-bg);position:relative}
+  .rail .step.done{background:var(--ok)}
+  .rail .step.cur{background:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .rail .step.bad{background:var(--danger)}
+  .rail .step.warn{background:var(--warn)}
+  .stagebar{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .stagebar .st{font-size:12.5px;font-weight:600}
+  .dev .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:2px}
+  .dev .subrow{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px}
+  .dev .subrow .cell b{font-size:11px;color:var(--muted);font-weight:600;display:block}
+  /* forms & dialog */
+  input,select,textarea{font-family:inherit;font-size:13.5px;border:1px solid var(--line-strong);
+    border-radius:9px;padding:8px 11px;background:var(--card);color:var(--txt);min-height:34px}
   input:disabled,select:disabled{background:var(--card2);color:var(--muted)}
-  label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
-  dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--txt);padding:18px;width:min(560px,94vw)}
-  dialog::backdrop{background:rgba(10,14,30,.45)}
-  .err{color:var(--danger);font-size:12px;white-space:pre-line}
-  .ok-note{color:var(--ok);font-size:12px}
-  .stat{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 16px;margin-inline-end:8px;margin-bottom:8px}
-  .stat b{font-size:20px;display:block}
-  .kbd{font-size:11px;color:var(--muted)}
+  label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:500}
+  label.f input,label.f select,label.f textarea{color:var(--txt)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--txt);
+    padding:20px;width:min(600px,94vw);box-shadow:var(--shadow-2)}
+  dialog::backdrop{background:rgba(8,10,25,.55)}
+  dialog h3{margin:0 0 12px;font-size:16px;font-weight:650}
+  .err{color:var(--danger);font-size:12.5px;white-space:pre-line}
+  /* states */
+  .empty{padding:34px 16px;text-align:center;color:var(--muted)}
+  .empty b{display:block;font-size:14.5px;color:var(--txt);margin-bottom:4px;font-weight:600}
+  .skel{height:84px;border-radius:14px;border:1px solid var(--line);
+    background:linear-gradient(100deg,var(--card) 40%,var(--card2) 50%,var(--card) 60%);
+    background-size:200% 100%;animation:sh 1.1s infinite linear;margin-bottom:10px}
+  @keyframes sh{to{background-position:-200% 0}}
+  @media (prefers-reduced-motion:reduce){.skel{animation:none}}
+  /* toast */
+  #toasts{position:fixed;bottom:18px;inset-inline-start:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
+  .toast{background:var(--ok);color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;
+    box-shadow:var(--shadow-2);animation:tin .18s ease-out}
+  .toast.bad{background:var(--danger)}
+  @keyframes tin{from{opacity:0;transform:translateY(6px)}}
+  @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+  /* log console */
+  #logBox{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;
+    background:var(--card2);padding:10px;font-size:11.5px;display:flex;flex-direction:column;gap:3px}
+  @media (max-width:640px){.devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
+
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="head">
-    <h1>مدیریت مشتریان و پرونده‌ها</h1>
+    <h1>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مالک ← تحویل ← پرداخت ← کد فعال‌سازی</div></h1>
     <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
-    <button class="btn mini" id="themeBtn">پوسته</button>
+    <button class="iconbtn" id="themeBtn">پوسته</button>
   </div>
   <div class="tabs" id="tabs"></div>
   <div id="view"></div>
 </div>
 
 <dialog id="dlg"><div id="dlgBody"></div></dialog>
+<div id="toasts"></div>
 
 <script>
 "use strict";
-/* ---------- state ---------- */
-var STATE = null, TAB = 'devices', LOGS = [];
-
+/* ================= state ================= */
+var STATE = null, TAB = (new URLSearchParams(location.search).get('tab')||'devices'), LOGS = [], LOADFAIL = false;
+var STAGE_ORDER = ['new','inquiry','problem','ready_owner','handed','to_payment','payment','payment_done','done'];
 var STAGE_FA = {
   'new':'جدید','inquiry':'در انتظار استعلام','problem':'دارای اشکال',
   'ready_owner':'سالم — نیازمند مالک','handed':'تحویل به مسئول سایت',
   'to_payment':'ثبت‌شده — در انتظار پرداخت','payment':'در حال پرداخت',
   'payment_done':'پرداخت تأییدشده','done':'تکمیل‌شده'
 };
-var STAGE_PILL = {
-  'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
-  'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok'
-};
+var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
+  'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok'};
 var EST_FA = {'pending':'در انتظار','running':'در حال استعلام','healthy':'سالم',
   'advanced':'ثبت‌شده در گمرک','problem':'دارای اشکال','error':'بدون پاسخ','':'—'};
 var EST_PILL = {'pending':'n','running':'warn','healthy':'ok','advanced':'ok','problem':'bad','error':'bad','':'n'};
+var TABS = [
+  ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','مالکان'],
+  ['identities','استخر هویت'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها']
+];
 
-/* ---------- plumbing ---------- */
+/* ================= plumbing ================= */
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function money(n){n=Number(n||0);return n.toLocaleString('fa-IR')+' تومان';}
+function fa(n){return Number(n||0).toLocaleString('fa-IR');}
 async function api(path,payload){
   var opt = payload ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)} : {};
   var res = await fetch(path,opt);
@@ -4727,13 +4835,15 @@ async function api(path,payload){
 }
 function toast(msg, ok){
   var el=document.createElement('div');
+  el.className='toast'+(ok===false?' bad':'');
   el.textContent=msg;
-  el.style.cssText='position:fixed;bottom:18px;inset-inline-start:18px;background:'+(ok?'var(--ok)':'var(--danger)')+';color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 6px 22px rgba(0,0,0,.25)';
-  document.body.appendChild(el); setTimeout(()=>el.remove(), 3200);
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(()=>el.remove(), 3200);
 }
 function openDlg(html){document.getElementById('dlgBody').innerHTML=html;document.getElementById('dlg').showModal();}
 function closeDlg(){document.getElementById('dlg').close();}
-var savedTheme=localStorage.getItem('irica-theme')||'light';
+var urlTheme=new URLSearchParams(location.search).get('theme');
+var savedTheme=urlTheme||localStorage.getItem('irica-theme')||'light';
 document.documentElement.setAttribute('data-theme',savedTheme);
 document.getElementById('themeBtn').onclick=function(){
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
@@ -4742,25 +4852,15 @@ document.getElementById('themeBtn').onclick=function(){
   localStorage.setItem('irica-theme',next);
 };
 
-/* ---------- tabs ---------- */
-var TABS = [
-  ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','مالکان'],
-  ['identities','استخر هویت'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها']
-];
-function renderTabs(){
-  document.getElementById('tabs').innerHTML = TABS.map(t=>
-    '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]+'</button>').join('');
-}
-function setTab(t){TAB=t;renderTabs();renderView();}
-
-/* ---------- helpers over STATE ---------- */
-function findCustomer(id){return (STATE.customers||[]).find(c=>c.id===id)||null;}
-function findOwner(id){return (STATE.owners||[]).find(o=>o.id===id)||null;}
+/* ================= lookups ================= */
+function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)||null;}
+function findOwner(id){return (STATE&&STATE.owners||[]).find(o=>o.id===id)||null;}
 function custName(id){var c=findCustomer(id);return c?c.full_name:'—';}
 function ownerName(id){var o=findOwner(id);return o?(o.first_name+' '+o.last_name):'—';}
 function bal(id){var c=findCustomer(id);if(!c)return 0;return (c.transactions||[]).reduce((s,t)=>s+Number(t.amount||0),0);}
+function v(id){return document.getElementById(id).value.trim();}
 
-/* ---------- devices tab ---------- */
+/* ================= stage actions (server contract) ================= */
 function stageActions(d){
   var a=[];
   var st=d.stage;
@@ -4776,52 +4876,152 @@ function stageActions(d){
   if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
   return a;
 }
+function needsAction(d){
+  return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
+}
+function railHtml(d){
+  var cur = STAGE_ORDER.indexOf(d.stage);
+  var steps = STAGE_ORDER.map(function(st,i){
+    var cls='step';
+    if(d.stage==='problem' && st==='problem') cls+=' bad';
+    else if(i<cur) cls+=' done';
+    else if(i===cur) cls+= (st==='problem'?' bad':(STAGE_TONE[st]==='ok'?' done':' cur'));
+    return '<span class="'+cls+'" title="'+esc(STAGE_FA[st])+'"></span>';
+  }).join('');
+  return '<div class="rail" aria-hidden="true">'+steps+'</div>';
+}
+
+/* ================= KPI strip ================= */
+function kpisHtml(){
+  var ds=(STATE.devices||[]);
+  var c={all:ds.length,need:0,ok:0,debt:0};
+  ds.forEach(d=>{ if(needsAction(d))c.need++; if(d.stage==='done')c.ok++; });
+  (STATE.customers||[]).forEach(x=>{ if(bal(x.id)<0)c.debt++; });
+  function k(cls,label,n,tab){
+    return '<button type="button" class="kpi '+cls+'" onclick="setTab(\''+tab+'\')">'
+      +'<span class="n">'+fa(n)+'</span><span class="l">'+label+'</span></button>';
+  }
+  return '<div class="kpis">'
+    +k('','همهٔ پرونده‌ها',c.all,'devices')
+    +k('attention','نیازمند اقدام',c.need,'devices')
+    +k('k-ok','تکمیل‌شده',c.ok,'devices')
+    +k('k-problem','مشتری بدهکار',c.debt,'customers')
+    +'</div>';
+}
+
+/* ================= devices (card grid) ================= */
 function devicesHtml(){
-  var rows=(STATE.devices||[]).map(d=>{
+  var ds=(STATE.devices||[]).slice().sort((a,b)=>
+    (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
+  if(!ds.length) return emptyHtml('پرونده‌ای ثبت نشده','اولین پرونده را با «+ پروندهٔ جدید» بسازید: سریال دستگاه، مشتری و در ادامه مالک.');
+  var cards=ds.map(function(d){
     var est=d.estelam||{};
     var acts=stageActions(d).map(a=>a[0]?
-      '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':''))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join(' ');
-    return '<tr>'
-      +'<td><b>'+esc(d.name)+'</b><div class="kbd">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div></td>'
-      +'<td>'+esc(custName(d.customer_id))+'</td>'
-      +'<td>'+esc(ownerName(d.owner_id))+'</td>'
-      +'<td><span class="pill '+(STAGE_PILL[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
-      +'<div class="kbd">'+(d.auto_advance?'پرداخت خودکار':'')+'</div></td>'
-      +'<td><span class="pill '+(EST_PILL[est.status]||'n')+'">'+(EST_FA[est.status]||esc(est.status||'—'))+'</span>'
-      +(est.result?'<div class="kbd">'+esc(est.result)+'</div>':'')+'</td>'
-      +'<td class="kbd">'+esc(d.last_inquiry_at||'—')+'</td>'
-      +'<td>'+acts+' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></td>'
-      +'</tr>';
+      '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':'ghost'))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
+    return '<div class="dev'+(needsAction(d)?' needs-action':'')+'">'
+      +'<div class="devhead"><b>'+esc(d.name)+'</b>'
+      +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
+      +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')+'</div>'
+      +'<div class="ser">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div>'
+      +railHtml(d)
+      +'<div class="meta">'
+      +'<span class="chip">👤 '+esc(custName(d.customer_id))+'</span>'
+      +'<span class="chip">🪪 '+esc(ownerName(d.owner_id))+'</span>'
+      +'<span class="pill '+(EST_PILL[est.status]||'n')+'">استعلام: '+(EST_FA[est.status]||esc(est.status||'—'))+'</span>'
+      +(est.hamta_status?'<span class="pill n">همتا: '+esc(est.hamta_status)+'</span>':'')
+      +'</div>'
+      +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
+      +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
+      +'<div class="acts">'+(acts||'<span class="muted">—</span>')
+      +' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></div>'
+      +'</div>';
+  }).join('');
+  return '<div class="row" style="margin-bottom:12px">'
+    +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
+    +'<span class="muted">مرتب‌شده: نیازمند اقدام در بالا · استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند</span></div>'
+    +'<div class="devgrid">'+cards+'</div>';
+}
+function emptyHtml(title,sub){
+  return '<div class="card"><div class="empty"><b>'+esc(title)+'</b>'+esc(sub)+'</div></div>';
+}
+
+/* ================= customers ================= */
+function customersHtml(){
+  var rows=(STATE.customers||[]).map(c=>
+    '<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(c.mobile||'—')+'</td>'
+    +'<td class="kbd">'+esc(c.telegram_id||'—')+' / '+esc(c.instagram_id||'—')+'</td>'
+    +'<td class="kbd">'+esc(c.address||'—')+'</td>'
+    +'<td>'+(bal(c.id)<0?'<span class="pill bad">بدهکار '+money(bal(c.id))+'</span>'
+             :(bal(c.id)>0?'<span class="pill ok">'+money(bal(c.id))+'</span>':'<span class="pill n">تسویه</span>'))+'</td>'
+    +'<td><button class="btn mini" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">ویرایش</button> '
+    +'<button class="btn mini" onclick="dlgTx(\''+c.id+'\')">تراکنش</button> '
+    +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
+  return '<div class="card"><div class="row" style="margin-bottom:10px">'
+    +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
+    +'<table><thead><tr><th>نام</th><th>موبایل</th><th>تلگرام / اینستا</th><th>آدرس</th><th>مانده</th><th></th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="6"><div class="empty"><b>مشتری ثبت نشده است</b>مشتری‌ها را از تلگرام، اینستاگرام یا تماس تلفنی اضافه کنید.</div></td></tr>')+'</tbody></table></div>';
+}
+
+/* ================= owners ================= */
+function ownersHtml(){
+  var rows=(STATE.owners||[]).map(o=>{
+    var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
+    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
+    +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.birth)+'</td>'
+    +'<td class="kbd">'+esc(o.mobile)+'</td><td class="kbd">'+esc(o.card_no)+'</td>'
+    +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span>':'<span class="pill warn">آزاد</span>')+'</td>'
+    +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
+    +(dev?'':'<button class="btn mini danger" onclick="ownerDelete(\''+o.id+'\')">حذف</button>')+'</td></tr>';
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
-    +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند؛ صف دستی لازم نیست.</span></div>'
-    +'<table><tr><th>دستگاه</th><th>مشتری</th><th>مالک</th><th>مرحله</th><th>استعلام گمرک</th><th>آخرین استعلام</th><th>کنش‌ها</th></tr>'
-    +(rows||'<tr><td colspan="7" class="muted">هنوز پرونده‌ای ثبت نشده است</td></tr>')+'</table></div>';
+    +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مالک جدید</button>'
+    +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
+    +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مالکی ثبت نشده است</b>مشخصات مالک برای استعلام نظارتی و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
 }
-async function devTick(id, action){
-  try{
-    if(action==='__attach'){dlgAttach(id);return;}
-    if(action==='__start_payment'){
-      var r=await api('/crm-start-payment',{device_id:id});
-      toast(r.ok?'ربات پرداخت شروع شد':'انجام نشد', true); await refresh(); return;
-    }
-    var r=await api('/crm-tick',{device_id:id,action:action});
-    toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage), true);
-    await refresh();
-  }catch(e){toast(e,false);}
+
+/* ================= identity pool ================= */
+function identitiesHtml(){
+  var rows=(STATE.identities||[]).map(i=>
+    '<tr><td><b>'+esc(i.label)+'</b></td><td class="kbd">'+esc(i.national)+'</td>'
+    +'<td class="kbd">'+esc(i.birth)+'</td><td class="kbd">'+esc(i.mobile)+'</td>'
+    +'<td><button class="btn mini" onclick="dlgIdent(\'edit\',\''+i.id+'\')">ویرایش</button> '
+    +'<button class="btn mini danger" onclick="identDelete(\''+i.id+'\')">حذف</button></td></tr>').join('');
+  return '<div class="card"><div class="row" style="margin-bottom:10px">'
+    +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
+    +'<span class="muted">برای استعلام‌های ورودی یک مشخصات تصادفی معتبر انتخاب می‌شود؛ استعلام نظارتی پس از تحویل با هویت مالک اجرا می‌شود.</span></div>'
+    +'<table><thead><tr><th>عنوان</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th></th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>استخر هویت خالی است</b>بدون حداقل یک مشخصات معتبر، استعلام ورودی اجرا نمی‌شود.</div></td></tr>')+'</tbody></table></div>';
 }
-function dlgAttach(id){
-  var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
-  openDlg('<h3>اتصال مالک به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
-    +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
-    +'<p class="muted">هر مالک فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
+
+/* ================= ledger ================= */
+function ledgerHtml(){
+  var rows='';
+  (STATE.customers||[]).forEach(c=>{
+    (c.transactions||[]).slice().reverse().forEach(t=>{
+      rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
+      +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
+      +'<td class="kbd">'+esc(t.note||'—')+'</td></tr>';
+    });
+  });
+  return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="4"><div class="empty"><b>تراکنشی ثبت نشده است</b>از تب مشتریان روی «تراکنش» بزنید.</div></td></tr>')+'</tbody></table></div>';
 }
-async function doAttach(id){
-  try{ await api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value});
-    closeDlg(); toast('مالک متصل شد',true); await refresh();
-  }catch(e){toast(e,false);}
+
+/* ================= reports ================= */
+function reportsHtml(){
+  return '<div class="card">'
+    +'<div class="row"><button class="btn" onclick="location.href=\'/crm-report?fmt=txt\'">دانلود گزارش متنی</button>'
+    +'<button class="btn" onclick="window.open(\'/crm-report?fmt=html\',\'_blank\')">گزارش چاپی</button>'
+    +'<button class="btn" onclick="location.href=\'/crm-report?fmt=pdf\'">PDF</button>'
+    +'<button class="btn primary" onclick="sendTelegram()">ارسال به تلگرام</button></div>'
+    +'<p class="muted">گزارش شامل وضعیت تمام پرونده‌هاست؛ در تلگرام کد ملی‌ها ماسک می‌شوند و شمارهٔ کارت هرگز ارسال نمی‌شود.</p>'
+    +'<h3 style="font-size:14px;margin:14px 0 8px">لاگ رویدادها</h3>'
+    +'<div id="logBox"></div>'
+    +'</div>';
 }
+
+/* ================= dialogs ================= */
 function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
@@ -4841,36 +5041,40 @@ function dlgDevice(){
     +'<div class="err" id="dvErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doAddDevice()">ثبت پرونده</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-async function doAddDevice(){
+function doAddDevice(){
   var payload={action:'add',name:v('dvName'),serial1:v('dvS1'),serial2:v('dvS2'),
     notes:v('dvNotes'),auto_advance:document.getElementById('dvAuto').checked};
   var custSel=v('dvCust');
   if(custSel){payload.customer_id=custSel;}
   else payload.customer={full_name:v('dvCn'),mobile:v('dvCm'),address:v('dvCa')};
-  try{ await api('/crm-device',payload); closeDlg(); toast('پرونده ثبت شد',true); await refresh(); }
-  catch(e){document.getElementById('dvErr').textContent=e;}
+  api('/crm-device',payload).then(async()=>{closeDlg();toast('پرونده ثبت شد');await refresh();})
+    .catch(e=>{document.getElementById('dvErr').textContent=e;});
 }
-function v(id){return document.getElementById(id).value.trim();}
-async function devDelete(id){
+function dlgAttach(id){
+  var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
+  openDlg('<h3>اتصال مالک به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
+    +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
+    +'<p class="muted">هر مالک فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
+}
+function doAttach(id){
+  api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value})
+    .then(async()=>{closeDlg();toast('مالک متصل شد');await refresh();})
+    .catch(e=>toast(e,false));
+}
+function devTick(id, action){
+  if(action==='__attach'){dlgAttach(id);return;}
+  if(action==='__start_payment'){
+    api('/crm-start-payment',{device_id:id}).then(async r=>{toast(r.ok?'ربات پرداخت شروع شد':'انجام نشد');await refresh();})
+      .catch(e=>toast(e,false));
+    return;
+  }
+  api('/crm-tick',{device_id:id,action:action}).then(async r=>{
+      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
+    .catch(e=>toast(e,false));
+}
+function devDelete(id){
   if(!confirm('این پرونده حذف شود؟ ردیف استعلام آن نیز حذف می‌شود و برگشت‌پذیر نیست.'))return;
-  try{ await api('/crm-device',{action:'delete',id:id}); toast('حذف شد',true); await refresh(); }
-  catch(e){toast(e,false);}
-}
-
-/* ---------- customers tab ---------- */
-function customersHtml(){
-  var rows=(STATE.customers||[]).map(c=>
-    '<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(c.mobile||'—')+'</td>'
-    +'<td class="kbd">'+esc(c.telegram_id||'—')+' / '+esc(c.instagram_id||'—')+'</td>'
-    +'<td class="kbd">'+esc(c.address||'—')+'</td>'
-    +'<td>'+(bal(c.id)<0?'<span class="pill bad">بدهکار '+money(bal(c.id))+'</span>':'<span class="pill ok">'+money(bal(c.id))+'</span>')+'</td>'
-    +'<td><button class="btn mini" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">ویرایش</button> '
-    +'<button class="btn mini" onclick="dlgTx(\''+c.id+'\')">تراکنش</button> '
-    +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
-  return '<div class="card"><div class="row" style="margin-bottom:10px">'
-    +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
-    +'<table><tr><th>نام</th><th>موبایل</th><th>تلگرام / اینستا</th><th>آدرس</th><th>مانده</th><th></th></tr>'
-    +(rows||'<tr><td colspan="6" class="muted">مشتری ثبت نشده است</td></tr>')+'</table></div>';
+  api('/crm-device',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgCustomer(mode,id){
   var c = id?findCustomer(id):{};
@@ -4886,51 +5090,31 @@ function dlgCustomer(mode,id){
     +'<div class="err" id="cErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveCustomer(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-async function doSaveCustomer(id){
+function doSaveCustomer(id){
   var payload={action:id?'update':'add',full_name:v('cName'),mobile:v('cMobile'),
     telegram_id:v('cTg'),instagram_id:v('cIg'),address:v('cAddr'),notes:v('cNotes')};
   if(id)payload.id=id;
-  try{ await api('/crm-customer',payload); closeDlg(); toast('ذخیره شد',true); await refresh(); }
-  catch(e){document.getElementById('cErr').textContent=e;}
+  api('/crm-customer',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+    .catch(e=>{document.getElementById('cErr').textContent=e;});
 }
-async function custDelete(id){
-  var c=findCustomer(id);
+function custDelete(id){
   var hasDevices=(STATE.devices||[]).some(d=>d.customer_id===id);
   var msg=hasDevices?'این مشتری دستگاه دارد؛ دستگاه‌ها فقط از اتصال مشتری آزاد می‌شوند. حذف شود؟'
                     :'مشتری حذف شود؟';
   if(!confirm(msg))return;
-  try{ await api('/crm-customer',{action:'delete',id:id,force:true}); toast('حذف شد',true); await refresh(); }
-  catch(e){toast(e,false);}
+  api('/crm-customer',{action:'delete',id:id,force:true}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgTx(cid){
   openDlg('<h3>تراکنش جدید — '+esc(custName(cid))+'</h3>'
-    +'<div class="row"><label class="f">مبلغ (تومان؛ بدهی منفی)<input id="txAmt" inputmode="numeric" style="width:160px"></label>'
+    +'<div class="row"><label class="f">مبلغ (تومان؛ بدهی منفی)<input id="txAmt" inputmode="numeric" style="width:170px"></label>'
     +'<label class="f">شرح<input id="txNote" style="flex:1"></label></div>'
     +'<div class="err" id="txErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doTx(\''+cid+'\')">ثبت</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-async function doTx(cid){
-  try{ await api('/crm-customer',{action:'tx',id:cid,amount:v('txAmt'),note:v('txNote')});
-    closeDlg(); toast('ثبت شد',true); await refresh(); }
-  catch(e){document.getElementById('txErr').textContent=e;}
-}
-
-/* ---------- owners tab ---------- */
-function ownersHtml(){
-  var rows=(STATE.owners||[]).map(o=>{
-    var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
-    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
-    +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.birth)+'</td>'
-    +'<td class="kbd">'+esc(o.mobile)+'</td><td class="kbd">'+esc(o.card_no)+'</td>'
-    +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span>':'<span class="pill warn">آزاد</span>')+'</td>'
-    +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
-    +(dev?'':'<button class="btn mini danger" onclick="ownerDelete(\''+o.id+'\')">حذف</button>')+'</td></tr>';
-  }).join('');
-  return '<div class="card"><div class="row" style="margin-bottom:10px">'
-    +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مالک جدید</button>'
-    +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
-    +'<table><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr>'
-    +(rows||'<tr><td colspan="7" class="muted">مالکی ثبت نشده است</td></tr>')+'</table></div>';
+function doTx(cid){
+  api('/crm-customer',{action:'tx',id:cid,amount:v('txAmt'),note:v('txNote')})
+    .then(async()=>{closeDlg();toast('ثبت شد');await refresh();})
+    .catch(e=>{document.getElementById('txErr').textContent=e;});
 }
 function dlgOwner(mode,id){
   var o = id?findOwner(id):{};
@@ -4944,31 +5128,16 @@ function dlgOwner(mode,id){
     +'</div><div class="err" id="oErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveOwner(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-async function doSaveOwner(id){
+function doSaveOwner(id){
   var payload={action:id?'update':'add',first_name:v('oFn'),last_name:v('oLn'),
     national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),card_no:v('oCard')};
   if(id)payload.id=id;
-  try{ await api('/crm-owner',payload); closeDlg(); toast('ذخیره شد',true); await refresh(); }
-  catch(e){document.getElementById('oErr').textContent=e;}
+  api('/crm-owner',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+    .catch(e=>{document.getElementById('oErr').textContent=e;});
 }
-async function ownerDelete(id){
-  if(!confirm('مالک حذف شود؟'))return;
-  try{ await api('/crm-owner',{action:'delete',id:id}); toast('حذف شد',true); await refresh(); }
-  catch(e){toast(e,false);}
-}
-
-/* ---------- identities tab ---------- */
-function identitiesHtml(){
-  var rows=(STATE.identities||[]).map(i=>
-    '<tr><td><b>'+esc(i.label)+'</b></td><td class="kbd">'+esc(i.national)+'</td>'
-    +'<td class="kbd">'+esc(i.birth)+'</td><td class="kbd">'+esc(i.mobile)+'</td>'
-    +'<td><button class="btn mini" onclick="dlgIdent(\'edit\',\''+i.id+'\')">ویرایش</button> '
-    +'<button class="btn mini danger" onclick="identDelete(\''+i.id+'\')">حذف</button></td></tr>').join('');
-  return '<div class="card"><div class="row" style="margin-bottom:10px">'
-    +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
-    +'<span class="muted">برای استعلام‌های ورودی (پیش از ثبت‌نام) یک مشخصات تصادفی معتبر انتخاب می‌شود؛ استعلام نظارتی پس از تحویل با هویت مالک دستگاه اجرا می‌شود.</span></div>'
-    +'<table><tr><th>عنوان</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th></th></tr>'
-    +(rows||'<tr><td colspan="5" class="muted">استخر خالی است</td></tr>')+'</table></div>';
+function ownerDelete(id){
+  if(!confirm('این مالک حذف شود؟'))return;
+  api('/crm-owner',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgIdent(mode,id){
   var i = id?(STATE.identities||[]).find(x=>x.id===id)||{}:{};
@@ -4980,79 +5149,67 @@ function dlgIdent(mode,id){
     +'</div><div class="err" id="iErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveIdent(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-async function doSaveIdent(id){
+function doSaveIdent(id){
   var payload={action:id?'update':'add',label:v('iLabel'),national:v('iNat'),
     birth:v('iBirth'),mobile:v('iMob')};
   if(id)payload.id=id;
-  try{ await api('/crm-identity',payload); closeDlg(); toast('ذخیره شد',true); await refresh(); }
-  catch(e){document.getElementById('iErr').textContent=e;}
+  api('/crm-identity',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+    .catch(e=>{document.getElementById('iErr').textContent=e;});
 }
-async function identDelete(id){
+function identDelete(id){
   if(!confirm('مشخصات از استخر حذف شود؟'))return;
-  try{ await api('/crm-identity',{action:'delete',id:id}); toast('حذف شد',true); await refresh(); }
-  catch(e){toast(e,false);}
+  api('/crm-identity',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
+}
+function sendTelegram(){
+  api('/crm-report-telegram',{full_data:document.documentElement.dataset.full==='1'})
+    .then(r=>toast('ارسال شد ('+fa(r.chunks)+' بخش)')).catch(e=>toast(e,false));
 }
 
-/* ---------- ledger tab ---------- */
-function ledgerHtml(){
-  var rows='';
-  (STATE.customers||[]).forEach(c=>{
-    (c.transactions||[]).slice().reverse().forEach(t=>{
-      rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
-      +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
-      +'<td class="kbd">'+esc(t.note||'—')+'</td></tr>';
-    });
-  });
-  return '<div class="card"><table><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th></tr>'
-    +(rows||'<tr><td colspan="4" class="muted">تراکنشی ثبت نشده است — از تب مشتریان «تراکنش» بزنید</td></tr>')+'</table></div>';
+/* ================= render ================= */
+function renderTabs(){
+  var counts={devices:(STATE&&STATE.devices||[]).length,customers:(STATE&&STATE.customers||[]).length,
+    owners:(STATE&&STATE.owners||[]).length,identities:(STATE&&STATE.identities||[]).length,ledger:null,reports:null};
+  document.getElementById('tabs').innerHTML = TABS.map(t=>
+    '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]
+    +(counts[t[0]]!=null?'<span class="cnt">'+fa(counts[t[0]])+'</span>':'')+'</button>').join('');
 }
-
-/* ---------- reports tab ---------- */
-function reportsHtml(){
-  return '<div class="card">'
-    +'<div class="row"><button class="btn" onclick="location.href=\'/crm-report?fmt=txt\'">دانلود گزارش متنی</button>'
-    +'<button class="btn" onclick="window.open(\'/crm-report?fmt=html\',\'_blank\')">گزارش چاپی</button>'
-    +'<button class="btn" onclick="location.href=\'/crm-report?fmt=pdf\'">PDF</button>'
-    +'<button class="btn primary" onclick="sendTelegram()">ارسال به تلگرام</button></div>'
-    +'<p class="muted">گزارش شامل وضعیت تمام پرونده‌هاست؛ در تلگرام کد ملی‌ها ماسک می‌شوند و شمارهٔ کارت هرگز ارسال نمی‌شود.</p>'
-    +'<h3 style="font-size:15px">لاگ رویدادها</h3>'
-    +'<div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--card2);padding:8px;font-size:12px" id="logBox"></div>'
-    +'</div>';
-}
-async function sendTelegram(){
-  try{ var r=await api('/crm-report-telegram',{full_data:document.documentElement.dataset.full==='1'}); toast('ارسال شد ('+r.chunks+' بخش)',true); }
-  catch(e){toast(e,false);}
-}
+function setTab(t){TAB=t;renderTabs();renderView();}
 function renderLogs(){
   var box=document.getElementById('logBox');
   if(!box)return;
   box.innerHTML=(LOGS||[]).slice().reverse().map(l=>
     '<div class="kbd">'+esc(l.at)+' — <b>'+esc(l.event)+'</b> '+esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
 }
-
-/* ---------- render ---------- */
 function renderView(){
   var el=document.getElementById('view');
-  if(TAB==='devices')el.innerHTML=devicesHtml();
-  else if(TAB==='customers')el.innerHTML=customersHtml();
-  else if(TAB==='owners')el.innerHTML=ownersHtml();
-  else if(TAB==='identities')el.innerHTML=identitiesHtml();
-  else if(TAB==='ledger')el.innerHTML=ledgerHtml();
-  else el.innerHTML=reportsHtml();
+  if(!STATE){ el.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';return; }
+  var head='<div id="kpis">'+kpisHtml()+'</div>';
+  var body;
+  if(TAB==='devices')body=devicesHtml();
+  else if(TAB==='customers')body=customersHtml();
+  else if(TAB==='owners')body=ownersHtml();
+  else if(TAB==='identities')body=identitiesHtml();
+  else if(TAB==='ledger')body=ledgerHtml();
+  else body=reportsHtml();
+  el.innerHTML=head+body;
   renderLogs();
 }
 async function refresh(){
   try{
-    STATE = await (await fetch('/crm-state')).json();
-    var lr = await (await fetch('/crm-logs')).json();
-    LOGS = lr.logs||[];
-    renderView();
-  }catch(e){ /* transient */ }
+    var r=await Promise.all([fetch('/crm-state'),fetch('/crm-logs')]);
+    if(!r[0].ok||!r[1].ok)throw 0;
+    STATE=await r[0].json();
+    LOGS=(await r[1].json()).logs||[];
+    LOADFAIL=false;
+  }catch(e){ LOADFAIL=true; }
+  renderView();
+  if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
 renderTabs();
 refresh();
 setInterval(refresh, 5000);
 </script>
+
 </body>
 </html>"""
 
