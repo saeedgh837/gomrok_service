@@ -878,3 +878,58 @@ _STAGE_RESULT_FA = {
     "pending": "در انتظار",
     "running": "در حال استعلام",
 }
+
+
+# --------------------------------------------------------------------------
+# Identity materialization + estelam queue sync (plan section 2; review
+# F1/F2/F3/F8). The robots never learn about CRM: CRM writes the chosen
+# identity into the existing single store["person"] right before its own
+# strictly-serialized per-device run.
+# --------------------------------------------------------------------------
+
+INTAKE_STAGES = ("new", "inquiry", "problem", "ready_owner")
+WATCH_STAGES = ("handed", "to_payment", "payment", "payment_done", "done")
+
+
+def pick_pool_identity():
+    """A random VALID pool entry, or (None, errors). Entries failing
+    validate_estelam_person are never picked (review F8)."""
+    data = store_read()
+    valid = []
+    for entry in data.get("identities") or []:
+        candidate = {"national": entry.get("national"),
+                     "birth": entry.get("birth"), "mobile": entry.get("mobile")}
+        if not validate_identity(candidate):
+            valid.append(entry)
+    if not valid:
+        return None, ["استخر مشخصات استعلام خالی است یا هیچ ورودی معتبری ندارد"]
+    import random
+    entry = random.choice(valid)
+    return {"national": entry.get("national"), "birth": entry.get("birth"),
+            "mobile": entry.get("mobile")}, []
+
+
+def owner_identity_for(device_id):
+    """The device owner's identity for the watch re-inquiry (review F1 — the
+    customs site only reports «ثبت است» to the identity that registered)."""
+    data = store_read()
+    device = next((d for d in data.get("devices", [])
+                   if d.get("id") == device_id), None)
+    if not device:
+        return None, ["دستگاه پیدا نشد"]
+    owner = next((o for o in data.get("owners", [])
+                  if o.get("id") == device.get("owner_id")), None)
+    if not owner:
+        return None, ["این دستگاه هنوز مالک ندارد — استعلام نظارتی با هویت مالک انجام می‌شود"]
+    return {"national": owner.get("national"), "birth": owner.get("birth"),
+            "mobile": owner.get("mobile")}, []
+
+
+def identity_for_stage(device_id, stage=None):
+    data = store_read()
+    device = next((d for d in data.get("devices", [])
+                   if d.get("id") == device_id), None)
+    stage = stage or stage_of(device)
+    if stage in WATCH_STAGES:
+        return owner_identity_for(device_id)
+    return pick_pool_identity()

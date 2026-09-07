@@ -1264,17 +1264,30 @@ def estelam_load():
     with _ESTELAM_LOCK:
         data = {"person": {"national": "", "birth": "", "mobile": ""}, "devices": [],
                 "run_pid": 0, "run_started": "", "run_device_id": ""}
-        if os.path.exists(ESTELAM_PATH):
+        for candidate in (ESTELAM_PATH, ESTELAM_PATH + ".bak"):
+            if not os.path.exists(candidate):
+                continue
             try:
-                with open(ESTELAM_PATH, encoding="utf-8") as f:
+                with open(candidate, encoding="utf-8") as f:
                     loaded = json.load(f) or {}
                 person = dict(data["person"])
                 person.update(loaded.get("person") or {})
                 data.update(loaded)          # run_pid/run_started/... gom nashavand
                 data["person"] = person
                 data["devices"] = list(loaded.get("devices") or [])
+                if candidate == ESTELAM_PATH and \
+                        not os.path.exists(ESTELAM_PATH + ".bak"):
+                    # Seed the fallback so a future corrupt main never leaves
+                    # us with zero copies (review F6).
+                    try:
+                        with open(ESTELAM_PATH + ".bak", "w",
+                                  encoding="utf-8") as bak:
+                            json.dump(data, bak, ensure_ascii=False, indent=2)
+                    except OSError:
+                        pass
+                break                        # main read fine — skip the .bak
             except Exception:
-                pass
+                continue                     # corrupt main -> try the .bak
         _estelam_migrate_devices(data["devices"])
         return data
 
@@ -1296,9 +1309,24 @@ def _estelam_migrate_devices(devices):
 
 
 def estelam_save(data):
+    """Atomic save with one .bak generation (review F6): the old main file
+    becomes the backup; on the very first save the backup is seeded from the
+    new content so a corrupt main NEVER leaves zero fallbacks. A corrupt
+    main falls back to the .bak on read."""
     with _ESTELAM_LOCK:
-        with open(ESTELAM_PATH, "w", encoding="utf-8") as f:
+        tmp_path = ESTELAM_PATH + ".tmp"
+        bak_path = ESTELAM_PATH + ".bak"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            if os.path.exists(ESTELAM_PATH):
+                os.replace(ESTELAM_PATH, bak_path)
+            else:
+                with open(bak_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+        os.replace(tmp_path, ESTELAM_PATH)
         return data
 
 
@@ -1354,6 +1382,93 @@ def crm_state_payload():
     out = dict(data)
     out["devices"] = enriched
     return out
+
+
+def crm_sync_queue(device_id):
+    """Upsert the CRM device's estelam queue row and reset its status to
+    pending (review F2b — the robots skip rows carrying a final status).
+    ALL reads/writes go through estelam_load/estelam_save (_ESTELAM_LOCK);
+    non-CRM rows stay byte-identical (review F18)."""
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    device = next((d for d in data.get("devices", [])
+                   if d.get("id") == device_id), None)
+    if not device:
+        return ["دستگاه پیدا نشد"]
+    customer = next((c for c in data.get("customers", [])
+                     if c.get("id") == device.get("customer_id")), None)
+    est = estelam_load()
+    row = next((d for d in est.get("devices", [])
+                if str(d.get("id")) == str(device_id)), None)
+    if row:
+        row["status"] = "pending"
+        row["customer_id"] = device.get("customer_id") or ""
+    else:
+        row = {
+            "id": str(device_id),
+            "name": device.get("name") or "",
+            "serial1": device.get("serial1") or "",
+            "serial2": device.get("serial2") or "",
+            "status": "pending",
+            "result": "",
+            "hamta_status": "pending",
+            "hamta_result": "",
+            "customer_id": device.get("customer_id") or "",
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "customer_name": (customer or {}).get("full_name") or "",
+        }
+        est.setdefault("devices", []).append(row)
+    estelam_save(est)
+    return []
+
+
+def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
+    """CRM-scoped inquiry start (plan section 2):
+      - pick the identity FOR THIS STAGE: random valid pool entry for
+        pre-registration intake, the device OWNER for the watch stages (F1);
+      - materialize it into store['person'] (F3 — no new store keys);
+      - sync + reset the CRM row and start ONE device (F2 — never the
+        unscoped sweep that would swallow the operator's manual site-2 rows).
+    """
+    import crm as crm_mod
+    if estelam_is_running():
+        return {"ok": False, "errors": ["یک اجرای استعلام در حال انجام است — بعداً تلاش می‌شود"]}
+    if service not in ESTELAM_SERVICES:
+        service = "gomrok"
+    person = {"national": "", "birth": "", "mobile": ""}
+    if service != "hamta":
+        data = crm_mod.store_read()
+        device = next((d for d in data.get("devices", [])
+                       if d.get("id") == device_id), None)
+        if not device:
+            return {"ok": False, "errors": ["دستگاه پیدا نشد"]}
+        person, errors = crm_mod.identity_for_stage(device_id)
+        if errors:
+            crm_mod.crm_log("warn", "inquiry_identity_missing",
+                            device_id=device_id, errors="; ".join(errors))
+            return {"ok": False, "errors": errors}
+        person_errors = validate_estelam_person(person)
+        if person_errors:
+            return {"ok": False, "errors": person_errors}
+        estelam_save_person(person)
+    errors = crm_sync_queue(device_id)
+    if errors:
+        return {"ok": False, "errors": errors}
+    result = estelam_start(device_id=device_id, service=service)
+    if result.get("ok"):
+        data = crm_mod.store_read()
+        device = next((d for d in data.get("devices", [])
+                       if d.get("id") == device_id), None)
+        if device:
+            device["last_inquiry_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            crm_mod.store_write(data)
+        crm_mod.crm_log("info", "inquiry_started", device_id=device_id,
+                        service=service, origin=origin,
+                        person_masked=crm_mod.mask_national(person.get("national")))
+    else:
+        crm_mod.crm_log("warn", "inquiry_start_failed", device_id=device_id,
+                        service=service, detail=str(result))
+    return result
 
 
 def crm_advance_logged(device_id, action, **payload):
@@ -4798,6 +4913,27 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-start-payment":
             self._crm_start_payment(str(self._read_json().get("device_id") or ""))
+
+        elif self.path == "/crm-inquiry":
+            data = self._read_json()
+            service = str(data.get("service") or "gomrok")
+            ids = data.get("device_ids") or []
+            if not isinstance(ids, list) or not ids:
+                self._json({"ok": False, "errors": ["دستگاهی انتخاب نشده است"]}, 400)
+                return
+            results = []
+            queued = 0
+            for entry_id in ids:
+                result = crm_start_inquiry(str(entry_id), service=service,
+                                           origin="manual")
+                results.append({"device_id": str(entry_id), "ok": result.get("ok"),
+                                "errors": result.get("errors")})
+                if result.get("ok"):
+                    queued += 1
+                    if not estelam_is_running():
+                        continue
+                    break   # a run is live; the rest go through the scheduler
+            self._json({"ok": queued > 0, "queued": queued, "results": results})
 
         elif self.path == "/crm-settings":
             data = self._read_json()
