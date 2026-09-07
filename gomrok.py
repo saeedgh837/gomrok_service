@@ -1160,7 +1160,15 @@ def is_registrant_end_error(etext):
 
 def retry_imei_captcha_in_place(driver, wait, solver, old_captcha_ref,
                                 submit, read_result, max_attempts=5,
-                                retryable=None, prepare_form=None):
+                                retryable=None, prepare_form=None,
+                                read_conf=None):
+    """Retry loop with fresh captchas in the same browser.
+
+    `read_conf(driver, captcha_element, solver) -> (answer, conf)` lets the
+    caller inject a confidence-gated reader (estelam_gomrok.solve_confidently);
+    when omitted the plain solver.read_pil path is used (registration robot
+    keeps its current behavior).
+    """
     errors = []
     captcha_ref = old_captcha_ref
     attempt = 0
@@ -1202,7 +1210,10 @@ def retry_imei_captcha_in_place(driver, wait, solver, old_captcha_ref,
                 changed = False
 
         captcha_ref = cc.snapshot_captcha(driver, captcha)
-        answer = solver.read_pil(cc.crop_captcha_with_padding(driver, captcha))
+        if read_conf is not None:
+            answer, _conf = read_conf(driver, captcha, solver)
+        else:
+            answer = solver.read_pil(cc.crop_captcha_with_padding(driver, captcha))
         if not type_and_verify(driver, WP_CAPTCHA, answer):
             continue
         submit()

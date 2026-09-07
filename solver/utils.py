@@ -84,33 +84,35 @@ def greedy_decode(log_probs: torch.Tensor) -> List[str]:
 
 @torch.no_grad()
 def forced_decode(log_probs: torch.Tensor, length: int = CAPTCHA_LEN) -> List[str]:
+    """Length-constrained greedy decode; see forced_decode_conf for details."""
+    return forced_decode_conf(log_probs, length=length)[0]
+
+
+@torch.no_grad()
+def forced_decode_conf(log_probs: torch.Tensor,
+                       length: int = CAPTCHA_LEN) -> List[tuple]:
     """
-    Length-constrained greedy decode: always return exactly `length` chars.
+    Length-constrained greedy decode + per-answer confidence.
 
-    The captcha length is known and constant, so instead of trusting the CTC
-    collapse to produce the right count we:
-      1. take the plain greedy string;
-      2. if it already has `length` chars, keep it;
-      3. otherwise pick the `length` most-confident non-blank character
-         positions from the per-timestep argmax path and read them left->right.
-
-    This recovers the common failure where a doubled/dropped blank makes greedy
-    emit 4 or 6 chars. Two directions:
-      * too many chars  -> keep the `length` most-confident runs;
-      * too few chars   -> a doubled letter (e.g. "ee", "55") was collapsed by
-        CTC into one run; split the widest runs (longest time-span, so most
-        likely to cover two glyphs) until we reach `length` characters.
+    Returns [(text, conf), ...] where conf is the mean peak probability of the
+    runs that produced the text (clean greedy reads ~1.0, fabricated answers
+    well below). The live flow uses the score to take a fresh captcha instead
+    of submitting a low-confidence guess.
     """
     T, B, C = log_probs.shape
-    probs = log_probs.exp()                        # (T, B, C)
+    probs = log_probs.exp()
     argmax = log_probs.argmax(dim=2)               # (T, B)
-    topval = probs.max(dim=2).values               # (T, B) confidence per step
+    topval = probs.max(dim=2).values.clamp(0.0, 1.0)  # guard non-log-softmax inputs
     out = []
     for b in range(B):
         path = argmax[:, b].cpu().tolist()
         greedy = VOCAB.ctc_greedy_decode(path)
         if len(greedy) == length:
-            out.append(greedy)
+            conf_b = topval[:, b].clamp(0.0, 1.0).cpu().tolist()
+            peaks = [conf_b[t] for t, idx in enumerate(path)
+                     if idx != VOCAB.blank_idx]
+            mean_conf = sum(peaks) / len(peaks) if peaks else 0.0
+            out.append((greedy, float(mean_conf)))
             continue
         # Collapse the path into runs of the same non-blank symbol, keeping the
         # peak confidence, start position, and time-span of each run.
@@ -132,6 +134,7 @@ def forced_decode(log_probs: torch.Tensor, length: int = CAPTCHA_LEN) -> List[st
             best = sorted(runs, key=lambda r: r[2], reverse=True)[:length]
             best.sort(key=lambda r: r[0])
             s = "".join(VOCAB.itos[r[1]] for r in best)
+            mean_conf = sum(r[2] for r in best) / len(best)
         elif runs:
             # Too few runs: a doubled adjacent letter got collapsed. Repeatedly
             # duplicate the run whose span is largest relative to how many glyphs
@@ -145,10 +148,15 @@ def forced_decode(log_probs: torch.Tensor, length: int = CAPTCHA_LEN) -> List[st
                 counts[j] += 1
             s = "".join(VOCAB.itos[runs[k][1]] * counts[k]
                         for k in range(len(runs)))
+            # Fabricated answer: duplicated runs are not new evidence, so the
+            # score decays with the real/length ratio (mirrors the ONNX path).
+            real = len(runs)
+            mean_conf = (sum(r[2] for r in runs) / real) * (real / length)
         else:
             # no non-blank runs at all — nothing to recover
             s = greedy
-        out.append(s)
+            mean_conf = 0.0
+        out.append((s, float(mean_conf)))
     return out
 
 

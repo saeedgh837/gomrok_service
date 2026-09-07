@@ -19,7 +19,7 @@ import torch
 from config import CKPT_DIR
 from model import build_crnn
 from preprocess import to_model_gray, trim_whole, prepare_line_for_model
-from utils import forced_decode, greedy_decode
+from utils import forced_decode, forced_decode_conf, greedy_decode
 from vocab import VOCAB
 
 
@@ -72,11 +72,24 @@ class IricaSolver:
         return forced_decode(log_probs)[0] if forced else greedy_decode(log_probs)[0]
 
     @torch.no_grad()
+    def read_array_conf(self, bgr: np.ndarray) -> tuple:
+        """(text, confidence) — see utils.forced_decode_conf."""
+        x = self._tensor_from_bgr(bgr)
+        log_probs = self.model(x)
+        return forced_decode_conf(log_probs)[0]
+
+    @torch.no_grad()
     def read_pil(self, img, forced: bool = True) -> str:
         """Solve a PIL.Image (as produced by the collector's crop step)."""
         rgb = np.array(img.convert("RGB"))
         bgr = rgb[:, :, ::-1].copy()                  # RGB -> BGR for cv2 path
         return self.read_array(bgr, forced=forced)
+
+    @torch.no_grad()
+    def read_pil_conf(self, img) -> tuple:
+        rgb = np.array(img.convert("RGB"))
+        bgr = rgb[:, :, ::-1].copy()                  # RGB -> BGR for cv2 path
+        return self.read_array_conf(bgr)
 
 
 def main():

@@ -466,6 +466,38 @@ def prepare_captcha_for_shot(driver, element, timeout: float = 10.0) -> bool:
     return wait_image_loaded(driver, element, timeout=timeout)
 
 
+def wait_captcha_stable(driver, element, settle: float = 0.6,
+                        attempts: int = 3) -> bool:
+    """True when the captcha image has STOPPED changing.
+
+    After a reload/F5 the Wicket page keeps swapping the captcha img for a
+    short while (AJAX bind + progressive render). OCR on a mid-swap frame
+    reads image A while the server accepts image B -> guaranteed 'کد اعتبار
+    سنجی صحیح نمی باشد'. We fingerprint the image, wait `settle` seconds, and
+    only pass when the fingerprint is unchanged for `attempts` consecutive
+    checks (bounded, never infinite).
+    """
+    last = None
+    same = 0
+    import time as _time
+    deadline = _time.time() + 10.0
+    while _time.time() < deadline:
+        try:
+            fp = _captcha_fingerprint(driver, element)
+        except Exception:
+            _time.sleep(0.3)
+            continue
+        if fp == last:
+            same += 1
+            if same >= attempts - 1:
+                return True
+        else:
+            same = 0
+        last = fp
+        _time.sleep(settle)
+    return False
+
+
 def dark_pixel_ratio(img, threshold: int = 110) -> float:
     """
     Nesbat-e pixel-ha-ye TIRE (kamtar az `threshold`) dar tasvir ra barmigardanad.

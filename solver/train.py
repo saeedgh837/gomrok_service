@@ -36,7 +36,7 @@ from tqdm import tqdm
 from config import CFG, CKPT_DIR, LABELS_CSV, IMAGES_DIR
 from dataset import IricaCaptchaDataset, ctc_collate
 from model import build_crnn
-from utils import forced_decode, corpus_metrics
+from utils import forced_decode_conf, corpus_metrics
 from vocab import VOCAB
 
 
@@ -75,8 +75,9 @@ def evaluate(model, loader, device) -> dict:
         loss = ctc(log_probs, targets.to(device), input_lengths, target_lengths.to(device))
         val_loss += loss.item()
         n_batches += 1
-        # Fixed-length forced decode is our real metric.
-        preds_all.extend(forced_decode(log_probs))
+        # Fixed-length forced decode is our real metric (text only — the
+        # confidence half of the tuple is a runtime concern, not a metric).
+        preds_all.extend(text for text, _conf in forced_decode_conf(log_probs))
         targets_all.extend(texts)
     metrics = corpus_metrics(preds_all, targets_all)
     metrics["val_loss"] = val_loss / max(1, n_batches)

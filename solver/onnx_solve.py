@@ -40,6 +40,21 @@ def _greedy(path: list[int]) -> str:
 
 def _forced_decode(log_probs: np.ndarray, length: int = CAPTCHA_LEN) -> str:
     """log_probs: (T, 1, C). Mirror of solver.utils.forced_decode for one item."""
+    text, _conf = _forced_decode_conf(log_probs, length=length)
+    return text
+
+
+def _forced_decode_conf(log_probs: np.ndarray,
+                        length: int = CAPTCHA_LEN) -> tuple[str, float]:
+    """Forced decode + a mean-peak-confidence score for the returned text.
+
+    Returns (text, conf) where conf is the mean peak probability of the runs
+    that produced the answer. A clean greedy read scores ~1.0; an answer the
+    decoder had to fabricate (duplicated/split runs) scores well below that.
+    Callers use the score to re-read with a fresh captcha instead of
+    submitting a guess ("کد اعتبار سنجی صحیح نمی باشد" costs a full form
+    round-trip; a refresh costs nothing).
+    """
     lp = np.asarray(log_probs)
     T, B, C = lp.shape
     probs = np.exp(lp)
@@ -49,9 +64,14 @@ def _forced_decode(log_probs: np.ndarray, length: int = CAPTCHA_LEN) -> str:
     path = argmax[:, 0].tolist()
     greedy = _greedy(path)
     if len(greedy) == length:
-        return greedy
+        # Confidence of a clean greedy read: mean peak prob over the timesteps
+        # that survived the CTC collapse (non-blank runs only).
+        conf = np.clip(topval[:, 0], 0.0, 1.0).tolist()
+        peaks = [conf[t] for t, idx in enumerate(path) if idx != VOCAB.blank_idx]
+        mean_conf = sum(peaks) / len(peaks) if peaks else 0.0
+        return greedy, float(mean_conf)
 
-    conf = topval[:, 0].tolist()
+    conf = np.clip(topval[:, 0], 0.0, 1.0).tolist()
     runs = []                               # [start_t, symbol_idx, peak_conf, span]
     prev = None
     for t, idx in enumerate(path):
@@ -68,15 +88,22 @@ def _forced_decode(log_probs: np.ndarray, length: int = CAPTCHA_LEN) -> str:
     if len(runs) >= length:
         best = sorted(runs, key=lambda r: r[2], reverse=True)[:length]
         best.sort(key=lambda r: r[0])
-        return "".join(VOCAB.itos[r[1]] for r in best)
+        text = "".join(VOCAB.itos[r[1]] for r in best)
+        mean_conf = sum(r[2] for r in best) / len(best)
+        return text, float(mean_conf)
     if runs:
         counts = [1] * len(runs)
         need = length - len(runs)
         for _ in range(need):
             j = max(range(len(runs)), key=lambda k: runs[k][3] / counts[k])
             counts[j] += 1
-        return "".join(VOCAB.itos[runs[k][1]] * counts[k] for k in range(len(runs)))
-    return greedy
+        text = "".join(VOCAB.itos[runs[k][1]] * counts[k] for k in range(len(runs)))
+        # Fabricated answer: weight the conf by how much of the text is real
+        # (each duplicated run repeats an existing peak — not new evidence).
+        real = len(runs)
+        mean_conf = (sum(r[2] for r in runs) / real) * (real / length)
+        return text, float(mean_conf)
+    return greedy, 0.0
 
 
 class OnnxSolver:
@@ -105,10 +132,20 @@ class OnnxSolver:
         return _forced_decode(log_probs) if forced else _greedy(
             log_probs.argmax(axis=2)[:, 0].tolist())
 
+    def read_array_conf(self, bgr: np.ndarray) -> tuple[str, float]:
+        """(text, mean-peak-confidence) for the fixed-length decode."""
+        log_probs = self._infer(self._tensor_from_bgr(bgr))
+        return _forced_decode_conf(log_probs)
+
     def read_pil(self, img, forced: bool = True) -> str:
         rgb = np.array(img.convert("RGB"))
         bgr = rgb[:, :, ::-1].copy()
         return self.read_array(bgr, forced=forced)
+
+    def read_pil_conf(self, img) -> tuple[str, float]:
+        rgb = np.array(img.convert("RGB"))
+        bgr = rgb[:, :, ::-1].copy()
+        return self.read_array_conf(bgr)
 
     def read(self, image_path: str, forced: bool = True) -> str:
         data = np.fromfile(str(image_path), dtype=np.uint8)

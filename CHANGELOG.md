@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.16] - 2026-09-07
+
+### Fixed
+
+- Fewer wrong-captcha submissions in the customs inquiry flow (logged at
+  ~29% of submits). Two root causes addressed:
+  - The OCR decoder now attaches a confidence score to every read; reads
+    below 0.6 (tunable via `IRICA_CAPTCHA_MIN_CONF`) trigger a free captcha
+    refresh + re-read (max 3) instead of submitting a fabricated guess.
+  - Before reading, the captcha image must stay unchanged across 3
+    consecutive fingerprints (bounded 10s), closing the race where the
+    page swaps the image between OCR and submit after a slow load / F5
+    (12 of 16 logged wrong-captcha retries followed such dirty loads).
+- Applies to both the first attempt and the in-place retry loop; the
+  registration robot's behavior is unchanged.
+
 ## [1.0.15] - 2026-09-07
 
 ### Changed
