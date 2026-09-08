@@ -891,6 +891,18 @@ def advance(device_id, action, **payload):
         next_stage = ALLOWED.get(stage, {}).get(action)
         if not next_stage:
             return None, [f"این کنش در مرحلهٔ فعلی مجاز نیست ({stage})"]
+        # Owner gate (F1 at the source): watch-stage inquiries run under the
+        # device OWNER identity, so handing a device over without one would
+        # strand it at `handed` with un-runnable customs inquiries. Fail
+        # closed here instead of producing an un-inquirable device.
+        if action == "handover":
+            if not str(device.get("owner_id") or "").strip():
+                return None, ["ابتدا مالک را به دستگاه متصل کنید — استعلام "
+                              "نظارتی با هویت مالک انجام می‌شود"]
+            owner = next((o for o in data.get("owners", [])
+                          if o.get("id") == device.get("owner_id")), None)
+            if not owner:
+                return None, ["مالک دستگاه پیدا نشد — اتصال مالک را بررسی کنید"]
         # Inquiry gate (operator request): leaving the intake inquiry stage
         # requires BOTH inquiries to have passed for THIS device, as recorded
         # in the estelam store the robots write. Every other outcome

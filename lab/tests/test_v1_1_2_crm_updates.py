@@ -106,6 +106,11 @@ class StageRollbackTests(_StoreHarness):
                 json.dump({"person": {}, "devices": [
                     {"id": device_id, "status": "healthy",
                      "hamta_status": "good"}]}, handle)
+        # The owner gate requires an attached owner before `handover`; any
+        # action path reaching it walks through attach_owner implicitly.
+        if "handover" in actions and "attach_owner" not in actions:
+            actions = list(actions)
+            actions.insert(actions.index("handover"), "attach_owner")
         for action in actions:
             if action == "attach_owner":
                 owner, errors = crm.add_owner({
@@ -174,6 +179,20 @@ class StageRollbackTests(_StoreHarness):
                                   "confirm_payment", "deliver_code"])
         _record, errors = crm.advance(device["id"], "stage_back")
         self.assertTrue(errors)
+
+    def test_handover_requires_attached_owner(self):
+        """Watch-stage inquiries run under the OWNER identity (F1): handing a
+        device over without an attached owner would strand it at `handed`
+        with un-runnable inquiries. Fail-closed at the source."""
+        device = self._device_at(["queue_inquiry", "mark_ready"])
+        _record, errors = crm.advance(device["id"], "handover")
+        self.assertTrue(errors)
+        self.assertTrue(any("مالک" in e for e in errors), errors)
+
+    def test_handover_with_owner_reaches_handed(self):
+        device = self._device_at(["queue_inquiry", "mark_ready",
+                                  "attach_owner", "handover"])
+        self.assertEqual(device["stage"], "handed")
 
 
 class CrmInquireRouteTests(unittest.TestCase):
