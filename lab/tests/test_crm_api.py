@@ -43,6 +43,14 @@ class CrmApiHarness(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
 
     # -- helpers ---------------------------------------------------------
+    def _seed_green_estelam(self, device_id):
+        """Seed a both-OK estelam row so the intake inquiry gate (v1.1.2)
+        lets fixtures walk past `mark_ready`."""
+        with open(self.estelam_store, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [
+                {"id": str(device_id), "status": "healthy",
+                 "hamta_status": "good"}]}, handle)
+
     def _url(self, path):
         return f"http://127.0.0.1:{self.port}{path}"
 
@@ -132,6 +140,7 @@ class TestCrmRoutes(CrmApiHarness):
         device_id = body["device"]["id"]
         # walk to to_payment
         for action in ("queue_inquiry", "mark_ready"):
+            self._seed_green_estelam(device_id)
             self._post("/crm-tick", {"device_id": device_id, "action": action})
         status, body = self._post("/crm-start-payment", {"device_id": device_id})
         self.assertEqual(status, 400)
@@ -224,6 +233,7 @@ class TestCrmReports(CrmApiHarness):
                            "national": "0012345679", "birth": "1375/04/29",
                            "mobile": "09121234567", "card_no": "6219861012345678"})
         crm_mod.advance(device["id"], "queue_inquiry")
+        self._seed_green_estelam(device["id"])
         crm_mod.advance(device["id"], "mark_ready")
         crm_mod.advance(device["id"], "attach_owner",
                         owner_id=crm_mod.store_read()["owners"][0]["id"])

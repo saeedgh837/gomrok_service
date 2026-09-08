@@ -50,6 +50,10 @@ class CrmSchedulerCase(unittest.TestCase):
                                        "auto_advance": auto_advance})
         assert errs == [], errs
         crm.advance(device["id"], "queue_inquiry")
+        with open(self.estelam, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [
+                {"id": str(device["id"]), "status": "healthy",
+                 "hamta_status": "good"}]}, handle)
         crm.advance(device["id"], "mark_ready")
         if with_owner:
             owner, errs = crm.add_owner({

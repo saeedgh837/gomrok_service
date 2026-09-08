@@ -40,6 +40,10 @@ class CrmInquiryCase(unittest.TestCase):
         if stage != "new":
             crm.advance(record["id"], "queue_inquiry")
             if stage in ("ready_owner", "handed", "to_payment"):
+                with open(self.estelam, "w", encoding="utf-8") as handle:
+                    json.dump({"person": {}, "devices": [
+                        {"id": str(record["id"]), "status": "healthy",
+                         "hamta_status": "good"}]}, handle)
                 crm.advance(record["id"], "mark_ready")
         if owner:
             owner_rec, errs = crm.add_owner({

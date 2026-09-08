@@ -56,6 +56,15 @@ class TempStoreCase(unittest.TestCase):
         assert errs == [], errs
         return rec
 
+    def _seed_green_estelam(self, device_id):
+        """Seed the panel's estelam store with a both-OK row so the intake
+        inquiry gate (v1.1.2) lets fixtures walk past `mark_ready`."""
+        import panel
+        with open(panel.ESTELAM_PATH, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [
+                {"id": str(device_id), "status": "healthy",
+                 "hamta_status": "good"}]}, handle)
+
 
 class TestStoreCrud(TempStoreCase):
     def test_add_and_read_customer_roundtrip(self):
@@ -162,6 +171,7 @@ class TestStageMachine(TempStoreCase):
         self.assertEqual(device["stage"], "inquiry")
 
         # scheduler auto-join on healthy
+        self._seed_green_estelam(device["id"])
         device, errs = self.crm.advance(device["id"], "mark_ready")
         self.assertEqual(device["stage"], "ready_owner")
 
@@ -207,6 +217,7 @@ class TestStageMachine(TempStoreCase):
     def test_watch_problem_edge(self):
         device = self._device()
         self.crm.advance(device["id"], "queue_inquiry")
+        self._seed_green_estelam(device["id"])
         self.crm.advance(device["id"], "mark_ready")
         self.crm.advance(device["id"], "handover")
         device, errs = self.crm.advance(device["id"], "mark_problem")
@@ -216,6 +227,7 @@ class TestStageMachine(TempStoreCase):
     def test_double_tick_rejected(self):
         device = self._device()
         self.crm.advance(device["id"], "queue_inquiry")
+        self._seed_green_estelam(device["id"])
         self.crm.advance(device["id"], "mark_ready")
         dev, errs = self.crm.advance(device["id"], "handover")
         self.assertEqual(errs, [])
@@ -227,6 +239,7 @@ class TestStageMachine(TempStoreCase):
     def test_attach_owner_requires_owner_id(self):
         device = self._device()
         self.crm.advance(device["id"], "queue_inquiry")
+        self._seed_green_estelam(device["id"])
         self.crm.advance(device["id"], "mark_ready")
         _, errs = self.crm.advance(device["id"], "attach_owner", owner_id="")
         self.assertTrue(any("الزامی" in e for e in errs))
@@ -237,6 +250,7 @@ class TestStageMachine(TempStoreCase):
         d2 = self._device(name="S", serial1="356938035643810")
         for d in (d1, d2):
             self.crm.advance(d["id"], "queue_inquiry")
+            self._seed_green_estelam(d["id"])
             self.crm.advance(d["id"], "mark_ready")
         self.crm.advance(d1["id"], "attach_owner", owner_id=owner["id"])
         _, errs = self.crm.advance(d2["id"], "attach_owner", owner_id=owner["id"])
@@ -245,6 +259,7 @@ class TestStageMachine(TempStoreCase):
     def test_done_is_terminal(self):
         device = self._device()
         self.crm.advance(device["id"], "queue_inquiry")
+        self._seed_green_estelam(device["id"])
         self.crm.advance(device["id"], "mark_ready")
         self.crm.advance(device["id"], "handover")
         self.crm.advance(device["id"], "to_payment")

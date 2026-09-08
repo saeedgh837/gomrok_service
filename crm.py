@@ -820,6 +820,43 @@ def _stages_between(first, last):
     return order[start + 1:end + 1]
 
 
+# Inquiry outcomes that count as "passed" per service (operator request:
+# both customs and Hamta must be OK before the next stage). Gomrok healthy
+# covers the robot's healthy verdict; Hamta good/registered/success are its
+# green outcomes (estelam_hamta._PANEL_LOG_STATUS maps all of them to
+# healthy). `registered` for gomrok is NOT pass — it means the device was
+# found already registered (watch-stage concern, handled elsewhere).
+_GOMROK_PASS = {"healthy"}
+_HAMTA_PASS = {"good", "registered", "success"}
+
+
+def _inquiry_gate_errors(device):
+    """Persian errors when the device's intake inquiries are not both OK.
+    Reads the estelam store via panel (lazy import: crm must stay importable
+    without the panel process)."""
+    try:
+        import panel
+        est = panel.estelam_load()
+    except Exception:
+        return ["نتیجهٔ استعلام‌ها خوانده نشد — دوباره تلاش کنید"]
+    row = next((d for d in est.get("devices", [])
+                if str(d.get("id")) == str(device.get("id"))), None)
+    if not row:
+        return ["ابتدا استعلام‌های گمرک و همتا را انجام دهید"]
+    errors = []
+    gomrok = str(row.get("status") or "").strip().lower()
+    hamta = str(row.get("hamta_status") or "").strip().lower()
+    if gomrok not in _GOMROK_PASS:
+        if gomrok in ("", "pending", "running"):
+            errors.append("استعلام گمرک هنوز انجام نشده یا در جریان است")
+        else:
+            errors.append("استعلام گمرک مشکل دارد — دستگاه مجاز نیست")
+    if hamta not in _HAMTA_PASS:
+        if hamta in ("", "pending", "running"):
+            errors.append("استعلام همتا هنوز انجام نشده یا در جریان است")
+        else:
+            errors.append("استعلام همتا مشکل دارد — دستگاه مجاز نیست")
+    return errors
 def advance(device_id, action, **payload):
     """Apply a stage action; returns (device, errors). Persian errors."""
     with STORE_LOCK:
@@ -854,6 +891,15 @@ def advance(device_id, action, **payload):
         next_stage = ALLOWED.get(stage, {}).get(action)
         if not next_stage:
             return None, [f"این کنش در مرحلهٔ فعلی مجاز نیست ({stage})"]
+        # Inquiry gate (operator request): leaving the intake inquiry stage
+        # requires BOTH inquiries to have passed for THIS device, as recorded
+        # in the estelam store the robots write. Every other outcome
+        # (missing row, pending/running, problem, blocked) blocks the tick
+        # with a Persian error naming the failing service.
+        if action == "mark_ready":
+            gate_errors = _inquiry_gate_errors(device)
+            if gate_errors:
+                return None, gate_errors
         # Tick idempotency: a tick whose timestamp is already set is a no-op.
         stamp_key = _STAGE_TIMESTAMP_KEY.get(next_stage)
         if stamp_key and device.get(stamp_key) and action in (

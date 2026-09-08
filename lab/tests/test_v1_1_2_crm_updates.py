@@ -98,6 +98,14 @@ class StageRollbackTests(_StoreHarness):
         record, errors = crm.add_device({"name": "D", "serial1": serial})
         self.assertEqual(errors, [])
         device_id = record["id"]
+        if "mark_ready" in actions:
+            # The inquiry gate (both estelams OK) must pass for fixtures that
+            # walk past the intake stage; seed the estelam row as green.
+            est_path = panel.ESTELAM_PATH
+            with open(est_path, "w", encoding="utf-8") as handle:
+                json.dump({"person": {}, "devices": [
+                    {"id": device_id, "status": "healthy",
+                     "hamta_status": "good"}]}, handle)
         for action in actions:
             if action == "attach_owner":
                 owner, errors = crm.add_owner({
@@ -256,6 +264,109 @@ class CrmStatePayloadTests(_StoreHarness):
         self.assertIn("estelam", device)
         self.assertIn("status", device["estelam"])
         self.assertIn("hamta_status", device["estelam"])
+
+
+class InquiryGateTests(unittest.TestCase):
+    """`mark_ready` is accepted ONLY when BOTH intake inquiries passed for
+    the device (gomrok healthy + hamta green) per the estelam store — the
+    store the robots themselves write (operator request, v1.1.2)."""
+
+    def setUp(self):
+        import crm as crm_mod
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.estelam = os.path.join(self.tmp.name, "estelam_store.json")
+        self.profiles = os.path.join(self.tmp.name, "profiles.json")
+        with open(self.profiles, "w", encoding="utf-8") as handle:
+            json.dump({"active_id": "", "profiles": []}, handle)
+        self.crm_store = os.path.join(self.tmp.name, "crm_store.json")
+        self._patches = [
+            patch.object(panel, "PROFILES_PATH", self.profiles),
+            patch.object(panel, "INPUTS_PATH",
+                         os.path.join(self.tmp.name, "inputs.json")),
+            patch.object(panel, "_STORE_LOCK_PATH", self.profiles + ".lock"),
+            patch.object(panel, "ESTELAM_PATH", self.estelam),
+            patch.dict(os.environ, {"IRICA_CRM_STORE": self.crm_store}),
+        ]
+        for item in self._patches:
+            item.start()
+            self.addCleanup(item.stop)
+        crm_mod.reset_cache()
+        self.addCleanup(crm_mod.reset_cache)
+
+        self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
+                                               panel.Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever,
+                         daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+
+    def _seed_estelam(self, device_id, status="healthy",
+                      hamta_status="good"):
+        with open(self.estelam, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [
+                {"id": str(device_id), "status": status,
+                 "hamta_status": hamta_status}]}, handle)
+
+    def _device_in_inquiry(self):
+        record, errors = crm.add_device({"name": "D",
+                                         "serial1": "356938035643809"})
+        self.assertEqual(errors, [])
+        crm.advance(record["id"], "queue_inquiry")
+        return record["id"]
+
+    def _tick(self, device_id, action):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/crm-tick",
+            data=json.dumps({"device_id": device_id, "action": action}
+                            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, json.loads(response.read().decode(
+                    "utf-8"))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8")
+            try:
+                body = json.loads(body)
+            except Exception:
+                pass
+            return error.code, body
+
+    def test_mark_ready_rejected_without_any_inquiry(self):
+        device_id = self._device_in_inquiry()
+        status, body = self._tick(device_id, "mark_ready")
+        self.assertEqual(status, 400)
+        self.assertTrue(any("استعلام" in e for e in body["errors"]))
+
+    def test_mark_ready_allowed_when_both_inquiries_ok(self):
+        device_id = self._device_in_inquiry()
+        self._seed_estelam(device_id, status="healthy", hamta_status="good")
+        status, body = self._tick(device_id, "mark_ready")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["device"]["stage"], "ready_owner")
+
+    def test_mark_ready_rejected_when_gomrok_problem(self):
+        device_id = self._device_in_inquiry()
+        self._seed_estelam(device_id, status="problem", hamta_status="good")
+        status, body = self._tick(device_id, "mark_ready")
+        self.assertEqual(status, 400)
+        self.assertTrue(any("گمرک" in e for e in body["errors"]))
+
+    def test_mark_ready_rejected_when_hamta_blocked(self):
+        device_id = self._device_in_inquiry()
+        self._seed_estelam(device_id, status="healthy",
+                           hamta_status="blocked")
+        status, body = self._tick(device_id, "mark_ready")
+        self.assertEqual(status, 400)
+        self.assertTrue(any("همتا" in e for e in body["errors"]))
+
+    def test_mark_ready_rejected_while_results_pending(self):
+        device_id = self._device_in_inquiry()
+        self._seed_estelam(device_id, status="pending",
+                           hamta_status="running")
+        status, body = self._tick(device_id, "mark_ready")
+        self.assertEqual(status, 400)
 
 
 class FormHygieneTests(unittest.TestCase):
