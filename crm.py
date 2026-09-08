@@ -73,6 +73,20 @@ ALLOWED = {
     "done": {},
 }
 
+# Stage rollback: for each stage, the previous MAINLINE stage a device may be
+# returned to via `stage_back` (operator-requested undo with confirmation).
+# `problem` is off-mainline: from problem the operator re-queues instead.
+_STAGE_BACK = {
+    "inquiry": "new",
+    "ready_owner": "inquiry",
+    "handed": "ready_owner",
+    "to_payment": "handed",
+    "payment": "to_payment",
+    "payment_done": "payment",
+    # `done` is intentionally NOT rollback-able: the case is complete and its
+    # code was delivered; reopening it would corrupt the ledger trail.
+}
+
 _STAGE_TIMESTAMP_KEY = {
     "handed": "handed_at",
     "to_payment": "registered_at",
@@ -237,7 +251,45 @@ def validate_identity(data):
         return errors
 
 
-def validate_device(data):
+def _find_serial_conflict(data, serial, exclude_device_id=None):
+    """Return the first OTHER device holding `serial` (either serial slot),
+    or None. `exclude_device_id` is the record being updated — its own
+    slots never count as a conflict."""
+    serial = normalize_digits(serial).strip()
+    if not serial:
+        return None
+    for other in data.get("devices", []):
+        if exclude_device_id and str(other.get("id")) == str(exclude_device_id):
+            continue
+        for key in ("serial1", "serial2"):
+            if normalize_digits(other.get(key) or "").strip() == serial:
+                return other
+    return None
+
+
+def _serial_conflict_errors(data, serials, exclude_device_id=None):
+    """Persian duplicate-serial errors naming the conflicting customer."""
+    errors = []
+    seen = set()
+    for serial in serials:
+        serial = normalize_digits(serial).strip()
+        if not serial or serial in seen:
+            continue
+        seen.add(serial)
+        conflict = _find_serial_conflict(data, serial,
+                                         exclude_device_id=exclude_device_id)
+        if conflict:
+            customer = next(
+                (c for c in data.get("customers", [])
+                 if c.get("id") == conflict.get("customer_id")), None)
+            who = (customer or {}).get("full_name") or "مشتری نامشخص"
+            errors.append(
+                f"سریال «{serial}» قبلاً برای دستگاه «{conflict.get('name')}» "
+                f"به نام {who} ثبت شده است")
+    return errors
+
+
+def validate_device(data, exclude_device_id=None):
     errors = []
     data = data or {}
     name = str(data.get("name") or "").strip()
@@ -252,6 +304,18 @@ def validate_device(data):
     for label, value in (("سریال اول", serial1), ("سریال دوم", serial2)):
         if value and not re.fullmatch(r"\d{15}", value):
             errors.append(f"{label} باید ۱۵ رقم عدد باشد")
+    if serial1 and serial2 and serial1 == serial2:
+        errors.append("سریال اول و دوم نباید یکسان باشند")
+    if not errors:
+        try:
+            with STORE_LOCK:
+                data_all = _store_read()
+        except Exception:                       # pragma: no cover - store absent
+            data_all = {}
+        if data_all:
+            errors.extend(_serial_conflict_errors(
+                data_all, (serial1, serial2),
+                exclude_device_id=exclude_device_id))
     return errors
 
 
@@ -663,7 +727,7 @@ def update_device(device_id, fields):
         merged.update({k: fields[k] for k in
                        ("name", "serial1", "serial2", "customer_id",
                         "auto_advance", "notes") if k in (fields or {})})
-        errs = validate_device(merged)
+        errs = validate_device(merged, exclude_device_id=device_id)
         if errs:
             return None, errs
         if merged.get("customer_id"):
@@ -738,6 +802,24 @@ def attach_owner(device_id, owner_id):
 # Stage machine
 # --------------------------------------------------------------------------
 
+# Mainline execution order (problem is an off-mainline branch, not a step).
+STAGE_ORDER = ["new", "inquiry", "ready_owner", "handed", "to_payment",
+               "payment", "payment_done", "done"]
+
+
+def _stages_between(first, last):
+    """Mainline stages strictly after `first` up to and including `last`."""
+    order = [s for s in STAGE_ORDER if s != "problem"]
+    try:
+        start = order.index(first)
+        end = order.index(last)
+    except ValueError:
+        return []
+    if end <= start:
+        return []
+    return order[start + 1:end + 1]
+
+
 def advance(device_id, action, **payload):
     """Apply a stage action; returns (device, errors). Persian errors."""
     with STORE_LOCK:
@@ -747,6 +829,28 @@ def advance(device_id, action, **payload):
         if not device:
             return None, ["دستگاه پیدا نشد"]
         stage = str(device.get("stage") or "new")
+        if action == "stage_back":
+            # Operator-initiated rollback (with UI confirmation): move the
+            # device to the previous mainline stage and clear the timestamps
+            # of the stages we are leaving so re-execution stays possible.
+            target = _STAGE_BACK.get(stage)
+            if not target:
+                return None, ["برگشت از این مرحله ممکن نیست"]
+            leaving = _stages_between(target, stage)
+            device["stage"] = target
+            for left in leaving:
+                stamp_key = _STAGE_TIMESTAMP_KEY.get(left)
+                if stamp_key:
+                    device[stamp_key] = ""
+                if left == "done":
+                    device["done_at"] = ""
+            if target == "new":
+                # Rollback past the intake tick: forget owner binding? No —
+                # only stage markers are reset; the owner link survives.
+                pass
+            device["updated"] = _now()
+            _store_write(data)
+            return device, []
         next_stage = ALLOWED.get(stage, {}).get(action)
         if not next_stage:
             return None, [f"این کنش در مرحلهٔ فعلی مجاز نیست ({stage})"]

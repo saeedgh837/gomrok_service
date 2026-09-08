@@ -29,6 +29,7 @@ DEFAULT = [
     "test_crm_validation", "test_crm_store", "test_crm_api",
     "test_crm_inquiry_pool",
     "test_crm_scheduler",
+    "test_v1_1_2_crm_updates",
     "test_dashboard_rewrite",
     "test_system_debug_logs",
     "test_robot_interpreter", "test_manual_scroll", "test_app_paths",

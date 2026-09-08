@@ -4804,6 +4804,20 @@ CRM_PAGE = r"""<!DOCTYPE html>
   label.f input,label.f select,label.f textarea{color:var(--txt)}
   label.f .ferr{color:var(--danger);font-size:11.5px;min-height:0}
   input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}
+  /* checkbox control — custom, aligned, keyboard-visible (ux-guidelines) */
+  label.f.check{flex-direction:row;align-items:center;gap:9px;cursor:pointer;
+    padding:7px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--card);
+    min-height:34px;user-select:none}
+  label.f.check input{position:absolute;opacity:0;width:0;height:0}
+  label.f.check .box{flex:none;width:17px;height:17px;border:1.5px solid var(--line-strong);
+    border-radius:5px;background:var(--card2);position:relative;transition:background .12s,border-color .12s}
+  label.f.check .box::after{content:'';position:absolute;inset:2px 3px 4px;
+    border-inline-start:2px solid var(--on-brand);border-bottom:2px solid var(--on-brand);
+    transform:rotate(-45deg) scale(0);transform-origin:center;transition:transform .12s}
+  label.f.check input:checked+.box{background:var(--brand);border-color:var(--brand)}
+  label.f.check input:checked+.box::after{transform:rotate(-45deg) scale(1)}
+  label.f.check input:focus-visible+.box{box-shadow:var(--ring)}
+  label.f.check .ft{font-size:12.5px;color:var(--txt);font-weight:500}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
   dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--txt);
     padding:20px;width:min(600px,94vw);box-shadow:var(--shadow-2)}
@@ -4836,6 +4850,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="head">
     <h1><span class="mono">R</span><span>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مالک ← تحویل ← پرداخت ← کد فعال‌سازی</div></span></h1>
+    <a class="back" href="/site-2">پنل استعلام‌ها →</a>
     <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
     <button class="iconbtn" id="themeBtn">پوسته</button>
   </div>
@@ -4887,6 +4902,17 @@ function toast(msg, ok){
 }
 function openDlg(html){document.getElementById('dlgBody').innerHTML=html;document.getElementById('dlg').showModal();}
 function closeDlg(){document.getElementById('dlg').close();}
+/* Confirm dialog (native confirm() is blocking & unstyled): a small dialog
+   reusing #dlg with a confirm/cancel pair — used by stage rollback. */
+var _confirmCb=null;
+function confirmDlg(title,text,okLabel,cb){
+  _confirmCb=cb;
+  openDlg('<h3>'+esc(title)+'</h3><p style="margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:1.9">'
+    +esc(text)+'</p>'
+    +'<div class="row" style="margin-top:10px"><button class="btn danger" onclick="confirmYes()">'+esc(okLabel||'تأیید')+'</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function confirmYes(){var cb=_confirmCb;_confirmCb=null;closeDlg();if(cb)cb();}
 var urlTheme=new URLSearchParams(location.search).get('theme');
 var savedTheme=urlTheme||localStorage.getItem('irica-theme')||'light';
 document.documentElement.setAttribute('data-theme',savedTheme);
@@ -4910,7 +4936,9 @@ function v(id){return document.getElementById(id).value.trim();}
 var ICONS = {
   user:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>',
   id:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.5 16c.6-1.6 1.7-2.3 3-2.3s2.4.7 3 2.3M14.5 9.5H19M14.5 13H19"/></svg>',
-  dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>'
+  dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
+  search:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
+  swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>'
 };
 function stageActions(d){
   var a=[];
@@ -4925,7 +4953,37 @@ function stageActions(d){
   if(st==='payment_done') a.push(['deliver_code','تحویل کد و تکمیل','primary']);
   if(st==='ready_owner') a.push(['__attach','اتصال مالک','']);
   if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
+  if(STAGE_BACK_FA[st]) a.push(['__stage_back','↩ برگشت به «'+STAGE_BACK_FA[st]+'»','']);
   return a;
+}
+var STAGE_BACK_FA = {
+  'inquiry':'جدید','ready_owner':'در انتظار استعلام','handed':'سالم — نیازمند مالک',
+  'to_payment':'تحویل به مسئول سایت','payment':'ثبت‌شده — در انتظار پرداخت',
+  'payment_done':'در حال پرداخت'
+};
+function devTick(id, action){
+  if(action==='__attach'){dlgAttach(id);return;}
+  if(action==='__stage_back'){
+    api('/crm-state').then(function(state){
+      var d=(state.devices||[]).find(x=>x.id===id);if(!d)return;
+      var target=STAGE_BACK_FA[d.stage]||'مرحلهٔ قبل';
+      confirmDlg('برگشت به مرحلهٔ قبل','مطمئنی می‌خوای به گام «'+target+'» برگردی؟',
+        'برگشت',function(){
+          api('/crm-tick',{device_id:id,action:'stage_back'}).then(async r=>{
+            toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
+            .catch(e=>toast(e,false));
+        });
+    });
+    return;
+  }
+  if(action==='__start_payment'){
+    api('/crm-start-payment',{device_id:id}).then(async r=>{toast(r.ok?'ربات پرداخت شروع شد':'انجام نشد');await refresh();})
+      .catch(e=>toast(e,false));
+    return;
+  }
+  api('/crm-tick',{device_id:id,action:action}).then(async r=>{
+      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
+    .catch(e=>toast(e,false));
 }
 function needsAction(d){
   return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
@@ -4986,7 +5044,11 @@ function devicesHtml(){
       +'</div>'
       +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
       +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
-      +'<div class="acts">'+(acts||'<span class="muted">—</span>')
+      +'<div class="acts">'
+      +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
+      +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>'
+      +(acts?'':'<span class="muted">—</span>')
+      +(acts?'<span style="flex:1"></span>'+acts:'')
       +' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></div>'
       +'</div>';
   }).join('');
@@ -5097,30 +5159,41 @@ function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
     +'<div class="grid" style="margin-bottom:8px">'
-    +'<label class="f">نام دستگاه<input id="dvName" placeholder="iPhone 13"></label>'
-    +'<label class="f">سریال اول (IMEI ۱۵ رقمی)<input id="dvS1" inputmode="numeric"></label>'
-    +'<label class="f">سریال دوم (اختیاری)<input id="dvS2" inputmode="numeric"></label>'
-    +'<label class="f">یادداشت<input id="dvNotes"></label>'
+    +'<label class="f">نام دستگاه *<input id="dvName" placeholder="iPhone 13"></label>'
+    +'<label class="f">سریال اول * (IMEI ۱۵ رقمی)<input id="dvS1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></label>'
+    +'<label class="f">سریال دوم (اختیاری)<input id="dvS2" inputmode="numeric" maxlength="15" placeholder=""></label>'
     +'</div>'
-    +'<div class="row"><label class="f">مشتری<select id="dvCust" onchange="document.getElementById(\'dvNewCustRow\').style.display=this.value?\'none\':\'block\'">'+custOpts+'</select></label>'
-    +'<label class="f"><input type="checkbox" id="dvAuto"> پرداخت خودکار پس از ثبت در گمرک</label></div>'
+    +'<div class="row"><label class="f">مشتری *<select id="dvCust" onchange="document.getElementById(\'dvNewCustRow\').style.display=this.value?\'none\':\'block\'">'+custOpts+'</select></label>'
+    +'<label class="f check"><input type="checkbox" id="dvAuto"><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پس از ثبت در گمرک</span></label></div>'
     +'<div id="dvNewCustRow" style="display:block;margin-top:8px"><div class="grid">'
-    +'<label class="f">نام مشتری<input id="dvCn"></label>'
-    +'<label class="f">موبایل<input id="dvCm" inputmode="tel"></label>'
-    +'<label class="f">آدرس<input id="dvCa"></label>'
+    +'<label class="f">نام مشتری *<input id="dvCn"></label>'
+    +'<label class="f">موبایل (۰۹… ۱۱ رقمی)<input id="dvCm" inputmode="tel" maxlength="11" placeholder="09121234567"></label>'
+    +'<label class="f">تلگرام (اختیاری)<input id="dvTg" dir="ltr" placeholder="@username"></label>'
+    +'<label class="f">اینستاگرام (اختیاری)<input id="dvIg" dir="ltr" placeholder="@username"></label>'
+    +'<label class="f">آدرس (اختیاری)<input id="dvCa"></label>'
+    +'<label class="f">یادداشت دستگاه (اختیاری)<input id="dvNotes"></label>'
     +'</div></div>'
     +'<div class="err" id="dvErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doAddDevice()">ثبت پرونده</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doAddDevice(){
+  var mobile=digitsFa(v('dvCm'));
+  if(mobile && !/^09\d{9}$/.test(mobile)){
+    document.getElementById('dvErr').textContent='موبایل باید ۱۱ رقم و با ۰۹ شروع شود';
+    var el=document.getElementById('dvCm');if(el)el.setAttribute('aria-invalid','true');
+    return;
+  }
+  var el=document.getElementById('dvCm');if(el)el.removeAttribute('aria-invalid');
   var payload={action:'add',name:v('dvName'),serial1:v('dvS1'),serial2:v('dvS2'),
     notes:v('dvNotes'),auto_advance:document.getElementById('dvAuto').checked};
   var custSel=v('dvCust');
   if(custSel){payload.customer_id=custSel;}
-  else payload.customer={full_name:v('dvCn'),mobile:v('dvCm'),address:v('dvCa')};
+  else payload.customer={full_name:v('dvCn'),mobile:mobile,telegram_id:v('dvTg'),
+    instagram_id:v('dvIg'),address:v('dvCa')};
   api('/crm-device',payload).then(async()=>{closeDlg();toast('پرونده ثبت شد');await refresh();})
     .catch(e=>{showFieldErrors(String(e));});
 }
+function digitsFa(s){return String(s||'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[^0-9]/g,'');}
 function dlgAttach(id){
   var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
   openDlg('<h3>اتصال مالک به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
@@ -5132,16 +5205,14 @@ function doAttach(id){
     .then(async()=>{closeDlg();toast('مالک متصل شد');await refresh();})
     .catch(e=>toast(e,false));
 }
-function devTick(id, action){
-  if(action==='__attach'){dlgAttach(id);return;}
-  if(action==='__start_payment'){
-    api('/crm-start-payment',{device_id:id}).then(async r=>{toast(r.ok?'ربات پرداخت شروع شد':'انجام نشد');await refresh();})
-      .catch(e=>toast(e,false));
-    return;
-  }
-  api('/crm-tick',{device_id:id,action:action}).then(async r=>{
-      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
-    .catch(e=>toast(e,false));
+function devInquire(id, service){
+  var labels={gomrok:'گمرک',hamta:'همتا',all:'همهٔ استعلام‌ها'};
+  confirmDlg('اجرای استعلام','استعلام «'+(labels[service]||service)+'» برای این دستگاه اجرا شود؟',
+    'اجرا',function(){
+      api('/crm-inquire',{device_id:id,service:service}).then(async r=>{
+        toast('استعلام شروع شد'+(r.pid?' (pid '+r.pid+')':''));await refresh();})
+        .catch(e=>toast(e,false));
+    });
 }
 function devDelete(id){
   if(!confirm('این پرونده حذف شود؟ ردیف استعلام آن نیز حذف می‌شود و برگشت‌پذیر نیست.'))return;
@@ -5804,6 +5875,17 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in ("/crm-customer", "/crm-owner", "/crm-identity",
                            "/crm-device"):
             self._crm_entity(self.path, self._read_json())
+
+        elif self.path == "/crm-inquire":
+            data = self._read_json()
+            service = str(data.get("service") or "")
+            if service not in ESTELAM_SERVICES:
+                self._json({"ok": False,
+                            "errors": ["نوع استعلام نامعتبر است"]}, 400)
+                return
+            result = crm_start_inquiry(str(data.get("device_id") or ""),
+                                       service=service, origin="manual")
+            self._json(result, 200 if result.get("ok") else 400)
 
         elif self.path == "/crm-tick":
             data = self._read_json()
