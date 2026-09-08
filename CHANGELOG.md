@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-09-08
+
+### Added
+
+- Inquiry gate on the CRM stage machine: advancing a device past the
+  inquiry stage (`mark_ready`) now requires BOTH a healthy customs
+  result AND a good hamta result recorded in the estelam store.
+  Fail-closed: a device with missing or failed inquiries is rejected
+  with a Persian action message instead of silently advancing.
+- Per-device inquiry actions on the CRM device cards: run customs,
+  hamta, or both inquiries for a single device directly from the CRM
+  list (confirmation modal first), with last-inquiry time and result
+  shown per device.
+
+### Fixed
+
+- Stage rollback (`stage_back`) works across multiple stages and is
+  exempt from the inquiry gate.
+- Duplicate serial guard: adding a second device with the same IMEI
+  serial in one case is rejected.
+- New-device modal form hygiene: optional telegram/instagram fields,
+  mobile validated (11 digits, `09` prefix), customer picker dropdown
+  with a "new customer" option, per-field error messages, styled
+  checkboxes, and the device-notes field restored (it was dropped from
+  the modal while still being read on submit).
+
 ## [1.1.0] - 2026-09-07
 
 ### Added
