@@ -318,7 +318,9 @@ def copy_app(stage: Path) -> None:
         if not src.exists():
             log(f"  WARN missing {src_name}")
             continue
-        shutil.copy2(src, stage / dst_name)
+        dst = stage / dst_name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
 
     solver_dst = stage / "solver" / "checkpoints"
     solver_dst.mkdir(parents=True, exist_ok=True)
