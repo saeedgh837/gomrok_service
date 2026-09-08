@@ -33,11 +33,11 @@ class LaunchPageTests(unittest.TestCase):
         page = self.src[self.src.index("LAUNCH_PAGE"):]
         for marker in (
             "سرویس رجیستری",
-            "بازکردن پنل گمرک",
+            "پنل یکپارچه رجیستری",
             "پنل استعلام",
             "بستن سرویس",
             "/site-1", "/site-2", "/shutdown", "/state",
-            "dir=\"rtl\"",
+            'dir="rtl"',
         ):
             self.assertIn(marker, page)
 

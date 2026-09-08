@@ -244,9 +244,17 @@ class TestCrmEntryPoints(CrmApiHarness):
             return resp.read().decode("utf-8", "replace")
 
     def test_home_picker_links_to_crm(self):
+        import re
         body = self._get_text("/")
         self.assertIn('href="/crm"', body)
-        self.assertIn("مدیریت مشتریان و پرونده‌ها", body)
+        # CRM card is first and carries the unified-registry name
+        # (anchor the full card tag: "data-site" also appears in CSS rules)
+        self.assertIn("پنل یکپارچه رجیستری", body)
+        crm_card = re.search(r'<a class="site" data-site="crm"', body)
+        site2_card = re.search(r'<a class="site" data-site="2"', body)
+        self.assertIsNotNone(crm_card)
+        self.assertIsNotNone(site2_card)
+        self.assertLess(crm_card.start(), site2_card.start())
 
     def test_site1_page_links_to_crm(self):
         body = self._get_text("/site-1")

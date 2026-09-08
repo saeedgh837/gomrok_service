@@ -3550,9 +3550,9 @@ h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
   <div class="stat blocked"><div class="n" id="s-blocked">—</div><div class="l">مسدود</div></div>
 </section>
 <div class="sites">
-<a class="site" data-site="1" href="/site-1"><span class="num">۱</span><h2>سایت اول گمرک</h2><p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p><div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div><span class="go">←</span></a>
+<a class="site" data-site="crm" href="/crm"><span class="num">۱</span><h2>پنل یکپارچه رجیستری</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مالک، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
 <a class="site" data-site="2" href="/site-2"><span class="num">۲</span><h2>استعلام سلامت دستگاه</h2><p>استعلام وضعیت دستگاه از سایت گمرک (فقط صفحه اول) با یک پروفایل شخص و لیست دستگاه‌ها.</p><div class="tags"><span class="tag">استعلام سلامت</span><span class="tag">افزودن عمده</span><span class="tag">ترتیب تصادفی</span></div><span class="go">←</span></a>
-<a class="site" data-site="crm" href="/crm"><span class="num">۳</span><h2>مدیریت مشتریان و پرونده‌ها</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مالک، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
+<a class="site" data-site="1" href="/site-1"><span class="num">۳</span><h2>پنل قدیمی رجیستری</h2><p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p><div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div><span class="go">←</span></a>
 </div>
 <div class="foot">پنل روی <b>__PANEL_URL__</b> در حال اجراست · به‌روزرسانی خودکار هر ۵ ثانیه</div>
 </main>
@@ -3640,6 +3640,7 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   .btn:disabled{opacity:.55; cursor:wait; transform:none;}
   .b-open{background:linear-gradient(135deg,var(--brand),var(--brand2));}
   .b-estelam{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
+  .b-open2{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
   .b-stop{background:color-mix(in srgb,var(--danger) 88%,black);}
   .foot{margin-top:14px; display:flex; align-items:center; justify-content:space-between;
     font-size:11px; color:var(--muted); direction:ltr;}
@@ -3660,10 +3661,12 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
     <div class="stat"><b id="s-success">—</b><span>موفق</span></div>
     <div class="stat"><b id="s-blocked">—</b><span>مسدود</span></div>
   </div>
-  <button class="btn b-open" id="btn-open" onclick="location.href='/site-1'">
-    🏦 بازکردن پنل گمرک</button>
+  <button class="btn b-open" id="btn-crm" onclick="location.href='/crm'">
+    🗂️ پنل یکپارچه رجیستری</button>
   <button class="btn b-estelam" id="btn-estelam" onclick="location.href='/site-2'">
     🔍 پنل استعلام‌ها</button>
+  <button class="btn b-open2" id="btn-open" onclick="location.href='/site-1'">
+    🏦 پنل قدیمی رجیستری</button>
   <button class="btn b-stop" id="btn-stop">⏻ بستن سرویس</button>
   <div class="off-msg" id="off-msg">سرویس خاموش شد.<br>این صفحه را ببندید؛ برای اجرای دوباره، میان‌بر دسکتاپ را اجرا کنید.</div>
   <div class="foot">
@@ -4913,7 +4916,10 @@ function kpisHtml(){
 function devicesHtml(){
   var ds=(STATE.devices||[]).slice().sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
-  if(!ds.length) return emptyHtml('پرونده‌ای ثبت نشده','اولین پرونده را با «+ پروندهٔ جدید» بسازید: سریال دستگاه، مشتری و در ادامه مالک.');
+  if(!ds.length) return '<div class="row" style="margin-bottom:12px">'
+    +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
+    +'<span class="muted">اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مالک.</span></div>'
+    +emptyHtml('پرونده‌ای ثبت نشده','هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
   var cards=ds.map(function(d){
     var est=d.estelam||{};
     var acts=stageActions(d).map(a=>a[0]?
