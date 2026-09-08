@@ -502,7 +502,14 @@ def package(stage: Path, dist: Path, version: str) -> Path:
     """
     strip_caches(stage)
     archive = dist / f"{stage.name}.zip"
-    archive.unlink(missing_ok=True)
+    # A stale explorer/AV handle on a previous zip must not kill a build:
+    # rebuild to a fresh name first, then swap atomically when the old
+    # handle releases (fall back to keeping the fresh name).
+    try:
+        archive.unlink(missing_ok=True)
+    except PermissionError:
+        archive = dist / f"{stage.name}.new.zip"
+        archive.unlink(missing_ok=True)
     files = sorted(p for p in stage.rglob("*"))
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for path in files:
