@@ -271,6 +271,24 @@ class CrmInquireRouteTests(unittest.TestCase):
             page = response.read().decode("utf-8")
         self.assertIn("/site-2", page)          # CRM -> inquiry panel link
         self.assertIn("devInquire", page)       # per-device inquiry buttons
+        self.assertIn("crmStopRun", page)       # per-device stop-robot button
+
+    def test_crm_stop_route_calls_estelam_stop(self):
+        with patch.object(panel, "estelam_stop",
+                          return_value={"ok": True, "stopped": True}) as stop:
+            status, body = self._post("/crm-stop", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        stop.assert_called_once()
+
+    def test_crm_state_carries_estelam_running_flag(self):
+        with patch.object(panel, "estelam_is_running", return_value=True):
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.port}/crm-state",
+                    timeout=10) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        self.assertIn("estelam_running", body)
+        self.assertTrue(body["estelam_running"])
 
 
 class CrmStatePayloadTests(_StoreHarness):

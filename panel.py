@@ -1381,6 +1381,7 @@ def crm_state_payload():
         enriched.append(row)
     out = dict(data)
     out["devices"] = enriched
+    out["estelam_running"] = estelam_is_running()
     return out
 
 
@@ -4938,7 +4939,8 @@ var ICONS = {
   id:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.5 16c.6-1.6 1.7-2.3 3-2.3s2.4.7 3 2.3M14.5 9.5H19M14.5 13H19"/></svg>',
   dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
   search:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
-  swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>'
+  swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
+  stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>'
 };
 function stageActions(d){
   var a=[];
@@ -5022,7 +5024,12 @@ function kpisHtml(){
 function devicesHtml(){
   var ds=(STATE.devices||[]).slice().sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
-  if(!ds.length) return '<div class="row" style="margin-bottom:12px">'
+  var runningBanner=(STATE.estelam_running)
+    ?'<div class="row" style="margin:0 0 12px;align-items:center">'
+      +'<span class="pill warn">ربات استعلام در حال اجراست</span>'
+      +'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button></div>'
+    :'';
+  if(!ds.length) return runningBanner+'<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مالک.</span></div>'
     +emptyHtml('پرونده‌ای ثبت نشده','هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
@@ -5047,6 +5054,7 @@ function devicesHtml(){
       +'<div class="acts">'
       +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
       +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>'
+      +(STATE.estelam_running?'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button>':'')
       +(acts?'':'<span class="muted">—</span>')
       +(acts?'<span style="flex:1"></span>'+acts:'')
       +' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></div>'
@@ -5211,6 +5219,14 @@ function devInquire(id, service){
     'اجرا',function(){
       api('/crm-inquire',{device_id:id,service:service}).then(async r=>{
         toast('استعلام شروع شد'+(r.pid?' (pid '+r.pid+')':''));await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function crmStopRun(){
+  confirmDlg('توقف ربات استعلام','ربات استعلام متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و ردیف‌های در جریان به «در صف» برمی‌گردند.',
+    'توقف',function(){
+      api('/crm-stop',{}).then(async r=>{
+        toast(r.stopped?'استعلام متوقف و مرورگر بسته شد':'اجرای فعالی برای توقف نبود');await refresh();})
         .catch(e=>toast(e,false));
     });
 }
@@ -5886,6 +5902,9 @@ class Handler(BaseHTTPRequestHandler):
             result = crm_start_inquiry(str(data.get("device_id") or ""),
                                        service=service, origin="manual")
             self._json(result, 200 if result.get("ok") else 400)
+
+        elif self.path == "/crm-stop":
+            self._json(estelam_stop())
 
         elif self.path == "/crm-tick":
             data = self._read_json()
