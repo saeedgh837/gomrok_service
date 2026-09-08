@@ -73,6 +73,7 @@ solver/checkpoints/*.onnx
 # ---- lab (khoruji-haye tasviri-ye test) ----
 lab/final/
 lab/*.png
+lab/shots/
 lab/data/
 lab/research/
 # fixture-haye hamrah-e daade-ye shakhsi-ye vaghei (NAT/IMEI/mobile) — hargez commit nashavand
