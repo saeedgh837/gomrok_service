@@ -4635,6 +4635,16 @@ CRM_PAGE = r"""<!DOCTYPE html>
 <title>مدیریت مشتریان و پرونده‌ها (CRM)</title>
 <link rel="icon" href="data:,">
 <style>
+  /* Bundled Vazirmatn — offline, no external fetch (frontend-design skill:
+     typography carries the identity; here a Persian-first humanist face). */
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+    font-weight:100 900;font-style:normal;font-display:swap;
+  }
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
 
   :root{
     --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
@@ -4681,8 +4691,13 @@ CRM_PAGE = r"""<!DOCTYPE html>
   :is(a,button,input,select,textarea,summary):focus-visible{outline:none;box-shadow:var(--ring)}
   /* header */
   .head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
-  .head h1{font-size:20px;font-weight:650;margin:0;flex:1;letter-spacing:-.2px}
-  .head .sub{font-size:12px;color:var(--muted);margin-top:2px;font-weight:400}
+  .head h1{font-size:20px;font-weight:750;margin:0;flex:1;letter-spacing:-.3px;
+    display:flex;align-items:center;gap:11px}
+  .head h1 .mono{width:38px;height:38px;border-radius:11px;flex:none;
+    background:var(--brand);color:var(--on-brand);display:grid;place-items:center;
+    font-size:16px;font-weight:800;letter-spacing:0}
+  .head h1 .sub{font-size:12px;color:var(--muted);margin-top:2px;font-weight:400;
+    letter-spacing:0}
   .iconbtn{border:1px solid var(--line);background:var(--card);color:var(--txt);
     border-radius:9px;padding:7px 12px;cursor:pointer;font-family:inherit;font-size:13px}
   .iconbtn:hover{border-color:var(--line-strong);background:var(--card2)}
@@ -4699,13 +4714,22 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.ghost:hover{background:var(--brand-soft);border-color:transparent}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  /* KPI strip */
-  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
-  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
-    box-shadow:var(--shadow-1);cursor:pointer;text-align:right;transition:border-color .15s}
-  .kpi:hover{border-color:var(--line-strong)}
-  .kpi .n{font-size:24px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
-  .kpi .l{font-size:12px;color:var(--muted)}
+  /* KPI — "دفتر ثبت" ledger strip: one surface, hairline dividers, not 4
+     clone cards (frontend-design: structure carries the information). */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);background:var(--card);
+    border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-1);
+    margin-bottom:16px;overflow:hidden}
+  .kpi{position:relative;background:transparent;border:none;border-inline-start:1px solid var(--line);
+    padding:14px 18px;cursor:pointer;text-align:right;font-family:inherit;transition:background .15s}
+  .kpi:first-child{border-inline-start:none}
+  .kpi:hover{background:var(--brand-soft)}
+  .kpi:focus-visible{box-shadow:inset var(--ring)}
+  .kpi::after{content:'';position:absolute;inset-inline:0;bottom:0;height:2px;
+    background:transparent;transition:background .15s}
+  .kpi:hover::after{background:var(--brand)}
+  .kpi .n{display:block;font-size:27px;font-weight:800;line-height:1.25;
+    font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+  .kpi .l{font-size:12px;color:var(--muted);font-weight:500}
   .kpi.attention .n{color:var(--warn)}
   .kpi.k-problem .n{color:var(--danger)}
   .kpi.k-ok .n{color:var(--ok)}
@@ -4737,20 +4761,35 @@ CRM_PAGE = r"""<!DOCTYPE html>
     border-radius:7px;padding:2px 9px;font-size:11.5px}
   /* device cards */
   .devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
-  .dev{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px;
-    box-shadow:var(--shadow-1);display:flex;flex-direction:column;gap:10px}
-  .dev.needs-action{border-color:var(--warn)}
+  .dev{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px 12px;
+    box-shadow:var(--shadow-1);display:flex;flex-direction:column;gap:10px;
+    border-inline-start:3px solid transparent}
+  .dev.needs-action{border-inline-start-color:var(--warn)}
   .dev .devhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-  .dev .devhead b{font-size:15px}
-  .dev .ser{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--faint);direction:ltr;unicode-bidi:embed}
+  .dev .devhead b{font-size:15px;letter-spacing:-.2px}
+  .dev .devhead .ic{color:var(--faint);align-self:center;flex:none}
+  .dev .ser{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--faint);direction:ltr;unicode-bidi:embed;
+    letter-spacing:.4px}
   .dev .meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-  /* 9-step stage rail */
-  .rail{display:flex;gap:3px;align-items:center;margin:2px 0}
-  .rail .step{flex:1;height:5px;border-radius:3px;background:var(--pill-neutral-bg);position:relative}
+  /* 9-step stage rail — the page's signature: numbered nodes, current node
+     enlarged (frontend-design: one bold element, not decoration). */
+  .rail{display:flex;gap:0;align-items:center;margin:4px 0 2px}
+  .rail .step{flex:1;height:4px;border-radius:2px;background:var(--pill-neutral-bg);position:relative}
+  .rail .step::before{counter-increment:stage;content:counter(stage);
+    position:absolute;top:-13px;inset-inline-start:calc(100% - 7px);
+    width:14px;height:14px;border-radius:50%;background:var(--pill-neutral-bg);
+    color:var(--faint);font-size:8.5px;font-weight:700;display:grid;place-items:center;
+    font-variant-numeric:tabular-nums}
+  .rail{counter-reset:stage}
   .rail .step.done{background:var(--ok)}
+  .rail .step.done::before{background:var(--ok-soft);color:var(--ok)}
   .rail .step.cur{background:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .rail .step.cur::before{background:var(--brand);color:var(--on-brand);
+    width:17px;height:17px;top:-15px;font-size:9.5px}
   .rail .step.bad{background:var(--danger)}
+  .rail .step.bad::before{background:var(--danger-soft);color:var(--danger)}
   .rail .step.warn{background:var(--warn)}
+  .rail .step.warn::before{background:var(--warn-soft);color:var(--warn)}
   .stagebar{display:flex;justify-content:space-between;align-items:center;gap:8px}
   .stagebar .st{font-size:12.5px;font-weight:600}
   .dev .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:2px}
@@ -4759,9 +4798,12 @@ CRM_PAGE = r"""<!DOCTYPE html>
   /* forms & dialog */
   input,select,textarea{font-family:inherit;font-size:13.5px;border:1px solid var(--line-strong);
     border-radius:9px;padding:8px 11px;background:var(--card);color:var(--txt);min-height:34px}
+  select{cursor:pointer}
   input:disabled,select:disabled{background:var(--card2);color:var(--muted)}
   label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:500}
   label.f input,label.f select,label.f textarea{color:var(--txt)}
+  label.f .ferr{color:var(--danger);font-size:11.5px;min-height:0}
+  input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
   dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--txt);
     padding:20px;width:min(600px,94vw);box-shadow:var(--shadow-2)}
@@ -4786,14 +4828,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
   /* log console */
   #logBox{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;
     background:var(--card2);padding:10px;font-size:11.5px;display:flex;flex-direction:column;gap:3px}
-  @media (max-width:640px){.devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:640px){.devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(3){border-inline-start:none}}
 
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="head">
-    <h1>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مالک ← تحویل ← پرداخت ← کد فعال‌سازی</div></h1>
+    <h1><span class="mono">R</span><span>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مالک ← تحویل ← پرداخت ← کد فعال‌سازی</div></span></h1>
     <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
     <button class="iconbtn" id="themeBtn">پوسته</button>
   </div>
@@ -4864,6 +4906,12 @@ function bal(id){var c=findCustomer(id);if(!c)return 0;return (c.transactions||[
 function v(id){return document.getElementById(id).value.trim();}
 
 /* ================= stage actions (server contract) ================= */
+/* ================= inline SVG icons (no emoji per ux-guidelines) ================= */
+var ICONS = {
+  user:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>',
+  id:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.5 16c.6-1.6 1.7-2.3 3-2.3s2.4.7 3 2.3M14.5 9.5H19M14.5 13H19"/></svg>',
+  dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>'
+};
 function stageActions(d){
   var a=[];
   var st=d.stage;
@@ -4925,14 +4973,14 @@ function devicesHtml(){
     var acts=stageActions(d).map(a=>a[0]?
       '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':'ghost'))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
     return '<div class="dev'+(needsAction(d)?' needs-action':'')+'">'
-      +'<div class="devhead"><b>'+esc(d.name)+'</b>'
+      +'<div class="devhead">'+ICONS.dev+'<b>'+esc(d.name)+'</b>'
       +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
       +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')+'</div>'
       +'<div class="ser">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div>'
       +railHtml(d)
       +'<div class="meta">'
-      +'<span class="chip">👤 '+esc(custName(d.customer_id))+'</span>'
-      +'<span class="chip">🪪 '+esc(ownerName(d.owner_id))+'</span>'
+      +ICONS.user+'<span class="chip">'+esc(custName(d.customer_id))+'</span>'
+      +ICONS.id+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
       +'<span class="pill '+(EST_PILL[est.status]||'n')+'">استعلام: '+(EST_FA[est.status]||esc(est.status||'—'))+'</span>'
       +(est.hamta_status?'<span class="pill n">همتا: '+esc(est.hamta_status)+'</span>':'')
       +'</div>'
@@ -5028,6 +5076,23 @@ function reportsHtml(){
 }
 
 /* ================= dialogs ================= */
+function showFieldErrors(errText){
+  /* ux-guidelines (Forms/Error Placement): identify each invalid field under
+     the input, not only a top-level blob; server sends "field: message" lines
+     where it can (English field names from crm.py validation). */
+  var box=document.querySelector('.err:not([hidden])');
+  if(!box)return;
+  box.textContent=errText;
+  var lines=String(errText).split('\n');
+  lines.forEach(function(line){
+    var m=line.match(/^\s*([a-z_]+)\s*[:：]\s*(.+)$/i);
+    if(!m)return;
+    var input=document.querySelector('#dlgBody [id], #dlgBody input, #dlgBody select');
+    var el=null;
+    try{el=document.getElementById('dlgBody').querySelector('[id^="'+m[1].slice(0,4)+'"], [id$="'+m[1].slice(-4)+'"]');}catch(e){}
+    if(el){el.setAttribute('aria-invalid','true');}
+  });
+}
 function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
@@ -5054,7 +5119,7 @@ function doAddDevice(){
   if(custSel){payload.customer_id=custSel;}
   else payload.customer={full_name:v('dvCn'),mobile:v('dvCm'),address:v('dvCa')};
   api('/crm-device',payload).then(async()=>{closeDlg();toast('پرونده ثبت شد');await refresh();})
-    .catch(e=>{document.getElementById('dvErr').textContent=e;});
+    .catch(e=>{showFieldErrors(String(e));});
 }
 function dlgAttach(id){
   var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
@@ -5101,7 +5166,7 @@ function doSaveCustomer(id){
     telegram_id:v('cTg'),instagram_id:v('cIg'),address:v('cAddr'),notes:v('cNotes')};
   if(id)payload.id=id;
   api('/crm-customer',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
-    .catch(e=>{document.getElementById('cErr').textContent=e;});
+    .catch(e=>{document.getElementById('cErr').textContent=e;showFieldErrors(String(e));});
 }
 function custDelete(id){
   var hasDevices=(STATE.devices||[]).some(d=>d.customer_id===id);
@@ -5120,7 +5185,7 @@ function dlgTx(cid){
 function doTx(cid){
   api('/crm-customer',{action:'tx',id:cid,amount:v('txAmt'),note:v('txNote')})
     .then(async()=>{closeDlg();toast('ثبت شد');await refresh();})
-    .catch(e=>{document.getElementById('txErr').textContent=e;});
+    .catch(e=>{document.getElementById('txErr').textContent=e;showFieldErrors(String(e));});
 }
 function dlgOwner(mode,id){
   var o = id?findOwner(id):{};
@@ -5139,7 +5204,7 @@ function doSaveOwner(id){
     national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),card_no:v('oCard')};
   if(id)payload.id=id;
   api('/crm-owner',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
-    .catch(e=>{document.getElementById('oErr').textContent=e;});
+    .catch(e=>{document.getElementById('oErr').textContent=e;showFieldErrors(String(e));});
 }
 function ownerDelete(id){
   if(!confirm('این مالک حذف شود؟'))return;
@@ -5160,7 +5225,7 @@ function doSaveIdent(id){
     birth:v('iBirth'),mobile:v('iMob')};
   if(id)payload.id=id;
   api('/crm-identity',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
-    .catch(e=>{document.getElementById('iErr').textContent=e;});
+    .catch(e=>{document.getElementById('iErr').textContent=e;showFieldErrors(String(e));});
 }
 function identDelete(id){
   if(!confirm('مشخصات از استخر حذف شود؟'))return;
@@ -5431,6 +5496,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_home_page())
         elif route == "/launch":
             self._send(200, render_launch_page())
+        elif route in ("/fonts/Vazirmatn-var.woff2",
+                       "/fonts/Vazirmatn-Bold.woff2"):
+            path = os.path.join(HERE, route.lstrip("/").replace("/", os.sep))
+            try:
+                with open(path, "rb") as fh:
+                    self._send(200, fh.read(), "font/woff2")
+            except OSError:
+                self._send(404, b"not found", "text/plain")
         elif route == "/favicon.ico":
             svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
                    "<rect width='32' height='32' rx='7' fill='%236d8bff'/>"

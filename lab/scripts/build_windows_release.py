@@ -84,6 +84,9 @@ APP_FILES = [
     "panel_gui.pyw",
     "panel_tray.pyw",
     "dashboard-new.html",
+    # Bundled Vazirmatn webfont — CRM panel renders offline (no Google Fonts).
+    "fonts/Vazirmatn-var.woff2 -> fonts/Vazirmatn-var.woff2",
+    "fonts/Vazirmatn-Bold.woff2 -> fonts/Vazirmatn-Bold.woff2",
     # The [Icons] entries in irica.iss reference {app}\irica.ico; the
     # installer build copies it into dist/ but the STAGE must ship it too.
     "lab/scripts/irica.ico -> irica.ico",
