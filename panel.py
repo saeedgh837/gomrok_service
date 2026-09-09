@@ -4998,7 +4998,6 @@ document.getElementById('themeBtn').onclick=function(){
   document.documentElement.setAttribute('data-theme',next);
   localStorage.setItem('irica-theme',next);
 };
-renderQuickBox();
 
 /* ================= lookups ================= */
 function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)||null;}
@@ -5167,6 +5166,7 @@ function devicesHtml(){
   var cards=ds.map(function(d){
     var est=d.estelam||{};
     var pay=d.pay||{};
+    var st=d.stage;
     var cont=stageContinue(d);
     var acts=stageActions(d).map(a=>a[0]?
       '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
@@ -5855,6 +5855,7 @@ async function refresh(){
   if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
 renderTabs();
+renderQuickBox();
 refresh();
 setInterval(refresh, 5000);
 </script>
