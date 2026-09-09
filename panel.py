@@ -5002,10 +5002,13 @@ CRM_PAGE = r"""<!DOCTYPE html>
 /* ================= state ================= */
 var STATE = null, TAB = (new URLSearchParams(location.search).get('tab')||'devices'), LOGS = [], LOADFAIL = false;
 var STAGE_ORDER = ['new','inquiry','problem','ready_owner','handed','to_payment','payment','payment_done','done'];
+// Numbered rail steps (8) — 'problem' is a parking state, not a step;
+// a problem device shows step 2 (its inquiry) as failed/red.
+var RAIL_STEPS = ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done','done'];;
 var STAGE_FA = {
-  'new':'جدید','inquiry':'در انتظار استعلام','problem':'دارای اشکال',
-  'ready_owner':'سالم — نیازمند مسافر','handed':'تحویل به مسئول سایت',
-  'to_payment':'ثبت‌شده — در انتظار پرداخت','payment':'در حال پرداخت',
+  'new':'ثبت پرونده','inquiry':'استعلام ثبت‌نبودن','problem':'دارای اشکال',
+  'ready_owner':'اتصال مسافر','handed':'تحویل به مسئول ثبت',
+  'to_payment':'استعلام ثبت‌بودن — پرداخت','payment':'در حال پرداخت',
   'payment_done':'پرداخت تأییدشده','done':'تکمیل‌شده'
 };
 var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
@@ -5091,7 +5094,7 @@ var ICONS = {
 };
 var INTAKE_STAGES = ['new','inquiry','problem','ready_owner'];
 var STAGE_CONTINUE_FA = {
-  'new':'ارسال به صف استعلام','inquiry':'ثبت نتیجهٔ سالم','ready_owner':'تحویل به مسئول سایت',
+  'new':'ارسال به استعلام ثبت‌نبودن','inquiry':'ثبت نتیجهٔ ثبت‌نبودن','ready_owner':'تحویل به مسئول ثبت',
   'handed':'رفتن به انتظار پرداخت','to_payment':'شروع ربات پرداخت','payment':'تأیید پرداخت',
   'payment_done':'تحویل کد و تکمیل'};
 var STAGE_READY = {
@@ -5105,14 +5108,14 @@ var STAGE_READY = {
   'payment_done':true,
   'done':false};
 var STAGE_NEEDS = {
-  'inquiry':()=>['green','green'],
+  'inquiry':()=>['ثبت‌نبودن در گمرک','ثبت‌نبودن در همتا'],
   'ready_owner':()=>['مسافر',''],
-  'handed':()=>['green','ثبت‌شده در گمرک']};
+  'handed':()=>['ثبت‌بودن در گمرک','']};
 var STAGE_SKIP_WARN = {
   'new':'استعلام ورودی اجرا نمی‌شود و پرونده مستقیم به صف استعلام می‌رود.',
-  'inquiry':'نتایج استعلام گمرک و همتا نادیده گرفته می‌شوند و پرونده مستقیم «سالم» فرض می‌شود.',
+  'inquiry':'نتایج استعلام ثبت‌نبودن نادیده گرفته می‌شوند و پرونده مستقیم «خام» فرض می‌شود.',
   'ready_owner':'نیاز به مسافر نادیده گرفته می‌شود؛ بدون مسافر، استعلام‌های نظارتی اجرا نمی‌شوند.',
-  'handed':'استعلام ثبت‌شدن دستگاه با اطلاعات مسافر نادیده گرفته می‌شود و پرونده مستقیم به «ثبت‌شده — در انتظار پرداخت» می‌رود.',
+  'handed':'استعلام ثبت‌بودن دستگاه در گمرک نادیده گرفته می‌شود و پرونده مستقیم به گام پرداخت می‌رود.',
   'to_payment':'ربات پرداخت خودکار اجرا نمی‌شود؛ لینک پرداخت گرفته نمی‌شود.',
   'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.',
   'payment_done':'تحویل کد بدون ثبت ثبت‌نام نهایی انجام می‌شود و پرونده تکمیل‌شده علامت می‌خورد.'};
@@ -5147,8 +5150,8 @@ function stageActions(d){
   return a;
 }
 var STAGE_BACK_FA = {
-  'inquiry':'جدید','ready_owner':'در انتظار استعلام','handed':'سالم — نیازمند مسافر',
-  'to_payment':'تحویل به مسئول سایت','payment':'ثبت‌شده — در انتظار پرداخت',
+  'inquiry':'ثبت پرونده','ready_owner':'استعلام ثبت‌نبودن','handed':'اتصال مسافر',
+  'to_payment':'تحویل به مسئول ثبت','payment':'استعلام ثبت‌بودن — پرداخت',
   'payment_done':'در حال پرداخت'
 };
 function devTick(id, action){
@@ -5193,16 +5196,16 @@ function needsAction(d){
   return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
 }
 var STAGE_GUIDE = {
-  'new': {n:1, name:'ثبت پرونده', desc:'سریال دستگاه ثبت و به مشتری وصل می‌شود. این مرحله فقط ورود اطلاعات است؛ هنوز هیچ استعلامی اجرا نشده.'},
-  'inquiry': {n:2, name:'صف استعلام', desc:'پرونده در صف استعلام گمرک و همتا است. ربات با هویت استخر، وضعیت دستگاه را از هر دو سایت می‌پرسد. سبز شد یعنی هر دو پاسخ سالم دادند.'},
-  'problem': {n:3, name:'دارای اشکال', desc:'سایت گمرک یا همتا برای این دستگاه مشکلی اعلام کرده (مثلاً قبلاً ثبت‌شده یا بلاک). برای ادامه باید مشکل حل شود یا با «بازگشت به صف» دوباره استعلام بگیرد.'},
-  'ready_owner': {n:4, name:'سالم — نیازمند مسافر', desc:'دستگاه سالم است؛ برای ثبت‌نام رجیستری به اطلاعات مسافر (نام، کد ملی، تاریخ تولد) نیاز دارد. مسافر را از دکمهٔ «اتصال مسافر» وصل کنید.'},
-  'handed': {n:5, name:'تحویل به مسئول سایت', desc:'پرونده به مسئول ثبت‌کنندهٔ سایت تحویل شده و در لیست استعلام دوره‌ای گمرک قرار می‌گیرد تا وضعیتش مرتب چک شود.'},
-  'to_payment': {n:6, name:'ثبت‌شده — در انتظار پرداخت', desc:'دستگاه در سایت گمرک ثبت شده است. حالا باید هزینهٔ رجیستری پرداخت شود؛ ربات پرداخت می‌تواند لینک را خودش بگیرد.'},
-  'payment': {n:7, name:'در حال پرداخت', desc:'ربات پرداخت روی درگاه است. رسید و اسکرین‌شات همین‌جا در کارت پرونده می‌آید؛ بعد از تأیید، مرحلهٔ بعد می‌رود.'},
-  'payment_done': {n:8, name:'پرداخت تأییدشده', desc:'پرداخت تأیید شد. فقط تحویل کد رجیستری به مشتری مانده است.'},
-  'done': {n:9, name:'تکمیل‌شده', desc:'چرخهٔ پرونده کامل شد: ثبت‌نام، پرداخت و تحویل انجام شده. استعلام دوره‌ای برای اطمینان ادامه دارد.'}
+  'new': {n:1, name:'ثبت اطلاعات پرونده دستگاه', desc:'سریال دستگاه ثبت و پرونده به مشتری وصل می‌شود. این گام فقط ورود اطلاعات است؛ هنوز هیچ استعلامی اجرا نشده است.'},
+  'inquiry': {n:2, name:'استعلام ثبت‌نبودن دستگاه در همتا و گمرک', desc:'در این مرحله از سامانه‌های همتا و رجیستری گمرک باید استعلام بگیریم که دستگاه خام باشد و قبلاً در این سامانه‌ها ثبت نشده باشد. هر پیامی مبنی بر سابقهٔ ثبت‌بودن دستگاه مساوی است با خطا و نباید باقی مراحل برای این دستگاه پیش برود. پس پیام «ثبت‌نبودن در گمرک» پیام مثبت (سبز) این گام است و پیام «ثبت‌بودن دستگاه» پیام خطر قرمز و عدم امکان ادامه به گام بعد است.'},
+  'ready_owner': {n:3, name:'اتصال مسافر به دستگاه', desc:'دستگاه خام تأیید شد؛ حالا پرونده به اطلاعات مسافر (نام، کد ملی، تاریخ تولد) نیاز دارد. مسافر را با دکمهٔ «اتصال مسافر» به دستگاه وصل کنید.'},
+  'handed': {n:4, name:'تحویل پرونده به مسئول ثبت', desc:'پرونده به مسئول ثبت‌کنندهٔ سایت تحویل شده و در لیست استعلام دوره‌ای گمرک قرار می‌گیرد تا ثبت‌شدن دستگاه در سامانهٔ گمرک مرتب چک شود.'},
+  'to_payment': {n:5, name:'استعلام ثبت‌بودن دستگاه در گمرک', desc:'در این گام دستگاه باید در سامانهٔ گمرک استعلام گرفته شود. اگر دستگاه ثبت شده باشد این گام تأیید است و می‌توان به گام بعد رفت؛ اگر ثبت نشده باشد گام هنوز تکمیل نشده است. این گام به استعلام دوره‌ای نیاز دارد؛ پیام موفق پرونده‌هایی که به استعلام دوره‌ای فرستاده می‌شوند «ثبت‌بودن دستگاه» است و با آن امکان رفتن به گام بعد باز می‌شود.'},
+  'payment': {n:6, name:'رسیدن به مرحلهٔ پرداخت', desc:'پرونده با مشخصات مسافری که به آن وصل شده برای دریافت لینک پرداخت با ربات گمرک می‌رود. در صورت دریافت لینک پرداخت، اسکرین‌شات‌های موردنیاز و فایل لینک پرداخت برای این دستگاه در پنل CRM قابل مشاهده و استفاده است و برای گام بعد آزاد می‌شود.'},
+  'payment_done': {n:7, name:'تأیید دستی انجام‌شدن پرداخت', desc:'پرداخت پرونده به‌صورت دستی بررسی و تأیید می‌شود. رسید و اسکرین‌شات‌ها در کارت پرونده قابل مشاهده است.'},
+  'done': {n:8, name:'تأیید تحویل کد فعال‌سازی', desc:'تحویل کد فعال‌سازی به مشتری تأیید می‌شود و پرونده تکمیل می‌شود. استعلام دوره‌ای برای اطمینان ادامه دارد.'}
 };
+var STAGE_GUIDE_PROBLEM = 'این دستگاه در گام ۲ (استعلام ثبت‌نبودن) دارای اشکال شد — معمولاً به این معناست که دستگاه قبلاً در یکی از سامانه‌ها ثبت بوده یا سایت پاسخ رد داده است. با «بازگشت به صف» دوباره استعلام بگیرد یا پرونده بسته شود.';
 function stageGuideModal(stage){
   var g=STAGE_GUIDE[stage];
   if(!g)return;
@@ -5211,14 +5214,18 @@ function stageGuideModal(stage){
     +'<div class="row" style="margin-top:10px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
 }
 function railHtml(d){
+  // 8 numbered steps; 'problem' is a parking state shown as a RED step-2 dot.
+  var failed = d.stage==='problem';
   var cur = STAGE_ORDER.indexOf(d.stage);
-  var steps = STAGE_ORDER.map(function(st,i){
+  var steps = RAIL_STEPS.map(function(st){
+    var i = STAGE_ORDER.indexOf(st);
     var cls='step';
-    if(d.stage==='problem' && st==='problem') cls+=' bad';
+    if(failed && st==='inquiry') cls+=' bad';
     else if(i<cur) cls+=' done';
-    else if(i===cur) cls+= (st==='problem'?' bad':(STAGE_TONE[st]==='ok'?' done':' cur'));
+    else if(i===cur) cls+= (STAGE_TONE[st]==='ok'?' done':' cur');
     var g=STAGE_GUIDE[st]||{};
-    var label='گام '+(g.n||(i+1))+' — '+(STAGE_FA[st]||st);
+    var label='گام '+(g.n||'')+' — '+(STAGE_FA[st]||st);
+    if(failed && st==='inquiry') label+=' — این دستگاه در همین گام دارای اشکال شد';
     return '<button type="button" class="'+cls+'" title="'+esc(label)+'" '
       +'onclick="stageGuideModal(\''+st+'\')" '
       +'aria-label="'+esc(label)+'"></button>';
@@ -5296,7 +5303,8 @@ function devicesHtml(){
       +'<div class="meta">'
       +ICONS.user+'<span class="chip">'+esc(custName(d.customer_id))+'</span>'
       +ICONS.id+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
-      +'<span class="pill '+(EST_PILL[est.status]||'n')+'">استعلام: '+(EST_FA[est.status]||esc(est.status||'—'))+'</span>'
+      +'<span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">استعلام: '
+      +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
       +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')
       +'</div>'
       +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')

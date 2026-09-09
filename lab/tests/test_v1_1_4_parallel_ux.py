@@ -155,5 +155,41 @@ class IdentityHandoffTests(unittest.TestCase):
         self.assertIn("stored_person", src)
 
 
+class StageModelTests(unittest.TestCase):
+    """v1.1.5 stage model: 8 numbered steps, problem = parking state."""
+
+    def setUp(self):
+        self.page = panel.CRM_PAGE
+
+    def test_rail_steps_has_eight_numbered_steps(self):
+        self.assertIn("var RAIL_STEPS = ['new','inquiry','ready_owner','handed',"
+                      "'to_payment','payment','payment_done','done']", self.page)
+
+    def test_problem_not_numbered_in_rail(self):
+        self.assertNotIn("'problem' ] ", self.page)
+        self.assertIn("failed && st==='inquiry'", self.page)
+
+    def test_guide_renamed_step2_and_renumbered(self):
+        self.assertIn('استعلام ثبت‌نبودن دستگاه در همتا و گمرک', self.page)
+        self.assertIn('اتصال مسافر به دستگاه', self.page)
+        self.assertIn('استعلام ثبت‌بودن دستگاه در گمرک', self.page)
+        self.assertIn('تأیید تحویل کد فعال‌سازی', self.page)
+        # step 2 must state the red-danger rule explicitly
+        self.assertIn('پیام خطر قرمز', self.page)
+
+    def test_stage_fa_labels_updated(self):
+        self.assertIn("'inquiry':'استعلام ثبت‌نبودن'", self.page)
+        self.assertIn("'ready_owner':'اتصال مسافر'", self.page)
+        self.assertIn("'handed':'تحویل به مسئول ثبت'", self.page)
+
+    def test_crm_gate_flags_advanced_as_danger(self):
+        with open(os.path.join(ROOT, 'crm.py'), encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('دستگاه قبلاً در سامانهٔ گمرک ثبت شده است', src)
+
+    def test_card_pill_stage_aware(self):
+        self.assertIn("d.stage==='inquiry'&&est.status==='advanced'", self.page)
+
+
 if __name__ == "__main__":
     unittest.main()

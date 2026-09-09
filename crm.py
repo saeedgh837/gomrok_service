@@ -897,6 +897,10 @@ def _inquiry_gate_errors(device):
     if gomrok not in _GOMROK_PASS:
         if gomrok in ("", "pending", "running"):
             errors.append("استعلام گمرک هنوز انجام نشده یا در جریان است")
+        elif gomrok == "advanced":
+            # ثبت‌بودن در گمرک در گام استعلام ثبت‌نبودن = خطر قرمز؛ توقف
+            errors.append("خطر: دستگاه قبلاً در سامانهٔ گمرک ثبت شده است — "
+                          "ادامهٔ مراحل برای این دستگاه مجاز نیست")
         else:
             errors.append("استعلام گمرک مشکل دارد — دستگاه مجاز نیست")
     if hamta not in _HAMTA_PASS:
