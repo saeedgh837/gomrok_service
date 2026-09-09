@@ -6118,9 +6118,23 @@ class Handler(BaseHTTPRequestHandler):
                 if image_error:
                     record, errors = None, [image_error]
                 else:
+                    kind = str(data.get("kind") or "").strip()
+                    try:
+                        tx_amount = int(crm_mod.normalize_digits(
+                            data.get("amount")))
+                    except (TypeError, ValueError):
+                        return self._json(
+                            {"ok": False,
+                             "errors": ["مبلغ باید عدد باشد"]}, 400)
+                    # «ثبت دریافتی» books positive, «ثبت بدهی جدید» books
+                    # negative — the operator enters a magnitude only.
+                    if kind == "debt" and tx_amount > 0:
+                        tx_amount = -tx_amount
+                    elif kind == "receipt" and tx_amount < 0:
+                        tx_amount = -tx_amount
                     record, errors = crm_mod.add_transaction(
-                        record_id, data.get("amount"), data.get("note") or "",
-                        kind=data.get("kind") or "", image=image_name)
+                        record_id, tx_amount, data.get("note") or "",
+                        kind=kind, image=image_name)
             elif action == "delete":
                 ok, errors = crm_mod.delete_customer(record_id, force=bool(data.get("force")))
                 record = {"ok": ok} if ok else None
