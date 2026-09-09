@@ -3,7 +3,19 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
-## [1.1.4] - 2026-09-09
+## [1.1.4] - 2026-09-09 (assets refreshed 2026-09-10)
+
+### Fixed (asset refresh)
+
+- Blank CRM body regression: a missing comma in the page's ICONS object literal
+  (introduced with the transaction-detail icon) was a JS syntax error that killed
+  the whole CRM page script, leaving only the server-rendered header. Fixed, and
+  a permanent regression gate now runs `node --check` over every `<script>` block
+  of every served page in the test suite.
+- Stage model reworked into the operator's 8-step rail (problem state unnumbered,
+  step-2 "not registered" = pass / "registered" = red danger, step-5 periodic
+  customs re-inquiry with registered = pass). Published zip/exe/SHA256SUMS assets
+  were rebuilt from the fix; the v1.1.4 tag moved to the fix commit.
 
 ### Added
 
