@@ -1794,6 +1794,18 @@ def crm_update_settings(fields):
     for key in ("scheduler_enabled", "auto_advance_default", "telegram_report_full_data"):
         if key in fields:
             settings[key] = bool(fields[key])
+    if "registry_fee_amount" in fields:
+        raw = str(fields.get("registry_fee_amount") or "").strip()
+        try:
+            fee = int(crm_mod.normalize_digits(raw.replace(",", "")
+                                               .replace("،", "")
+                                               .replace(" ", "")))
+        except (TypeError, ValueError):
+            fee = -1
+        if fee < 0:
+            errors.append("هزینهٔ ثبت رجیستری باید عدد نامنفی باشد (تومان)")
+        else:
+            settings["registry_fee_amount"] = fee
     if errors:
         return None, errors
     data["settings"] = settings
@@ -5223,7 +5235,8 @@ function customersHtml(){
     +'<td>'+(bal(c.id)<0?'<span class="pill bad">بدهکار '+money(bal(c.id))+'</span>'
              :(bal(c.id)>0?'<span class="pill ok">'+money(bal(c.id))+'</span>':'<span class="pill n">تسویه</span>'))+'</td>'
     +'<td><button class="btn mini" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">ویرایش</button> '
-    +'<button class="btn mini" onclick="dlgTx(\''+c.id+'\')">تراکنش</button> '
+    +'<button class="btn mini ok" onclick="dlgReceipt(\''+c.id+'\')">ثبت دریافتی</button> '
+    +'<button class="btn mini warn" onclick="dlgDebt(\''+c.id+'\')">ثبت بدهی</button> '
     +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
@@ -5259,6 +5272,53 @@ function periodicSaveInterval(){
   api('/crm-settings',{watch_interval_hours:raw}).then(async r=>{
     toast('بازهٔ استعلام ذخیره شد: هر '+fa(r.settings.watch_interval_hours)+' ساعت');await refresh();})
     .catch(e=>toast(e,false));
+}
+function periodicSelIds(){
+  return (STATE.devices||[]).filter(d=>d.id &&
+    document.getElementById('periodicSel'+d.id) &&
+    document.getElementById('periodicSel'+d.id).checked).map(d=>d.id);
+}
+function periodicSelAll(master){
+  (periodicDevices()||[]).forEach(d=>{
+    var box=document.getElementById('periodicSel'+d.id);
+    if(box)box.checked=!!master.checked;
+  });
+}
+function periodicRunSelected(){
+  var ids=periodicSelIds();
+  if(!ids.length){toast('دستگاهی انتخاب نشده است',false);return;}
+  confirmDlg('استعلام گروهی','استعلام گمرک برای '+fa(ids.length)+' دستگاه انتخاب‌شده اجرا شود؟',
+    'شروع',function(){
+      api('/crm-inquiry',{service:'gomrok',device_ids:ids}).then(async r=>{
+        toast(r.ok?('استعلام برای '+fa(r.queued)+' دستگاه شروع شد'):'شروع نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function periodicResetSelected(){
+  var ids=periodicSelIds();
+  if(!ids.length){toast('دستگاهی انتخاب نشده است',false);return;}
+  confirmDlg('ریست تاریخچهٔ گروهی','تاریخچهٔ استعلام '+fa(ids.length)+' دستگاه پاک شود؟ نتیجهٔ فعلی و زمان آخرین استعلام حذف می‌شود.',
+    'ریست',function(){
+      api('/crm-inquiry-reset',{device_ids:ids}).then(async r=>{
+        toast(r.ok?'تاریخچهٔ استعلام ریست شد':'انجام نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function periodicResetOne(id){
+  confirmDlg('ریست تاریخچهٔ استعلام','تاریخچهٔ استعلام این دستگاه پاک شود؟ نتیجهٔ فعلی و زمان آخرین استعلام حذف می‌شود.',
+    'ریست',function(){
+      api('/crm-inquiry-reset',{device_ids:[id]}).then(async r=>{
+        toast(r.ok?'تاریخچه ریست شد':'انجام نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function periodicReInquire(id){
+  confirmDlg('استعلام مجدد','ابتدا تاریخچهٔ استعلام ریست و سپس استعلام گمرک بلافاصله اجرا شود؟',
+    'اجرا',function(){
+      api('/crm-inquiry-reset',{device_ids:[id],restart:true}).then(async r=>{
+        toast(r.ok?'استعلام مجدد شروع شد':'انجام نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
 }
 function periodicRunAll(){
   var ids=periodicDevices().filter(d=>!d.periodic_opt_out).map(d=>d.id);
@@ -5310,7 +5370,8 @@ function periodicHtml(){
     var statusPill='<span class="pill '+(opt?'n':(EST_PILL[est.status]||'n'))+'">'+
       (opt?'خارج از لیست':(EST_FA[est.status]||'—'))+'</span>';
     var due=dueIn(d,hours);
-    return '<tr'+(opt?' style="opacity:.55"':'')+'><td><b>'+esc(d.name)+'</b>'+
+    return '<tr'+(opt?' style="opacity:.55"':'')+'><td><input type="checkbox" id="periodicSel'+d.id+'" class="periodicSel"></td>'+
+      '<td><b>'+esc(d.name)+'</b>'+
       '<div class="kbd">'+esc(d.serial1)+'</div></td>'+
       '<td><span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span></td>'+
       '<td>'+statusPill+'</td>'+
@@ -5319,6 +5380,8 @@ function periodicHtml(){
       '<td class="kbd">'+due+'</td>'+
       '<td><button class="btn mini ghost" onclick="periodicHistory(\''+d.id+'\')">تاریخچه</button> '+
       '<button class="btn mini warn" onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
+      '<button class="btn mini ghost" onclick="periodicResetOne(\''+d.id+'\')">ریست تاریخچه</button> '+
+      '<button class="btn mini ok" onclick="periodicReInquire(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>استعلام مجدد</button> '+
       (opt?'<button class="btn mini primary" onclick="periodicReAdd(\''+d.id+'\')">افزودن</button>'
           :'<button class="btn mini danger" onclick="periodicRemove(\''+d.id+'\')">حذف از لیست</button>')+'</td></tr>';
   }).join('');
@@ -5332,9 +5395,11 @@ function periodicHtml(){
     '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
     '</label><button class="btn" onclick="periodicSaveInterval()">ذخیره بازه</button>'+
     '<button class="btn primary" onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
+    '<button class="btn" onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
+    '<button class="btn warn" onclick="periodicResetSelected()">ریست تاریخچهٔ انتخاب‌شده‌ها</button>'+
     '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>یک اجرا در جریان است</b>':'')+'</span></div>'+
-    '<table><thead><tr><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
-    '<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
+    '<table><thead><tr><th><input type="checkbox" id="periodicSelAll" onchange="periodicSelAll(this)"></th><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
+    '<tbody>'+(rows||'<tr><td colspan="8"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
     '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+
     '<table><thead><tr><th>زمان</th><th>دستگاه</th><th>وضعیت</th><th>پیام</th></tr></thead>'+
     '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty">هنوز لاگی ثبت نشده است.</div></td></tr>')+'</tbody></table></div></div>';
@@ -5360,13 +5425,18 @@ function settingsHtml(){
     +'<input id="lnUrl'+i+'" value="'+esc(l.url)+'" dir="ltr" style="flex:1" placeholder="https://...">'
     +'<button class="btn mini danger" onclick="settingsLinkRemove('+i+')">حذف</button></div>').join('');
   return '<div class="card"><h3>نمایش</h3>'
-    +'<div class="row" style="margin-bottom:8px">'
-    +'<label class="f">پوسته<select id="stTheme" onchange="settingsApply()">'
-    +'<option value="light">روشن</option><option value="dark">تاریک</option></select></label>'
-    +'<label class="f">اندازهٔ متن<select id="stFs" onchange="settingsApply()">'
-    +'<option value="0">معمولی</option><option value="1">بزرگ</option><option value="2">بزرگ‌تر</option></select></label>'
-    +'</div></div>'
-    +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f">پوسته<select id="stTheme" onchange="settingsApply()">'
+  +'<option value="light">روشن</option><option value="dark">تاریک</option></select></label>'
+  +'<label class="f">اندازهٔ متن<select id="stFs" onchange="settingsApply()">'
+  +'<option value="0">معمولی</option><option value="1">بزرگ</option><option value="2">بزرگ‌تر</option></select></label>'
+  +'</div></div>'
+  +'<div class="card"><h3>مالی</h3>'
+  +'<div class="row"><label class="f">هزینه ثبت رجیستری (تومان)'
+  +'<input id="stFee" class="ltr" inputmode="numeric" style="width:150px" value="'+fa(settings.registry_fee_amount||0)+'"></label>'
+  +'<button class="btn primary" onclick="settingsSaveFee()">ذخیره مبلغ</button></div>'
+  +'<p class="muted">این مبلغ هنگام ثبت هر دستگاه برای مشتریِ آن دستگاه به‌صورت خودکار بدهکار می‌شود.</p></div>'
+  +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
     +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند فعال باشد</span></label>'
     +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
     +'<p class="muted">زمان‌بند، استعلام گمرکِ پرونده‌های تحویل‌شده را هر بازهٔ تنظیم‌شده اجرا می‌کند.</p></div>'
@@ -5382,6 +5452,12 @@ function settingsApply(){
   document.documentElement.setAttribute('data-theme',theme);
   document.documentElement.style.setProperty('--crm-fs',(13.5+fs*1.5)+'px');
   try{localStorage.setItem('irica-theme',theme);localStorage.setItem('irica-crm-fs',String(fs));}catch(e){}
+}
+function settingsSaveFee(){
+  var raw=document.getElementById('stFee').value;
+  api('/crm-settings',{registry_fee_amount:raw}).then(async r=>{
+    toast('هزینه ثبت رجیستری ذخیره شد: '+money(r.settings.registry_fee_amount));await refresh();})
+    .catch(e=>toast(e,false));
 }
 function settingsSave(){
   api('/crm-settings',{scheduler_enabled:document.getElementById('stSched').checked})
@@ -5443,7 +5519,7 @@ function ledgerHtml(){
     (c.transactions||[]).slice().reverse().forEach(t=>{
       rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
-      +'<td class="kbd">'+esc(t.note||'—')+'</td></tr>';
+      +'<td class="kbd">'+esc(t.note||'—')+(t.image?' · <a target="_blank" href="/tx-artifact?name='+encodeURIComponent(t.image)+'">پیوست</a>':'')+'</td></tr>';
     });
   });
   return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th></tr></thead>'
@@ -5484,6 +5560,7 @@ function showFieldErrors(errText){
 function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
+    +'<p class="muted">با ثبت دستگاه، «هزینهٔ ثبت رجیستری» (مبلغ قابل تنظیم در تب تنظیمات) به‌صورت خودکار به حساب مشتری بدهکار می‌شود.</p>'
     +'<div class="grid" style="margin-bottom:8px">'
     +'<label class="f">نام دستگاه *<input id="dvName" placeholder="iPhone 13"></label>'
     +'<label class="f">سریال اول * (IMEI ۱۵ رقمی)<input id="dvS1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></label>'
@@ -5612,9 +5689,51 @@ function dlgTx(cid){
     +'<div class="err" id="txErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doTx(\''+cid+'\')">ثبت</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-function doTx(cid){
-  api('/crm-customer',{action:'tx',id:cid,amount:v('txAmt'),note:v('txNote')})
-    .then(async()=>{closeDlg();toast('ثبت شد');await refresh();})
+function dlgReceipt(cid){
+  openDlg('<h3>ثبت دریافتی — '+esc(custName(cid))+'</h3>'
+    +'<div class="row"><label class="f">مبلغ (تومان)<input id="txAmt" inputmode="numeric" class="ltr" style="width:170px"></label>'
+    +'<label class="f">شرح<input id="txNote" style="flex:1" placeholder="مثلاً واریز کارت به کارت"></label></div>'
+    +'<label class="f" style="margin-top:8px">عکس رسید (اختیاری — PNG/JPG تا ۴ مگابایت)'
+    +'<input id="txImage" type="file" accept="image/png,image/jpeg,image/webp" onchange="readTxImage(this)"></label>'
+    +'<div class="kbd" id="txImageName" style="margin-top:4px;display:none"></div>'
+    +'<div class="err" id="txErr"></div>'
+    +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doTx(\''+cid+'\',\'receipt\')">ثبت دریافتی</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function dlgDebt(cid){
+  openDlg('<h3>ثبت بدهی جدید — '+esc(custName(cid))+'</h3>'
+    +'<div class="row"><label class="f">مبلغ (تومان)<input id="txAmt" inputmode="numeric" class="ltr" style="width:170px"></label>'
+    +'<label class="f">شرح<input id="txNote" style="flex:1" placeholder="مثلاً هزینه قطعه"></label></div>'
+    +'<label class="f" style="margin-top:8px">عکس مدرک بدهی (اختیاری — مثل عکس سریال دستگاه)'
+    +'<input id="txImage" type="file" accept="image/png,image/jpeg,image/webp" onchange="readTxImage(this)"></label>'
+    +'<div class="kbd" id="txImageName" style="margin-top:4px;display:none"></div>'
+    +'<div class="err" id="txErr"></div>'
+    +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doTx(\''+cid+'\',\'debt\')">ثبت بدهی</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+var TX_IMAGE_B64='', TX_IMAGE_MIME='';
+function readTxImage(input){
+  TX_IMAGE_B64='';TX_IMAGE_MIME='';
+  var label=document.getElementById('txImageName');
+  var file=input.files&&input.files[0];
+  if(!file){if(label)label.style.display='none';return;}
+  if(file.size>4*1024*1024){
+    document.getElementById('txErr').textContent='حجم تصویر بیشتر از ۴ مگابایت است';
+    input.value='';if(label)label.style.display='none';return;
+  }
+  TX_IMAGE_MIME=file.type||'image/png';
+  var reader=new FileReader();
+  reader.onload=function(){TX_IMAGE_B64=String(reader.result||'');
+    if(label){label.textContent='پیوست: '+file.name;label.style.display='';}};
+  reader.readAsDataURL(file);
+}
+function doTx(cid,kind){
+  var amount=Number(String(v('txAmt')||'').replace(/[,\s،]/g,''))||0;
+  if(!amount){document.getElementById('txErr').textContent='مبلغ باید عدد باشد';return;}
+  var isDebt=(kind==='debt');
+  var payload={action:'tx',id:cid,amount:isDebt?-amount:amount,note:v('txNote'),
+               kind:kind||'tx'};
+  if(TX_IMAGE_B64){payload.image_b64=TX_IMAGE_B64;payload.image_mime=TX_IMAGE_MIME;}
+  api('/crm-customer',payload)
+    .then(async()=>{TX_IMAGE_B64='';TX_IMAGE_MIME='';closeDlg();toast('ثبت شد');await refresh();})
     .catch(e=>{document.getElementById('txErr').textContent=e;showFieldErrors(String(e));});
 }
 function dlgOwner(mode,id){
@@ -5763,6 +5882,126 @@ def render_estelam_page():
     return html.encode("utf-8")
 
 
+TX_ARTIFACT_SUBDIR = "tx_artifacts"
+_TX_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+_TX_IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg",
+                   "image/webp": ".webp"}
+
+
+def _save_tx_image(image_b64, mime):
+    """Decode a base64 data-URL attachment for a finance transaction.
+
+    Returns (filename, "") on success or ("", Persian error). Files land in
+    DATA_DIR/tx_artifacts with a random hex name; the extension is derived
+    from the declared mime type only.
+    """
+    import base64 as _b64
+    raw = str(image_b64 or "").strip()
+    if not raw:
+        return "", ""
+    if raw.startswith("data:"):
+        head, _, raw = raw.partition(",")
+        mime = head[5:].partition(";")[0] or mime
+    try:
+        blob = _b64.b64decode(raw, validate=True)
+    except Exception:
+        return "", "تصویر پیوست قابل خواندن نیست"
+    if not blob:
+        return "", ""
+    if len(blob) > _TX_IMAGE_MAX_BYTES:
+        return "", "حجم تصویر بیشتر از ۴ مگابایت است"
+    ext = _TX_IMAGE_TYPES.get(str(mime or "").lower())
+    if not ext:
+        return "", "فرمت تصویر باید PNG یا JPG یا WebP باشد"
+    directory = app_paths.data_subdir(TX_ARTIFACT_SUBDIR)
+    name = uuid.uuid4().hex + ext
+    try:
+        with open(os.path.join(directory, name), "wb") as fh:
+            fh.write(blob)
+    except OSError:
+        return "", "ذخیرهٔ تصویر ناموفق بود"
+    return name, ""
+
+
+def _tx_artifact(self, query):
+    """Serve a finance attachment from tx_artifacts by exact file name
+    (uuid hex + known extension); anything else is a 404."""
+    name = (query.get("name") or [""])[0]
+    safe = os.path.basename(str(name))
+    if (not safe or safe != str(name) or not re.fullmatch(
+            r"[0-9a-f]{32}\.(?:png|jpg|webp)", safe)):
+        self._send(404, b"not found", "text/plain")
+        return
+    path = os.path.join(app_paths.data_subdir(TX_ARTIFACT_SUBDIR), safe)
+    ctype = {"png": "image/png", "jpg": "image/jpeg",
+             "webp": "image/webp"}.get(safe.rsplit(".", 1)[1], "application/octet-stream")
+    try:
+        with open(path, "rb") as fh:
+            self._send(200, fh.read(), ctype)
+    except OSError:
+        self._send(404, b"not found", "text/plain")
+
+
+def _crm_inquiry_reset(self, data):
+    """Reset inquiry history for devices (periodic-panel group tool).
+    restart=True additionally queues each device for an immediate run."""
+    import crm as crm_mod
+    ids = data.get("device_ids") or []
+    restart = bool(data.get("restart"))
+    if not isinstance(ids, list) or not ids:
+        self._json({"ok": False, "queued": 0,
+                    "errors": ["دستگاهی انتخاب نشده است"]}, 400)
+        return
+    results, queued, restart_ids = [], 0, []
+    for device_id in ids:
+        device_id = str(device_id)
+        data_crm = crm_mod.store_read()
+        device = next((d for d in data_crm.get("devices", [])
+                       if str(d.get("id")) == device_id), None)
+        if not device:
+            results.append({"device_id": device_id, "ok": False,
+                            "errors": ["دستگاه پیدا نشد"]})
+            continue
+        est = estelam_load()
+        row = next((d for d in est.get("devices", [])
+                    if str(d.get("id")) == device_id), None)
+        if row:
+            row["status"] = "pending"
+            row["result"] = ""
+            row["error"] = ""
+            row["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            estelam_save(est)
+        data_crm = crm_mod.store_read()
+        device = next((d for d in data_crm.get("devices", [])
+                       if str(d.get("id")) == device_id), None)
+        if device is not None:
+            device["last_inquiry_at"] = ""
+            crm_mod.store_write(data_crm)
+        crm_mod.crm_log("info", "inquiry_history_reset", device_id=device_id)
+        results.append({"device_id": device_id, "ok": True})
+        if restart:
+            restart_ids.append(device_id)
+    if restart and restart_ids and not estelam_is_running():
+        first = restart_ids.pop(0)
+        result = crm_start_inquiry(first, service="gomrok",
+                                   origin="reinquiry")
+        if result.get("ok"):
+            queued += 1
+        else:
+            results.append({"device_id": first, "ok": False,
+                            "errors": result.get("errors")})
+        for extra in restart_ids:
+            sync_errors = crm_sync_queue(extra)
+            results.append({"device_id": extra,
+                            "ok": not sync_errors,
+                            "errors": sync_errors})
+            if not sync_errors:
+                queued += 1
+    ok = all(r.get("ok") for r in results)
+    self._json({"ok": ok, "queued": queued, "results": results},
+               200 if ok else 400)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         self.send_response(code)
@@ -5783,6 +6022,83 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _tx_artifact(self, query):
+        """Serve a finance attachment from tx_artifacts by exact file name
+        (uuid hex + known extension); anything else is a 404."""
+        name = (query.get("name") or [""])[0]
+        safe = os.path.basename(str(name))
+        if (not safe or safe != str(name) or not re.fullmatch(
+                r"[0-9a-f]{32}\.(?:png|jpg|webp)", safe)):
+            self._send(404, b"not found", "text/plain")
+            return
+        path = os.path.join(app_paths.data_subdir(TX_ARTIFACT_SUBDIR), safe)
+        ctype = {"png": "image/png", "jpg": "image/jpeg",
+                 "webp": "image/webp"}.get(safe.rsplit(".", 1)[1], "application/octet-stream")
+        try:
+            with open(path, "rb") as fh:
+                self._send(200, fh.read(), ctype)
+        except OSError:
+            self._send(404, b"not found", "text/plain")
+
+    def _crm_inquiry_reset(self, data):
+        """Reset inquiry history for devices (periodic-panel group tool).
+        restart=True additionally queues each device for an immediate run."""
+        import crm as crm_mod
+        ids = data.get("device_ids") or []
+        restart = bool(data.get("restart"))
+        if not isinstance(ids, list) or not ids:
+            self._json({"ok": False, "queued": 0,
+                        "errors": ["دستگاهی انتخاب نشده است"]}, 400)
+            return
+        results, queued, restart_ids = [], 0, []
+        for device_id in ids:
+            device_id = str(device_id)
+            data_crm = crm_mod.store_read()
+            device = next((d for d in data_crm.get("devices", [])
+                           if str(d.get("id")) == device_id), None)
+            if not device:
+                results.append({"device_id": device_id, "ok": False,
+                                "errors": ["دستگاه پیدا نشد"]})
+                continue
+            est = estelam_load()
+            row = next((d for d in est.get("devices", [])
+                        if str(d.get("id")) == device_id), None)
+            if row:
+                row["status"] = "pending"
+                row["result"] = ""
+                row["error"] = ""
+                row["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                estelam_save(est)
+            data_crm = crm_mod.store_read()
+            device = next((d for d in data_crm.get("devices", [])
+                           if str(d.get("id")) == device_id), None)
+            if device is not None:
+                device["last_inquiry_at"] = ""
+                crm_mod.store_write(data_crm)
+            crm_mod.crm_log("info", "inquiry_history_reset", device_id=device_id)
+            results.append({"device_id": device_id, "ok": True})
+            if restart:
+                restart_ids.append(device_id)
+        if restart and restart_ids and not estelam_is_running():
+            first = restart_ids.pop(0)
+            result = crm_start_inquiry(first, service="gomrok",
+                                       origin="reinquiry")
+            if result.get("ok"):
+                queued += 1
+            else:
+                results.append({"device_id": first, "ok": False,
+                                "errors": result.get("errors")})
+            for extra in restart_ids:
+                sync_errors = crm_sync_queue(extra)
+                results.append({"device_id": extra,
+                                "ok": not sync_errors,
+                                "errors": sync_errors})
+                if not sync_errors:
+                    queued += 1
+        ok = all(r.get("ok") for r in results)
+        self._json({"ok": ok, "queued": queued, "results": results},
+                   200 if ok else 400)
+
     def _crm_entity(self, route, data):
         """Dispatch add/update/delete for the four CRM entity routes."""
         import crm as crm_mod
@@ -5796,8 +6112,15 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "update":
                 record, errors = crm_mod.update_customer(record_id, data)
             elif action == "tx":
-                record, errors = crm_mod.add_transaction(
-                    record_id, data.get("amount"), data.get("note") or "")
+                image_name, image_error = _save_tx_image(
+                    data.get("image_b64"),
+                    data.get("image_mime") or "image/png")
+                if image_error:
+                    record, errors = None, [image_error]
+                else:
+                    record, errors = crm_mod.add_transaction(
+                        record_id, data.get("amount"), data.get("note") or "",
+                        kind=data.get("kind") or "", image=image_name)
             elif action == "delete":
                 ok, errors = crm_mod.delete_customer(record_id, force=bool(data.get("force")))
                 record = {"ok": ok} if ok else None
@@ -6050,6 +6373,10 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             self._crm_report(query)
+        elif route == "/tx-artifact":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._tx_artifact(query)
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -6341,6 +6668,9 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     break   # a run is live; the rest go through the scheduler
             self._json({"ok": queued > 0, "queued": queued, "results": results})
+
+        elif self.path == "/crm-inquiry-reset":
+            self._crm_inquiry_reset(self._read_json())
 
         elif self.path == "/crm-settings":
             data = self._read_json()

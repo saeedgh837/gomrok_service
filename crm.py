@@ -39,7 +39,10 @@ DEFAULT_SETTINGS = {
     "scheduler_enabled": True,
     "auto_advance_default": False,
     "telegram_report_full_data": True,
+    "registry_fee_amount": 24_000_000,  # هزینه ثبت رجیستری (تومان)
 }
+
+REGISTRY_FEE_NOTE = "هزینهٔ ثبت رجیستری"
 
 # Stage machine: stage -> {action -> next stage}. Single source of truth (F12).
 ALLOWED = {
@@ -538,7 +541,8 @@ def customer_balance(customer):
     return sum(int(t.get("amount") or 0) for t in customer.get("transactions", []))
 
 
-def add_transaction(customer_id, amount, note=""):
+def add_transaction(customer_id, amount, note="", kind="", image="",
+                    device_id=""):
     with STORE_LOCK:
         data = _store_read()
         record = next((c for c in data.get("customers", [])
@@ -549,11 +553,42 @@ def add_transaction(customer_id, amount, note=""):
             amount = int(normalize_digits(amount))
         except (TypeError, ValueError):
             return None, ["مبلغ باید عدد باشد"]
-        entry = {"at": _now(), "amount": amount, "note": str(note or "").strip()}
+        entry = {"at": _now(), "amount": amount, "note": str(note or "").strip(),
+                 "kind": str(kind or "").strip(), "image": str(image or "").strip(),
+                 "device_id": str(device_id or "").strip()}
         record.setdefault("transactions", []).append(entry)
         record["updated"] = _now()
         _store_write(data)
         return entry, []
+
+
+def _charge_registry_fee(data, customer_id, device_id):
+    """Book the base registry fee for a newly registered device.
+
+    Caller holds STORE_LOCK. Reads the configured amount from settings
+    (registry_fee_amount, default 24_000_000 Toman); skips silently when
+    the fee is configured to 0 or the customer is unknown. The entry is
+    idempotent per device via the device_id marker on the transaction.
+    """
+    amount = int((data.get("settings") or {}).get("registry_fee_amount",
+                                                  24_000_000) or 0)
+    if amount <= 0 or not customer_id:
+        return None
+    customer = next((c for c in data.get("customers", [])
+                     if c.get("id") == customer_id), None)
+    if not customer:
+        return None
+    already = any(t.get("device_id") == device_id
+                  and t.get("kind") == "base_fee"
+                  for t in customer.get("transactions", []))
+    if already:
+        return None
+    entry = {"at": _now(), "amount": -amount,
+             "note": REGISTRY_FEE_NOTE, "kind": "base_fee",
+             "image": "", "device_id": str(device_id or "").strip()}
+    customer.setdefault("transactions", []).append(entry)
+    customer["updated"] = _now()
+    return entry
 
 
 def add_owner(fields):
@@ -720,6 +755,7 @@ def add_device(fields, customer=None):
             "created": _now(), "updated": _now(),
         }
         _collection(data, "devices").append(record)
+        _charge_registry_fee(data, customer_id, record["id"])
         _store_write(data)
         return record, []
 
