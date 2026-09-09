@@ -191,5 +191,37 @@ class StageModelTests(unittest.TestCase):
         self.assertIn("d.stage==='inquiry'&&est.status==='advanced'", self.page)
 
 
+class CrmPageJsSyntaxTests(unittest.TestCase):
+    """Every <script> block on every served page must parse (blank-body guard)."""
+
+    def test_all_page_scripts_parse_with_node(self):
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        pages = [v for k, v in vars(panel).items()
+                 if k.endswith("_PAGE") and isinstance(v, str) and "<script>" in v]
+        self.assertTrue(pages, "no served pages found")
+        checked = 0
+        for page in pages:
+            for block in re.findall(r"<script>([\s\S]*?)</script>", page):
+                with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                                 encoding="utf-8") as fh:
+                    fh.write(block)
+                    path = fh.name
+                try:
+                    proc = subprocess.run([node, "--check", path],
+                                          capture_output=True, text=True, timeout=60)
+                finally:
+                    os.unlink(path)
+                self.assertEqual(proc.returncode, 0,
+                                 "served page JS has a syntax error:\n"
+                                 + (proc.stderr or "")[:1200])
+                checked += 1
+        self.assertGreaterEqual(checked, 4)
+
 if __name__ == "__main__":
     unittest.main()
