@@ -36,6 +36,16 @@ from selenium.webdriver.support import expected_conditions as EC
 
 G.ensure_utf8_stdio()
 
+# Shared stall exception: raised by the on_attempt guard to abort the captcha
+# retry loop when the site keeps rejecting our captcha (solver/site problem,
+# NOT a device verdict). Classifying such runs as 'problem' was the v1.1.2 bug.
+CaptchaStalled = G.CaptchaStalled
+
+# After this many CONSECUTIVE captcha-rejected submits, give up on the device
+# for this run: the captcha solver/site is in a bad streak and burning more
+# attempts only wastes ~8s each while the verdict would stay 'error' anyway.
+CAPTCHA_STALL_LIMIT = 12
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _STORE_PATH = os.environ.get("IRICA_ESTELAM_STORE") or app_paths.data_path("estelam_store.json")
 
@@ -117,6 +127,64 @@ def _elog(status, message, serial="", device_id=""):
                           device_id=device_id)
     except Exception as e:
         print(f">>> (estelam-log na-shod: {e})")
+
+
+def make_stall_guard(limit=CAPTCHA_STALL_LIMIT):
+    """Build the on_attempt hook for the captcha retry loop.
+
+    Counts CONSECUTIVE captcha-rejected submits; raises CaptchaStalled when
+    the streak reaches `limit`. A non-rejected attempt (site advanced, or a
+    transient/connection error that cleared) resets the streak. This bounds
+    doomed runs (bad solver streak / broken captcha) while keeping normal
+    retry behavior intact.
+    """
+    streak = {"n": 0}
+
+    def guard(attempt, answer, conf, rejected):
+        if not rejected:
+            streak["n"] = 0
+            return
+        streak["n"] += 1
+        if streak["n"] >= limit:
+            print(f">>> CAPTCHA STALL: {streak['n']} talash-e posht-sareh rad shod "
+                  f"(answer={answer!r} conf={conf:.2f}) — talash-ha motavaghef mishavad.")
+            raise CaptchaStalled(
+                f"{streak['n']} consecutive captcha rejects (limit={limit})")
+
+    return guard
+
+
+def classify_outcome(messages, advanced, attempts):
+    """Final verdict ladder for the inquiry (v1.1.3).
+
+    Order matters:
+      advanced  -> the page moved to step-2 (device IS registered upstream)
+      healthy   -> the site's own 'not found upstream' verdict
+      retryable -> captcha/transient exhaustion: the DEVICE WAS NEVER
+                   EVALUATED. status='error' (re-inquirable by the next
+                   periodic run) — never 'problem', which is reserved for
+                   genuine site verdicts about the device. This is the fix
+                   for the mislabeled 'نتیجه دارای اشکال — کد اعتبار سنجی
+                   صحیح نمی باشد' log entries.
+      problem   -> genuine non-retryable site verdict about the device.
+    """
+    err = [str(m or "") for m in (messages or [])]
+    err_text = " | ".join(err)
+    if advanced:
+        return {"status": "advanced", "messages": err,
+                "result": "رفتن به مرحله بعد — شناسه در گمرک ورودی ثبت است"}
+    if is_healthy_result(err):
+        return {"status": "healthy", "messages": err, "result": err_text}
+    if G.is_imei_retryable_error(err):
+        return {
+            "status": "error",
+            "messages": err,
+            "result": (f"استعلام ناموفق — کپچا پس از {attempts} تلاش رد شد؛ "
+                       f"دستگاه بررسی نشد (تلاش مجدد خودکار)"),
+        }
+    if err:
+        return {"status": "problem", "messages": err, "result": err_text}
+    return {"status": "error", "messages": [], "result": "بدون پاسخ از سایت"}
 
 
 def _serials(device):
@@ -411,16 +479,31 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
                     driver, driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS))
             except Exception:
                 old_ref = None
+        # Telemetry + bounded stall abort: count consecutive captcha rejects,
+        # bail out when the streak is clearly a solver/site problem (v1.1.3).
+        attempts_log = []
+
+        def _on_attempt(attempt, answer, conf, rejected):
+            attempts_log.append((attempt, answer, round(conf, 2), rejected))
+
         retry_err, retry_advanced, retry_count = G.retry_imei_captcha_in_place(
             driver, wait, solver, old_ref, _submit, _result,
             max_attempts=RETRY_MAX_ATTEMPTS,
             retryable=G.is_imei_retryable_error,
             prepare_form=_prepare_form,
-            read_conf=solve_confidently)
+            read_conf=solve_confidently,
+            on_attempt=make_stall_guard())
         print(f">>> retry tamam: advanced={retry_advanced} attempts={retry_count}")
+        rejected_n = sum(1 for _a, _ans, _c, rej in attempts_log if rej)
+        last_answers = attempts_log[-3:]
+        sample = "; ".join(f"#{a}={ans!r}({c:.2f},{'رد' if rej else 'خیر'})"
+                           for a, ans, c, rej in last_answers)
         _elog("retry",
               f"خطای موقت — کپچای تازه و تلاش مجدد در همان مرورگر "
-              f"({retry_count} تلاش): {' | '.join(err or [])}",
+              f"({retry_count} تلاش، {rejected_n} رد کپچا): "
+              f"{' | '.join(err or [])}",
+              serial=serials[0] if serials else "", device_id=device.get("id") or "")
+        _elog("info", f"جزئیات تلاش‌ها (۳ تلاش آخر): {sample}",
               serial=serials[0] if serials else "", device_id=device.get("id") or "")
         err = retry_err or ([] if retry_advanced else err)
         clicked_ok = clicked_ok or retry_advanced
@@ -440,21 +523,39 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
                 "result": "رفتن به مرحله بعد — شناسه در گمرک ورودی ثبت است"}
 
     err_text = " | ".join(err or [])
-    if is_healthy_result(err):
+
+    # Final verdict ladder (v1.1.3): captcha/transient exhaustion is an
+    # 'error' (device NOT evaluated, re-inquirable) — never a 'problem'.
+    outcome = classify_outcome(err, advanced=False, attempts=retry_count if err else 1)
+    status = outcome["status"]
+
+    if status == "healthy":
         G.log_event("success", f"estelam-e SALEM: {err_text}", step="estelam/imeiStep",
                     title=title, national=person.get("national") or "",
                     imei=serials[0] if serials else "")
         _elog("healthy", f"دستگاه سالم است — {err_text}",
               serial=serials[0] if serials else "", device_id=device.get("id") or "")
-        return {"status": "healthy", "messages": err, "result": err_text}
+        return outcome
 
-    if err:
+    if status == "problem":
         G.log_event("warn", f"estelam-e natije-dar: {err_text}", step="estelam/imeiStep",
                     title=title, national=person.get("national") or "",
                     imei=serials[0] if serials else "")
         _elog("problem", f"نتیجه دارای اشکال — {err_text}",
               serial=serials[0] if serials else "", device_id=device.get("id") or "")
-        return {"status": "problem", "messages": err, "result": err_text}
+        return outcome
+
+    if status == "error" and err:
+        # Captcha/transient exhaustion (or a stalled captcha streak): the
+        # site never evaluated the device. Neutral 'error' log + telegram;
+        # the store row is re-inquirable on the next periodic run.
+        G.log_event("warn", f"estelam-e NAMOVAFFAGH (device arzyabi nashod): {err_text}",
+                    step="estelam/imeiStep",
+                    title=title, national=person.get("national") or "",
+                    imei=serials[0] if serials else "")
+        _elog("error", outcome["result"],
+              serial=serials[0] if serials else "", device_id=device.get("id") or "")
+        return outcome
 
     G.log_event("warn", "estelam bi-pasokh (hich payami roo-ye safhe nayamad)",
                 step="estelam/imeiStep", title=title,

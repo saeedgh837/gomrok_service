@@ -30,6 +30,7 @@ DEFAULT = [
     "test_crm_inquiry_pool",
     "test_crm_scheduler",
     "test_v1_1_2_crm_updates",
+    "test_v1_1_3_captcha_stall",
     "test_v1_4_finance_periodic",
     "test_dashboard_rewrite",
     "test_system_debug_logs",

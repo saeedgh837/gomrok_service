@@ -1211,61 +1211,90 @@ def solve_confidently(driver, captcha, solver, wait, min_conf: float = None,
 def retry_imei_captcha_in_place(driver, wait, solver, old_captcha_ref,
                                 submit, read_result, max_attempts=5,
                                 retryable=None, prepare_form=None,
-                                read_conf=None):
-    errors = []
-    captcha_ref = old_captcha_ref
-    attempt = 0
-    while max_attempts is None or attempt < max_attempts:
-        attempt += 1
-        changed = False
-        try:
-            changed = cc.wait_for_new_captcha(driver, captcha_ref, timeout=2)
-            captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
-            if not changed:
-                changed = bool(cc.click_refresh(driver, wait, captcha))
-                captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
-            cc.prepare_captcha_for_shot(driver, captcha)
-            healthy = not cc.is_captcha_empty(driver, captcha)
-        except Exception:
-            healthy = False
+                                read_conf=None, on_attempt=None):
+    """Retry the imeiStep captcha in-place.
 
-        while not (changed and healthy):
-            print(">>> captcha taze/salem nist — F5 ta captcha-ye salem biayad ...")
+    on_attempt(attempt, answer, conf, rejected) — optional telemetry hook
+    called after every submit. `rejected` is True when the site answered
+    with a retryable error (captcha/transient). The hook may raise
+    CaptchaStalled to abort the loop early (a hopeless captcha streak is
+    a solver/site problem, not a device verdict — the inquiry robot uses
+    this to bail out instead of burning all attempts). The registration
+    flow passes no callback and keeps the historical behavior.
+    """
+    errors, advanced, attempt = [], False, 0
+    captcha_ref = old_captcha_ref
+    try:
+        while max_attempts is None or attempt < max_attempts:
+            attempt += 1
+            changed = False
             try:
-                driver.refresh()
-            except Exception:
-                try:
-                    driver.get(cc.URL)
-                except Exception:
-                    time.sleep(0.5)
-                    continue
-            try:
-                wait.until(EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, cc.CAPTCHA_CSS)))
-                if prepare_form:
-                    prepare_form()
+                changed = cc.wait_for_new_captcha(driver, captcha_ref, timeout=2)
                 captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+                if not changed:
+                    changed = bool(cc.click_refresh(driver, wait, captcha))
+                    captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
                 cc.prepare_captcha_for_shot(driver, captcha)
                 healthy = not cc.is_captcha_empty(driver, captcha)
-                changed = healthy
             except Exception:
                 healthy = False
-                changed = False
 
-        captcha_ref = cc.snapshot_captcha(driver, captcha)
-        if read_conf is not None:
-            answer, _conf = read_conf(driver, captcha, solver, wait)
-        else:
-            answer = solver.read_pil(cc.crop_captcha_with_padding(driver, captcha))
-        if not type_and_verify(driver, WP_CAPTCHA, answer):
-            continue
-        submit()
-        errors, advanced = read_result()
-        should_retry = (retryable(errors) if retryable
-                        else is_imei_captcha_retry_error(errors))
-        if advanced or not should_retry:
-            return errors, advanced, attempt
+            while not (changed and healthy):
+                print(">>> captcha taze/salem nist — F5 ta captcha-ye salem biayad ...")
+                try:
+                    driver.refresh()
+                except Exception:
+                    try:
+                        driver.get(cc.URL)
+                    except Exception:
+                        time.sleep(0.5)
+                        continue
+                try:
+                    wait.until(EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, cc.CAPTCHA_CSS)))
+                    if prepare_form:
+                        prepare_form()
+                    captcha = driver.find_element(By.CSS_SELECTOR, cc.CAPTCHA_CSS)
+                    cc.prepare_captcha_for_shot(driver, captcha)
+                    healthy = not cc.is_captcha_empty(driver, captcha)
+                    changed = healthy
+                except Exception:
+                    healthy = False
+                    changed = False
+
+            captcha_ref = cc.snapshot_captcha(driver, captcha)
+            if read_conf is not None:
+                answer, conf = read_conf(driver, captcha, solver, wait)
+            else:
+                answer = solver.read_pil(cc.crop_captcha_with_padding(driver, captcha))
+                conf = 0.0
+            if not type_and_verify(driver, WP_CAPTCHA, answer):
+                if on_attempt is not None:
+                    on_attempt(attempt, answer, conf, rejected=False)
+                continue
+            submit()
+            errors, advanced = read_result()
+            should_retry = (retryable(errors) if retryable
+                            else is_imei_captcha_retry_error(errors))
+            if on_attempt is not None:
+                on_attempt(attempt, answer, conf, rejected=bool(should_retry))
+            if advanced or not should_retry:
+                return errors, advanced, attempt
+    except CaptchaStalled:
+        # Hook decided the captcha streak is hopeless — abort with the last
+        # known state. Caller classifies this as status='error' (not a
+        # device problem); attempt is the number of completed submits.
+        return errors, False, attempt
     return errors, False, attempt
+
+
+class CaptchaStalled(Exception):
+    """Raised by an on_attempt hook to abort the captcha retry loop early.
+
+    Semantics: the site keeps rejecting OUR captcha (solver/site problem) —
+    the device itself was never evaluated, so callers must classify the run
+    as status='error' (re-inquirable), never as a device 'problem'.
+    """
 
 
 def ensure_checked(driver, el):

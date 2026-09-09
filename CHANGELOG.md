@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] - 2026-09-09
+
+### Fixed
+
+- Inquiry robot no longer stamps a device as "دارای اشکال" (problem) when the
+  site kept rejecting the captcha: captcha/transient exhaustion is now
+  status "error" (device NOT evaluated, automatically re-inquirable by the
+  next periodic run) with a neutral telegram message, and only genuine
+  non-retryable site verdicts remain "problem". Evidence: device e1a4e106
+  was misclassified after 25 captcha rejects while the same serial inquired
+  healthy on Hamta minutes later.
+- Bounded captcha-stall abort: after 12 consecutive captcha-rejected submits
+  the inquiry gives up that device for the run (~1.5 min saved per doomed
+  device) instead of always burning all 25 attempts.
+- Per-attempt telemetry: the retry loop reports every submit (answer,
+  confidence, rejected) to the inquiry flow; the panel log now records the
+  attempt count, rejected count, and the last 3 answers, so a bad solver
+  streak is diagnosable from the log instead of invisible.
+
 ## [1.1.2] - 2026-09-08
 
 ### Added
