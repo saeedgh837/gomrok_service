@@ -5401,15 +5401,12 @@ function settingsLinksSave(){
   saveLinks(arr);toast('لینک‌ها ذخیره شد');renderQuickBox();
 }
 function renderQuickBox(){
-  var box=document.getElementById('quickBox');
-  if(!box)return;
+  var wrap=document.getElementById('quickWrap');
+  if(!wrap)return;
   var links=loadLinks();
-  box.innerHTML='<div class="qb-title">سایت‌های مرتبط</div>'
+  wrap.innerHTML='<div class="quickbox"><div class="qb-title">سایت‌های مرتبط</div>'
     +(links.map(l=>l.url?'<a class="qb-btn" target="_blank" href="'+esc(l.url)+'">'+esc(l.name||l.url)+'</a>':'').join('')
-      ||'<span class="muted">لینکی ثبت نشده</span>');
-}
-function quickBoxHtml(){
-  return '<div id="quickBox" class="quickbox"></div>';
+      ||'<span class="muted">لینکی ثبت نشده</span>')+'</div>';
 }
 function dueIn(d,hours){
   if(d.periodic_opt_out)return '—';
