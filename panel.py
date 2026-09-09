@@ -1369,6 +1369,12 @@ def crm_state_payload():
     data = crm_mod.store_read()
     est = estelam_load()
     est_by_id = {str(d.get("id")): d for d in est.get("devices", [])}
+    pay_by_pid = {}
+    try:
+        store = load_store()
+        pay_by_pid = {str(p.get("id")): p for p in store.get("profiles", [])}
+    except Exception:
+        pay_by_pid = {}
     enriched = []
     for device in data.get("devices", []):
         row = dict(device)
@@ -1376,6 +1382,12 @@ def crm_state_payload():
         row["estelam"] = {k: est_row.get(k, "") for k in
                           ("status", "result", "hamta_status", "hamta_result",
                            "gomrok_at", "hamta_at", "updated")}
+        profile = pay_by_pid.get(str(device.get("profile_id") or ""))
+        row["pay"] = {k: (profile or {}).get(k, "" if k != "browser_visible"
+                                             else False) for k in
+                      ("run_status", "runner_pid", "browser_visible",
+                       "payment_link", "receipt_screenshot",
+                       "payment_screenshot", "registration_status")}
         enriched.append(row)
     out = dict(data)
     out["devices"] = enriched
@@ -4755,11 +4767,32 @@ CRM_PAGE = r"""<!DOCTYPE html>
   /* tabs */
   .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:0}
   .tab{background:transparent;border:none;border-bottom:2px solid transparent;border-radius:8px 8px 0 0;
-    padding:9px 15px 7px;cursor:pointer;font-family:inherit;font-size:13.5px;color:var(--muted);font-weight:500}
+    padding:9px 15px 7px;cursor:pointer;font-family:inherit;font-size:var(--crm-fs,13.5px);color:var(--muted);font-weight:500}
   .tab:hover{color:var(--txt);background:var(--brand-soft)}
   .tab.active{color:var(--brand);border-bottom-color:var(--brand);background:transparent}
   .tab .cnt{font-size:11px;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
     border-radius:999px;padding:1px 7px;margin-inline-start:5px;font-variant-numeric:tabular-nums}
+  /* two-column content + history aside */
+  .crm-cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
+  .crm-aside .history{max-height:420px;overflow:auto;position:sticky;top:12px}
+  .crm-aside .history h3{margin:0 0 8px;font-size:13px}
+  .crm-aside .history .kbd{margin-bottom:4px;line-height:1.7}
+  @media (max-width:1100px){.crm-cols{grid-template-columns:1fr}.crm-aside .history{position:static;max-height:260px}}
+  /* payment robot row on device cards */
+  .payrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--card2);
+    border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .payrow a.btn{text-decoration:none;display:inline-flex;align-items:center}
+  /* continue button states */
+  .btn-continue:disabled{opacity:.45;cursor:not-allowed}
+  /* quick links box (bottom corner) */
+  .quickbox-wrap{position:fixed;bottom:14px;inset-inline-start:14px;z-index:60}
+  .quickbox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow-2);padding:8px;display:flex;flex-direction:column;gap:5px;max-width:220px}
+  .qb-title{font-size:11px;color:var(--muted);font-weight:600;margin:0 2px 2px}
+  .qb-btn{display:block;background:var(--card2);border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;font-size:12px;color:var(--txt);text-decoration:none;text-align:center}
+  .qb-btn:hover{background:var(--brand-soft);color:var(--brand)}
+  #quickWrap .muted{font-size:11px}
   /* cards & tables */
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
     margin-bottom:14px;box-shadow:var(--shadow-1)}
@@ -4879,6 +4912,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
 
 <dialog id="dlg"><div id="dlgBody"></div></dialog>
 <div id="toasts"></div>
+<div class="quickbox-wrap" id="quickWrap"></div>
 
 <script>
 "use strict";
@@ -4906,7 +4940,8 @@ var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','
   'blocked':'bad','unknown':'warn','error':'bad','':'n'};
 var TABS = [
   ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
-  ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها']
+  ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
+  ['settings','تنظیمات']
 ];
 
 /* ================= plumbing ================= */
@@ -4943,12 +4978,15 @@ function confirmYes(){var cb=_confirmCb;_confirmCb=null;closeDlg();if(cb)cb();}
 var urlTheme=new URLSearchParams(location.search).get('theme');
 var savedTheme=urlTheme||localStorage.getItem('irica-theme')||'light';
 document.documentElement.setAttribute('data-theme',savedTheme);
+var savedFs=Number(localStorage.getItem('irica-crm-fs')||'0');
+if(savedFs)document.documentElement.style.setProperty('--crm-fs',(13.5+savedFs*1.5)+'px');
 document.getElementById('themeBtn').onclick=function(){
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
   var next=dark?'light':'dark';
   document.documentElement.setAttribute('data-theme',next);
   localStorage.setItem('irica-theme',next);
 };
+renderQuickBox();
 
 /* ================= lookups ================= */
 function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)||null;}
@@ -4968,19 +5006,59 @@ var ICONS = {
   swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
   stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>'
 };
+var INTAKE_STAGES = ['new','inquiry','problem','ready_owner'];
+var STAGE_CONTINUE_FA = {
+  'new':'ارسال به صف استعلام','inquiry':'ثبت نتیجهٔ سالم','ready_owner':'تحویل به مسئول سایت',
+  'handed':'رفتن به انتظار پرداخت','to_payment':'شروع ربات پرداخت','payment':'تأیید پرداخت',
+  'payment_done':'تحویل کد و تکمیل'};
+var STAGE_READY = {
+  'new':true,
+  'inquiry':d=>((d.estelam||{}).status==='healthy')&&['good','registered','success'].includes((d.estelam||{}).hamta_status),
+  'problem':false,
+  'ready_owner':d=>Boolean(d.owner_id),
+  'handed':d=>((d.estelam||{}).status==='advanced')||Boolean(d.auto_advance),
+  'to_payment':true,
+  'payment':true,
+  'payment_done':true,
+  'done':false};
+var STAGE_NEEDS = {
+  'inquiry':()=>['green','green'],
+  'ready_owner':()=>['مسافر',''],
+  'handed':()=>['green','ثبت‌شده در گمرک']};
+var STAGE_SKIP_WARN = {
+  'new':'استعلام ورودی اجرا نمی‌شود و پرونده مستقیم به صف استعلام می‌رود.',
+  'inquiry':'نتایج استعلام گمرک و همتا نادیده گرفته می‌شوند و پرونده مستقیم «سالم» فرض می‌شود.',
+  'ready_owner':'نیاز به مسافر نادیده گرفته می‌شود؛ بدون مسافر، استعلام‌های نظارتی اجرا نمی‌شوند.',
+  'handed':'استعلام ثبت‌شدن دستگاه با اطلاعات مسافر نادیده گرفته می‌شود و پرونده مستقیم به «ثبت‌شده — در انتظار پرداخت» می‌رود.',
+  'to_payment':'ربات پرداخت خودکار اجرا نمی‌شود؛ لینک پرداخت گرفته نمی‌شود.',
+  'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.',
+  'payment_done':'تحویل کد بدون ثبت ثبت‌نام نهایی انجام می‌شود و پرونده تکمیل‌شده علامت می‌خورد.'};
+function stageReady(d){
+  var fn=STAGE_READY[d.stage];
+  return fn===true?true:(typeof fn==='function'?Boolean(fn(d)):false);
+}
+function stageContinue(d){
+  var label=STAGE_CONTINUE_FA[d.stage];
+  if(!label)return null;
+  var ready=stageReady(d);
+  return {action:d.stage==='new'?'queue_inquiry':
+             d.stage==='inquiry'?'mark_ready':
+             d.stage==='ready_owner'?'handover':
+             d.stage==='handed'?(d.auto_advance?'__noop':'__start_payment'):
+             d.stage==='to_payment'?(d.auto_advance?'__noop':'__start_payment'):
+             d.stage==='payment'?'confirm_payment':'deliver_code',
+          label:label, ready:ready,
+          need:(STAGE_NEEDS[d.stage]||function(){return[];})().join(' + ')};
+}
 function stageActions(d){
   var a=[];
   var st=d.stage;
-  if(st==='new') a.push(['queue_inquiry','ارسال به صف استعلام','primary']);
-  if(st==='inquiry'){a.push(['mark_ready','ثبت نتیجهٔ سالم','primary']);a.push(['mark_problem','ثبت اشکال','danger']);}
+  var cont=stageContinue(d);
+  if(cont&&cont.ready) a.push([cont.action,cont.label,'primary']);
+  if(st==='inquiry') a.push(['mark_problem','ثبت اشکال','danger']);
   if(st==='problem') a.push(['requeue_inquiry','بازگشت به صف','primary']);
-  if(st==='ready_owner') a.push(['handover','تحویل به مسئول سایت','primary']);
-  if(st==='handed'&&!d.auto_advance) a.push(['__start_payment','شروع پرداخت','primary']);
-  if(st==='to_payment'&&!d.auto_advance) a.push(['__start_payment','شروع پرداخت','primary']);
-  if(st==='payment') a.push(['confirm_payment','تأیید پرداخت','primary']);
-  if(st==='payment_done') a.push(['deliver_code','تحویل کد و تکمیل','primary']);
   if(st==='ready_owner') a.push(['__attach','اتصال مسافر','']);
-  if(STAGE_SKIP_NEXT[st]) a.push(['__skip','رد کردن مرحله ⏭','skip']);
+  if(STAGE_SKIP_WARN[st]) a.push(['__skip','رد کردن این مرحله ⏭','skip']);
   if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
   if(STAGE_BACK_FA[st]) a.push(['__stage_back','↩ برگشت به «'+STAGE_BACK_FA[st]+'»','']);
   return a;
@@ -4996,13 +5074,9 @@ function devTick(id, action){
     var d=(STATE.devices||[]).find(x=>x.id===id);
     var next=STAGE_SKIP_NEXT[d?d.stage:'']||'';
     if(!next){toast('رد کردن مرحله در این وضعیت ممکن نیست',false);return;}
-    var msg;
-    if(d.stage==='handed'){
-      msg='استعلام ثبت‌شدن دستگاه با اطلاعات مسافر نادیده گرفته می‌شود و پرونده مستقیم به «'+(STAGE_FA[next]||next)+'» می‌رود. این ردشدن در پرونده ثبت می‌شود.';
-    }else{
-      msg='مطمئنی می‌خوای گام «'+(STAGE_FA[d.stage]||d.stage)+'» رد بشه و مستقیم به «'+(STAGE_FA[next]||next)+'» بری؟ گیت‌های استعلام و مسافر دور زده می‌شن و این ردشدن در پرونده ثبت می‌شود.';
-    }
-    confirmDlg('رد کردن مرحله',msg,'رد کردن مرحله',function(){
+    var msg=STAGE_SKIP_WARN[d.stage]||'';
+    msg+=' پرونده مستقیم به «'+(STAGE_FA[next]||next)+'» می‌رود و این ردشدن در پرونده ثبت می‌شود. مطمئنی؟';
+    confirmDlg('رد کردن این مرحله',msg,'رد کردن مرحله',function(){
         api('/crm-tick',{device_id:id,action:'stage_skip'}).then(async r=>{
           toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» رفت (رد شد)');await refresh();})
           .catch(e=>toast(e,false));
@@ -5027,6 +5101,7 @@ function devTick(id, action){
       .catch(e=>toast(e,false));
     return;
   }
+  if(action==='__noop'){return;}
   api('/crm-tick',{device_id:id,action:action}).then(async r=>{
       toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
     .catch(e=>toast(e,false));
@@ -5079,14 +5154,38 @@ function devicesHtml(){
     +emptyHtml('پرونده‌ای ثبت نشده','هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
   var cards=ds.map(function(d){
     var est=d.estelam||{};
+    var pay=d.pay||{};
+    var cont=stageContinue(d);
     var acts=stageActions(d).map(a=>a[0]?
       '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
+    var continueBtn=cont?
+      '<button class="btn mini primary btn-continue" '+(cont.ready?'':'disabled title="'+esc(cont.need?'نیازمند: '+cont.need:'هنوز آماده نیست')+'"')+
+      ' onclick="stageContinueClick(\''+d.id+'\')">'+cont.label+(cont.ready?'':' ⌛')+'</button>':'';
+    var payRow='';
+    if(st==='payment'||st==='payment_done'||(st==='to_payment'&&d.profile_id)){
+      var busy=pay.run_status==='busy';
+      var autoChip=d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'';
+      if(st==='to_payment'&&d.auto_advance)
+        payRow='<div class="payrow">'+autoChip+'<span class="muted">روبات پرداخت خودکار در جریان است — پس از گرفتن لینک، کنترل‌ها همین‌جا فعال می‌شوند</span></div>';
+      else if(st==='to_payment'&&!busy&&!d.auto_advance)
+        payRow='<div class="payrow">'+autoChip+'<span class="muted">پرداخت دستی: با «شروع ربات پرداخت» لینک پرداخت گرفته می‌شود.</span></div>';
+      else
+        payRow='<div class="payrow">'+autoChip
+          +(busy?'<span class="pill warn">ربات پرداخت در حال اجرا</span>':'')
+          +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' بستن ربات</button>':'')
+          +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>':'')
+          +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">🔗 لینک پرداخت</a>':'')
+          +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">🧾 رسید</a>':'')
+          +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
+          +'</div>';
+    }
     return '<div class="dev'+(needsAction(d)?' needs-action':'')+'">'
       +'<div class="devhead">'+ICONS.dev+'<b>'+esc(d.name)+'</b>'
       +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
       +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')+'</div>'
       +'<div class="ser">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div>'
       +railHtml(d)
+      +(payRow?'<div style="margin:6px 0">'+payRow+'</div>':'')
       +'<div class="meta">'
       +ICONS.user+'<span class="chip">'+esc(custName(d.customer_id))+'</span>'
       +ICONS.id+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
@@ -5096,12 +5195,14 @@ function devicesHtml(){
       +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
       +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
       +'<div class="acts">'
-      +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
-      +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>'
+      +(INTAKE_STAGES.includes(d.stage)
+        ?'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
+         +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
       +(STATE.estelam_running?'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button>':'')
       +(acts?'':'<span class="muted">—</span>')
       +(acts?'<span style="flex:1"></span>'+acts:'')
       +' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></div>'
+      +(continueBtn?'<div class="acts" style="margin-top:4px">'+continueBtn+'</div>':'')
       +'</div>';
   }).join('');
   return '<div class="row" style="margin-bottom:12px">'
@@ -5238,6 +5339,78 @@ function periodicHtml(){
     '<table><thead><tr><th>زمان</th><th>دستگاه</th><th>وضعیت</th><th>پیام</th></tr></thead>'+
     '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty">هنوز لاگی ثبت نشده است.</div></td></tr>')+'</tbody></table></div></div>';
 }
+/* ================= settings tab ================= */
+var CRM_LINKS_KEY='irica-crm-links';
+var CRM_LINKS_DEFAULT=[
+  {name:'استعلام گمرک (ایریكا)',url:'https://epl.irica.gov.ir/ImeiRegister?1'},
+  {name:'همتا',url:'https://hamta.ntsw.ir/'}];
+function loadLinks(){
+  try{
+    var raw=localStorage.getItem(CRM_LINKS_KEY);
+    if(raw){var arr=JSON.parse(raw);if(Array.isArray(arr))return arr;}
+  }catch(e){}
+  return CRM_LINKS_DEFAULT.slice();
+}
+function saveLinks(arr){try{localStorage.setItem(CRM_LINKS_KEY,JSON.stringify(arr));}catch(e){}}
+function settingsHtml(){
+  var settings=(STATE&&STATE.settings)||{};
+  var links=loadLinks();
+  var rows=links.map((l,i)=>'<div class="row" style="gap:6px;margin-bottom:6px">'
+    +'<input id="lnName'+i+'" value="'+esc(l.name)+'" style="width:150px" placeholder="نام">'
+    +'<input id="lnUrl'+i+'" value="'+esc(l.url)+'" dir="ltr" style="flex:1" placeholder="https://...">'
+    +'<button class="btn mini danger" onclick="settingsLinkRemove('+i+')">حذف</button></div>').join('');
+  return '<div class="card"><h3>نمایش</h3>'
+    +'<div class="row" style="margin-bottom:8px">'
+    +'<label class="f">پوسته<select id="stTheme" onchange="settingsApply()">'
+    +'<option value="light">روشن</option><option value="dark">تاریک</option></select></label>'
+    +'<label class="f">اندازهٔ متن<select id="stFs" onchange="settingsApply()">'
+    +'<option value="0">معمولی</option><option value="1">بزرگ</option><option value="2">بزرگ‌تر</option></select></label>'
+    +'</div></div>'
+    +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
+    +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند فعال باشد</span></label>'
+    +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
+    +'<p class="muted">زمان‌بند، استعلام گمرکِ پرونده‌های تحویل‌شده را هر بازهٔ تنظیم‌شده اجرا می‌کند.</p></div>'
+    +'<div class="card"><h3>دکمه‌های سایت‌های مرتبط (گوشهٔ پایین صفحه)</h3>'
+    +(rows||'<div class="muted">لینکی ثبت نشده است.</div>')
+    +'<div class="row" style="margin-top:8px"><button class="btn" onclick="settingsLinkAdd()">+ افزودن لینک</button>'
+    +'<button class="btn primary" onclick="settingsLinksSave()">ذخیره لینک‌ها</button></div>'
+    +'<p class="muted">لینک‌ها در همین مرورگر ذخیره می‌شوند و به‌صورت دکمه در کادر پایین صفحه نمایش داده می‌شوند.</p></div>';
+}
+function settingsApply(){
+  var theme=document.getElementById('stTheme').value;
+  var fs=Number(document.getElementById('stFs').value);
+  document.documentElement.setAttribute('data-theme',theme);
+  document.documentElement.style.setProperty('--crm-fs',(13.5+fs*1.5)+'px');
+  try{localStorage.setItem('irica-theme',theme);localStorage.setItem('irica-crm-fs',String(fs));}catch(e){}
+}
+function settingsSave(){
+  api('/crm-settings',{scheduler_enabled:document.getElementById('stSched').checked})
+    .then(async r=>{toast('تنظیمات ذخیره شد');await refresh();})
+    .catch(e=>toast(e,false));
+}
+function settingsLinkAdd(){
+  var arr=loadLinks();arr.push({name:'',url:''});saveLinks(arr);renderView();
+}
+function settingsLinkRemove(i){
+  var arr=loadLinks();arr.splice(i,1);saveLinks(arr);renderView();
+}
+function settingsLinksSave(){
+  var arr=loadLinks().map((l,i)=>({
+    name:document.getElementById('lnName'+i).value.trim(),
+    url:document.getElementById('lnUrl'+i).value.trim()})).filter(l=>l.url);
+  saveLinks(arr);toast('لینک‌ها ذخیره شد');renderQuickBox();
+}
+function renderQuickBox(){
+  var box=document.getElementById('quickBox');
+  if(!box)return;
+  var links=loadLinks();
+  box.innerHTML='<div class="qb-title">سایت‌های مرتبط</div>'
+    +(links.map(l=>l.url?'<a class="qb-btn" target="_blank" href="'+esc(l.url)+'">'+esc(l.name||l.url)+'</a>':'').join('')
+      ||'<span class="muted">لینکی ثبت نشده</span>');
+}
+function quickBoxHtml(){
+  return '<div id="quickBox" class="quickbox"></div>';
+}
 function dueIn(d,hours){
   if(d.periodic_opt_out)return '—';
   var last=String(d.last_inquiry_at||'');
@@ -5370,6 +5543,31 @@ function devInquire(id, service){
         .catch(e=>toast(e,false));
     });
 }
+function stageContinueClick(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  if(!d)return;
+  var cont=stageContinue(d);
+  if(!cont){return;}
+  if(!cont.ready){toast('نیازمند: '+(cont.need||'تکمیل این مرحله'),false);return;}
+  devTick(id,cont.action);
+}
+function payStop(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  var pid=(d&&d.pay&&d.pay.runner_pid)||0;
+  confirmDlg('بستن ربات پرداخت','ربات پرداخت این پرونده متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و می‌توانید دوباره شروع کنید.',
+    'بستن ربات',function(){
+      api('/crm-pay-stop',{device_id:id,pid:pid}).then(async r=>{
+        toast(r.ok?'ربات پرداخت متوقف شد':'توقف انجام نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function payBrowser(id,visible){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  var pid=(d&&d.profile_id)||'';
+  if(!pid){toast('پروفایل پرداخت این پرونده هنوز ساخته نشده',false);return;}
+  api('/browser-visibility',{id:pid,visible:visible}).then(async r=>{
+    await refresh();}).catch(e=>toast(e,false));
+}
 function crmStopRun(){
   confirmDlg('توقف ربات استعلام','ربات استعلام متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و ردیف‌های در جریان به «در صف» برمی‌گردند.',
     'توقف',function(){
@@ -5472,6 +5670,28 @@ function sendTelegram(){
 }
 
 /* ================= render ================= */
+var HISTORY_EVENT_KEYS = {
+  devices:['device_id','entity_id'],
+  customers:['customer_id','entity_id'],
+  owners:['owner_id','entity_id'],
+  identities:['identity_id','entity_id'],
+  periodic:['device_id','entity_id'],
+  ledger:['customer_id','entity_id'],
+  reports:[],settings:['settings','entity_id']};
+function historyHtml(){
+  var keys=HISTORY_EVENT_KEYS[TAB]||[];
+  var rows=(LOGS||[]).filter(l=>{
+    if(TAB==='settings')return l.event==='settings';
+    if(TAB==='reports')return String(l.event||'').startsWith('report');
+    if(TAB==='periodic')return String(l.event||'').startsWith('scheduler')||String(l.event||'').startsWith('periodic')||String(l.event||'').startsWith('inquiry');
+    if(!keys.length)return true;
+    return keys.some(k=>l[k]!==undefined&&l[k]!=='');
+  }).slice(-40).reverse();
+  var items=rows.map(l=>'<div class="kbd">'+esc(l.at)+' — <b>'+esc(l.event)+'</b> '
+    +esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
+  return '<div class="card history"><h3>تاریخچه</h3>'
+    +(items||'<div class="muted">رویدادی برای این بخش ثبت نشده است.</div>')+'</div>';
+}
 function renderTabs(){
   var devs=(STATE&&STATE.devices||[]);
   var counts={devices:devs.length,customers:(STATE&&STATE.customers||[]).length,
@@ -5500,8 +5720,10 @@ function renderView(){
   else if(TAB==='identities')body=identitiesHtml();
   else if(TAB==='periodic')body=periodicHtml();
   else if(TAB==='ledger')body=ledgerHtml();
+  else if(TAB==='settings')body=settingsHtml();
   else body=reportsHtml();
-  el.innerHTML=head+body;
+  var aside='<div class="crm-aside">'+historyHtml()+'</div>';
+  el.innerHTML=head+'<div class="crm-cols"><div class="crm-main">'+body+'</div>'+aside+'</div>';
   renderLogs();
 }
 async function refresh(){
@@ -6067,6 +6289,27 @@ class Handler(BaseHTTPRequestHandler):
             result = crm_periodic_toggle(str(data.get("device_id") or ""),
                                          remove=bool(data.get("remove")))
             self._json(result, 200 if result.get("ok") else 404)
+
+        elif self.path == "/crm-pay-stop":
+            data = self._read_json()
+            device_id = str(data.get("device_id") or "")
+            import crm as crm_mod
+            store = load_store()
+            device = next((d for d in crm_mod.store_read().get("devices", [])
+                           if str(d.get("id")) == device_id), None)
+            profile = next((p for p in store.get("profiles", [])
+                            if p.get("id") == (device or {}).get("profile_id")),
+                           None) if device else None
+            if not profile:
+                self._json({"ok": False,
+                            "errors": ["پروفایل پرداخت پیدا نشد"]}, 404)
+                return
+            status, payload = stop_profile(profile["id"])
+            if status == 200:
+                crm_mod.crm_log("info", "payment_stopped",
+                                device_id=device_id,
+                                profile_id=profile["id"])
+            self._json(payload, status)
 
         elif self.path == "/crm-tick":
             data = self._read_json()
