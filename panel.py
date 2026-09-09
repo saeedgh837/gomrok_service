@@ -981,7 +981,8 @@ def load_system_debug_config():
             data = json.load(handle) or {}
     except (OSError, ValueError):
         data = {}
-    return {"enabled": bool(data.get("enabled"))}
+    # Default ON: browser-run logs are the primary post-mortem evidence.
+    return {"enabled": bool(data.get("enabled", True))}
 
 
 def save_system_debug_config(data):
@@ -1210,11 +1211,8 @@ def log_site2_success(national=""):
         "ts": ts, "title": "", "national": national, "imei": "",
         "step": "ورود موفق", "status": "success", "message": message,
     }
-    try:
-        with open(LOGS_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print(f">>> (log-e site2 na-shod: {e})")
+    import log_utils
+    log_utils.append_jsonl(LOGS_PATH, rec)
     try:
         with open(SITE2_NOTIF_PATH, "w", encoding="utf-8") as f:
             json.dump({"ts": ts, "message": message}, f, ensure_ascii=False)
@@ -2038,11 +2036,8 @@ def estelam_log(status, message, step="", serial="", device_id=""):
         "device_id": device_id or "",
         "message": message or "",
     }
-    try:
-        with open(ESTELAM_LOGS_PATH, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    import log_utils
+    log_utils.append_jsonl(ESTELAM_LOGS_PATH, record)
     return record
 
 
@@ -4713,6 +4708,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.danger:hover{border-color:var(--danger)}
   .btn.ghost{background:transparent;border-color:transparent;color:var(--brand)}
   .btn.ghost:hover{background:var(--brand-soft);border-color:transparent}
+  .btn.warn{color:var(--pill-warn-fg);border-color:var(--pill-warn-fg);background:var(--pill-warn-bg)}
+  .btn.warn:hover{border-color:var(--pill-warn-fg);filter:brightness(.97)}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   /* KPI — "دفتر ثبت" ledger strip: one surface, hairline dividers, not 4
@@ -4875,6 +4872,10 @@ var STAGE_FA = {
 };
 var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
   'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok'};
+var STAGE_SKIP_NEXT = {
+  'new':'inquiry','inquiry':'ready_owner','ready_owner':'handed','handed':'to_payment',
+  'to_payment':'payment','payment':'payment_done','payment_done':'done','problem':'inquiry'
+};
 var EST_FA = {'pending':'در انتظار','running':'در حال استعلام','healthy':'سالم',
   'advanced':'ثبت‌شده در گمرک','problem':'دارای اشکال','error':'بدون پاسخ','':'—'};
 var EST_PILL = {'pending':'n','running':'warn','healthy':'ok','advanced':'ok','problem':'bad','error':'bad','':'n'};
@@ -4954,6 +4955,7 @@ function stageActions(d){
   if(st==='payment') a.push(['confirm_payment','تأیید پرداخت','primary']);
   if(st==='payment_done') a.push(['deliver_code','تحویل کد و تکمیل','primary']);
   if(st==='ready_owner') a.push(['__attach','اتصال مالک','']);
+  if(STAGE_SKIP_NEXT[st]) a.push(['__skip','رد کردن مرحله ⏭','skip']);
   if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
   if(STAGE_BACK_FA[st]) a.push(['__stage_back','↩ برگشت به «'+STAGE_BACK_FA[st]+'»','']);
   return a;
@@ -4965,6 +4967,20 @@ var STAGE_BACK_FA = {
 };
 function devTick(id, action){
   if(action==='__attach'){dlgAttach(id);return;}
+  if(action==='__skip'){
+    var d=(STATE.devices||[]).find(x=>x.id===id);
+    var next=STAGE_SKIP_NEXT[d?d.stage:'']||'';
+    if(!next){toast('رد کردن مرحله در این وضعیت ممکن نیست',false);return;}
+    var skippedNow=(d.skipped_stages||[]).length;
+    confirmDlg('رد کردن مرحله',
+      'مطمئنی می‌خوای گام «'+(STAGE_FA[d.stage]||d.stage)+'» رد بشه و مستقیم به «'+(STAGE_FA[next]||next)+'» بری؟ گیت‌های استعلام و مالک دور زده می‌شن و این ردشدن در پرونده ثبت می‌شود.',
+      'رد کردن مرحله',function(){
+        api('/crm-tick',{device_id:id,action:'stage_skip'}).then(async r=>{
+          toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» رفت (رد شد)');await refresh();})
+          .catch(e=>toast(e,false));
+      });
+    return;
+  }
   if(action==='__stage_back'){
     api('/crm-state').then(function(state){
       var d=(state.devices||[]).find(x=>x.id===id);if(!d)return;
@@ -5036,7 +5052,7 @@ function devicesHtml(){
   var cards=ds.map(function(d){
     var est=d.estelam||{};
     var acts=stageActions(d).map(a=>a[0]?
-      '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':'ghost'))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
+      '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
     return '<div class="dev'+(needsAction(d)?' needs-action':'')+'">'
       +'<div class="devhead">'+ICONS.dev+'<b>'+esc(d.name)+'</b>'
       +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'

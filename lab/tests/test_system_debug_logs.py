@@ -16,10 +16,13 @@ class SystemDebugTests(unittest.TestCase):
             log_dir = os.path.join(temp_dir, "logs", "system")
             with patch.object(panel, "SYSTEM_DEBUG_CONFIG_PATH", config_path), \
                     patch.object(panel, "SYSTEM_LOG_DIR", log_dir):
+                # Fresh file -> default ON; after saving disabled -> stays off.
+                self.assertEqual(panel.load_system_debug_config(), {"enabled": True})
+                self.assertEqual(panel.save_system_debug_config({"enabled": False}),
+                                 {"enabled": False})
                 self.assertEqual(panel.load_system_debug_config(), {"enabled": False})
-                self.assertEqual(panel.save_system_debug_config({"enabled": True}), {"enabled": True})
                 env = panel._robot_child_env()
-                self.assertEqual(env["IRICA_SYSTEM_DEBUG"], "1")
+                self.assertEqual(env["IRICA_SYSTEM_DEBUG"], "0")
                 self.assertEqual(env["IRICA_SYSTEM_LOG_DIR"], log_dir)
 
     def test_logs_are_listed_newest_first_and_read_safely(self):

@@ -87,6 +87,21 @@ _STAGE_BACK = {
     # code was delivered; reopening it would corrupt the ledger trail.
 }
 
+# Operator-initiated SKIP: jump to the NEXT mainline stage without passing the
+# normal gates (inquiry results, owner attachment). UI asks for explicit
+# confirmation and each skipped stage is recorded in `skipped_stages`.
+_STAGE_SKIP_NEXT = {
+    "new": "inquiry",
+    "inquiry": "ready_owner",
+    "ready_owner": "handed",
+    "handed": "to_payment",
+    "to_payment": "payment",
+    "payment": "payment_done",
+    "payment_done": "done",
+    # `done` is terminal: nothing to skip.
+    "problem": "inquiry",  # off-mainline branch re-enters the mainline
+}
+
 _STAGE_TIMESTAMP_KEY = {
     "handed": "handed_at",
     "to_payment": "registered_at",
@@ -405,15 +420,8 @@ def crm_log(level, event, **detail):
     and masked strings only (plan §12)."""
     entry = {"at": _now(), "level": str(level), "event": str(event)}
     entry.update({k: v for k, v in detail.items() if v})
-    try:
-        path = log_path()
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    import log_utils
+    log_utils.append_jsonl(log_path(), entry)
     return entry
 
 
@@ -885,6 +893,26 @@ def advance(device_id, action, **payload):
                 # Rollback past the intake tick: forget owner binding? No —
                 # only stage markers are reset; the owner link survives.
                 pass
+            device["updated"] = _now()
+            _store_write(data)
+            return device, []
+        if action == "stage_skip":
+            # Operator-initiated skip (UI confirmation required): jump to the
+            # NEXT mainline stage bypassing gates (inquiry results, owner
+            # attachment). Every skip is recorded as provenance so the ledger
+            # shows the stage was passed by operator decision, not by the
+            # normal gate.
+            next_stage = _STAGE_SKIP_NEXT.get(stage)
+            if not next_stage:
+                return None, ["رد کردن مرحله در این وضعیت ممکن نیست"]
+            skipped = device.setdefault("skipped_stages", [])
+            skipped.append({"stage": stage, "to": next_stage, "at": _now()})
+            device["stage"] = next_stage
+            stamp_key = _STAGE_TIMESTAMP_KEY.get(next_stage)
+            if stamp_key and not device.get(stamp_key):
+                device[stamp_key] = _now()
+            if next_stage == "done":
+                device["done_at"] = _now()
             device["updated"] = _now()
             _store_write(data)
             return device, []
