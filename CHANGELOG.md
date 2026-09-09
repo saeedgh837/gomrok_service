@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.4] - 2026-09-09
+
+### Added
+
+- Parallel inquiry runs: several devices can be inquired at the same time,
+  each with its own browser (cap 3 concurrent robot processes). The estelam
+  store tracks every live run in a `runs` registry (legacy `run_pid` still
+  honored); dead pids are pruned on read so the cap tracks reality.
+- Per-device "افزودن به استعلام دوره‌ای / حذف از استعلام دوره‌ای" toggle on the
+  CRM device card (watch stages).
+- Periodic tab: "+ افزودن پرونده" opens a device-picker modal with search,
+  10/20/30 page-size selector and pagination; checkboxes choose devices and
+  the selected ones are re-added to the periodic inquiry list.
+- Stage guide: every step on the numbered stage rail is a button; hovering
+  shows a tooltip and clicking opens a modal explaining that stage (what it
+  does, what it needs, what continues it).
+- Transactions tab: each row has a جزئیات button opening a detail modal with
+  customer, time, amount, kind, note, device name, device serial(s) and the
+  attached image; the registry-fee note now carries the device name.
+
+### Fixed
+
+- CRM tab counts showed 0 for every tab after a page load until a tab was
+  clicked: `refresh()` now re-renders the tab bar after state arrives.
+- Stopping the inquiry kills ALL live runs (not just the legacy single pid)
+  and resets only the devices those runs owned, so one run's stop no longer
+  clobbers a concurrent run's in-flight status.
+- Person identity is handed to each robot child through IRICA_PERSON_* env
+  vars; with parallel starts the shared store's `person` could previously be
+  overwritten before the child read it (wrong owner on the customs form).
+
 ## [1.1.3] - 2026-09-09
 
 ### Fixed

@@ -177,6 +177,7 @@ def test_runtime_and_stop_lifecycle():
     """runtime/stop ba yek process-e vaghe'i-ye zende (bedun-e robot)."""
     import subprocess as sp
     import time as t
+    from unittest.mock import patch
     with tempfile.TemporaryDirectory() as d:
         import panel
         old_store, old_logs = panel.ESTELAM_PATH, panel.ESTELAM_LOGS_PATH
@@ -191,6 +192,17 @@ def test_runtime_and_stop_lifecycle():
             data = panel.estelam_load()
             data["run_pid"] = proc.pid
             data["run_started"] = "2026-01-01 00:00:00"
+            data["runs"] = [{"pid": proc.pid, "device_id": rec["id"],
+                             "service": "gomrok",
+                             "started": "2026-01-01 00:00:00"}]
+            # fill the concurrency cap with placeholder live pids
+            fillers = []
+            for i in range(panel.ESTELAM_MAX_CONCURRENT - 1):
+                filler = sp.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+                fillers.append(filler)
+                data["runs"].append({"pid": filler.pid, "device_id": "",
+                                     "service": "gomrok",
+                                     "started": "2026-01-01 00:00:00"})
             panel.estelam_save(data)
             panel.estelam_set_device(rec["id"], status="running")
 
@@ -199,9 +211,26 @@ def test_runtime_and_stop_lifecycle():
             assert rt["counts"] == {"running": 1}
             assert panel.estelam_is_running() is True
 
+            # parallel start UNDER the cap succeeds (v1.1.4)
+            panel.estelam_add_device({"serial1": "356938035643810"})  # pending
+            data = panel.estelam_load()
+            data["runs"] = data["runs"][:1]          # drop fillers
+            panel.estelam_save(data)
+            with patch.object(panel, "start_estelam_process",
+                              return_value={"pid": proc.pid + 5000}):
+                parallel = panel.estelam_start()
+            assert parallel["ok"] is True, parallel
+
+            # cap reached -> refused (live pids: fillers + main proc)
+            data = panel.estelam_load()
+            data["runs"] = [{"pid": f.pid, "device_id": "", "service": "gomrok",
+                             "started": ""} for f in fillers]
+            data["runs"].append({"pid": proc.pid, "device_id": "",
+                                 "service": "gomrok", "started": ""})
+            panel.estelam_save(data)
             blocked = panel.estelam_start()
             assert blocked["ok"] is False
-            assert "در حال انجام" in blocked["errors"][0]
+            assert "سقف" in blocked["errors"][0]
 
             res = panel.estelam_stop()
             assert res["stopped"] is True
@@ -217,6 +246,11 @@ def test_runtime_and_stop_lifecycle():
                 proc.kill()
             except OSError:
                 pass
+            for filler in fillers:
+                try:
+                    filler.kill()
+                except (OSError, NameError):
+                    pass
             panel.ESTELAM_PATH, panel.ESTELAM_LOGS_PATH = old_store, old_logs
 
 

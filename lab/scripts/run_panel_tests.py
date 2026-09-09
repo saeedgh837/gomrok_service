@@ -32,6 +32,7 @@ DEFAULT = [
     "test_v1_1_2_crm_updates",
     "test_v1_1_3_captcha_stall",
     "test_v1_4_finance_periodic",
+    "test_v1_1_4_parallel_ux",
     "test_dashboard_rewrite",
     "test_system_debug_logs",
     "test_robot_interpreter", "test_manual_scroll", "test_app_paths",

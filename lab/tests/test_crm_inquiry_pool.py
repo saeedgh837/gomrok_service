@@ -33,9 +33,10 @@ class CrmInquiryCase(unittest.TestCase):
         with open(self.estelam, "w", encoding="utf-8") as handle:
             json.dump({"person": person or {}, "devices": list(devices)}, handle)
 
-    def _crm_device(self, stage="new", owner=False):
-        record, errs = crm.add_device({"name": "iPhone 13",
-                                       "serial1": "356938035643809"})
+    def _crm_device(self, stage="new", owner=False, name="iPhone 13",
+                    serial1="356938035643809"):
+        record, errs = crm.add_device({"name": name,
+                                       "serial1": serial1})
         assert errs == [], errs
         if stage != "new":
             crm.advance(record["id"], "queue_inquiry")
@@ -180,13 +181,33 @@ class TestPerDeviceStart(CrmInquiryCase):
         for key, value in manual_row.items():
             self.assertEqual(row.get(key), value, key)
 
-    def test_refuses_when_estelam_already_running(self):
+    def test_parallel_start_allowed_under_cap(self):
+        # v1.1.4: a live run no longer blocks a second single-device inquiry;
+        # both spawns go out (each opens its own browser).
+        device_a = self._crm_device(stage="new")
+        device_b = self._crm_device(stage="new", name="iPhone 14",
+                                    serial1="356938035643810")
+        self._pool(2)
+        with patch.object(panel, "start_estelam_process") as spawn, \
+                patch.object(panel, "estelam_is_running", return_value=True):
+            spawn.return_value = {"pid": 101}
+            first = panel.crm_start_inquiry(device_a["id"], service="gomrok")
+            self.assertTrue(first["ok"], first)
+            spawn.return_value = {"pid": 102}
+            second = panel.crm_start_inquiry(device_b["id"], service="gomrok")
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(spawn.call_count, 2)
+
+    def test_refuses_when_concurrency_cap_reached(self):
+        # estelam_live_runs reports ESTELAM_MAX_CONCURRENT live pids -> refuse.
         device = self._crm_device(stage="new")
         self._pool(1)
-        with patch.object(panel, "estelam_is_running", return_value=True):
+        full = [{"pid": 100 + i, "device_id": "d" + str(i), "service": "gomrok",
+                 "started": ""} for i in range(panel.ESTELAM_MAX_CONCURRENT)]
+        with patch.object(panel, "estelam_live_runs", return_value=full):
             result = panel.crm_start_inquiry(device["id"], service="gomrok")
         self.assertFalse(result["ok"])
-        self.assertTrue(any("در حال انجام" in e for e in result["errors"]))
+        self.assertTrue(any("سقف" in e for e in result["errors"]))
 
     def test_hamta_ignores_identity(self):
         device = self._crm_device(stage="new")

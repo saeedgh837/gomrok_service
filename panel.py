@@ -1391,7 +1391,9 @@ def crm_state_payload():
         enriched.append(row)
     out = dict(data)
     out["devices"] = enriched
-    out["estelam_running"] = estelam_is_running()
+    live_runs = estelam_live_runs()
+    out["estelam_running"] = bool(live_runs)
+    out["estelam_runs"] = live_runs
     return out
 
 
@@ -1461,8 +1463,9 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
         unscoped sweep that would swallow the operator's manual site-2 rows).
     """
     import crm as crm_mod
-    if estelam_is_running():
-        return {"ok": False, "errors": ["یک اجرای استعلام در حال انجام است — بعداً تلاش می‌شود"]}
+    if len(estelam_live_runs()) >= ESTELAM_MAX_CONCURRENT:
+        return {"ok": False, "errors": [
+            f"سقف اجرای همزمان استعلام ({ESTELAM_MAX_CONCURRENT}) پر است — بعداً تلاش می‌شود"]}
     if service not in ESTELAM_SERVICES:
         service = "gomrok"
     person = {"national": "", "birth": "", "mobile": ""}
@@ -1653,14 +1656,15 @@ def crm_scheduler_stop():
 
 
 def crm_scheduler_tick(origin="scheduler"):
-    """One scheduler beat: start at most ONE due watch-stage device per tick
-    (runs are serialized by the estelam is-running gate)."""
+    """One scheduler beat: start at most ONE due watch-stage device per tick;
+    parallelism is bounded by ESTELAM_MAX_CONCURRENT (v1.1.4) instead of a
+    single-run gate."""
     import crm as crm_mod
     data = crm_mod.store_read()
     if not (data.get("settings") or {}).get("scheduler_enabled"):
         return {"ok": False, "started": []}
-    if estelam_is_running():
-        crm_mod.crm_log("info", "scheduler_skipped_running")
+    if len(estelam_live_runs()) >= ESTELAM_MAX_CONCURRENT:
+        crm_mod.crm_log("info", "scheduler_skipped_cap")
         return {"ok": False, "started": []}
     watch = {"handed", "to_payment"}
     started = []
@@ -1950,12 +1954,19 @@ ESTELAM_SERVICES = {
 ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه استعلام‌ها"}
 
 
-def start_estelam_process(device_id=None, service="gomrok"):
+def start_estelam_process(device_id=None, service="gomrok", person=None):
     script, base_args = ESTELAM_SERVICES.get(service, ESTELAM_SERVICES["gomrok"])
     command = _robot_command(ROBOT_PYTHON, script, *base_args)
     if device_id:
         command += ["--device-id", str(device_id)]
     child_env = _robot_child_env()
+    # Race-free identity handoff (v1.1.4 parallel runs): the child reads its own
+    # identity from env instead of the shared store, which a parallel start may
+    # overwrite between spawn and the child's first read.
+    for key in ("national", "birth", "mobile"):
+        value = str((person or {}).get(key) or "").strip()
+        if value:
+            child_env["IRICA_PERSON_" + key.upper()] = value
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env,
@@ -1976,8 +1987,9 @@ def estelam_start(device_id=None, service="gomrok"):
     # gomrok/all be kod-e melli va tarikh-e tavallod niaz darand.
     if errors and service != "hamta":
         return {"ok": False, "errors": ["اطلاعات شخص برای استعلام را پر کنید"] +errors}
-    if estelam_is_running():
-        return {"ok": False, "errors": ["یک اجرای استعلام در حال انجام است — ابتدا آن را متوقف کنید"]}
+    if len(estelam_live_runs()) >= ESTELAM_MAX_CONCURRENT:
+        return {"ok": False, "errors": [
+            f"سقف اجرای همزمان استعلام ({ESTELAM_MAX_CONCURRENT}) پر است — بعداً تلاش می‌شود"]}
     targets = data.get("devices") or []
     if device_id:
         targets = [d for d in targets if str(d.get("id")) == str(device_id)]
@@ -1989,12 +2001,22 @@ def estelam_start(device_id=None, service="gomrok"):
                    if str(d.get("status") or "pending") in ("pending", "error", "")]
     if not targets:
         return {"ok": False, "errors": ["دستگاهی برای استعلام وجود ندارد"]}
-    runtime = start_estelam_process(device_id, service=service)
+    runtime = start_estelam_process(device_id, service=service,
+                                    person=data.get("person") or {})
     data = estelam_load()
     data["run_pid"] = runtime.get("pid")
     data["run_device_id"] = str(device_id or "")
     data["run_service"] = service
     data["run_started"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    # Multi-run registry: every spawned robot process is tracked so several
+    # single-device inquiries can run in parallel (cap ESTELAM_MAX_CONCURRENT).
+    runs = [r for r in (data.get("runs") or [])
+            if str(r.get("pid")) != str(runtime.get("pid"))]
+    runs.append({"pid": runtime.get("pid"),
+                 "device_id": str(device_id or ""),
+                 "service": service,
+                 "started": data["run_started"]})
+    data["runs"] = runs
     estelam_save(data)
     estelam_log("info", f"استعلام {ESTELAM_SERVICE_FA.get(service, service)} شروع شد "
                         f"({len(targets)} دستگاه) — pid {runtime.get('pid')}",
@@ -2003,13 +2025,46 @@ def estelam_start(device_id=None, service="gomrok"):
             "service": service}
 
 
+ESTELAM_MAX_CONCURRENT = 3   # parallel robot processes (each opens its own browser)
+
+
 def estelam_is_running():
+    """Any live inquiry run? (kept for backward compatibility)"""
+    return bool(estelam_live_runs())
+
+
+def estelam_live_runs():
+    """Pids of live inquiry runs from the runs registry.
+
+    The registry is the store's `runs` list; the legacy single `run_pid`
+    slot is honored for rows written by older builds. Dead pids are
+    pruned on read so the cap tracks reality, not stale crashes.
+    """
     data = estelam_load()
-    pid = data.get("run_pid")
+    runs = []
+    seen = set()
+    for entry in data.get("runs") or []:
+        try:
+            pid = int(entry.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0 and pid not in seen and _pid_alive(pid):
+            runs.append({"pid": pid,
+                         "device_id": str(entry.get("device_id") or ""),
+                         "service": str(entry.get("service") or "gomrok"),
+                         "started": str(entry.get("started") or "")})
+            seen.add(pid)
+    legacy = data.get("run_pid")
     try:
-        return bool(pid) and _pid_alive(int(pid))
+        legacy = int(legacy or 0)
     except (TypeError, ValueError):
-        return False
+        legacy = 0
+    if legacy > 0 and legacy not in seen and _pid_alive(legacy):
+        runs.append({"pid": legacy,
+                     "device_id": str(data.get("run_device_id") or ""),
+                     "service": str(data.get("run_service") or "gomrok"),
+                     "started": str(data.get("run_started") or "")})
+    return runs
 
 
 def estelam_runtime():
@@ -2038,25 +2093,39 @@ def estelam_runtime():
 
 
 def estelam_stop():
-    """Process-e estelam (va morurgar-e farzandash) ra mibandad."""
-    data = estelam_load()
-    pid = int(data.get("run_pid") or 0)
-    stopped = stop_profile_process(pid) if pid else False
+    """Tamam-e ejra-haye estelam (va morurgar-e farzandashan) ra mibandad.
+
+    Parallel runs (v1.1.4): every live pid in the runs registry is killed;
+    only the devices those runs actually owned are reset from `running` so
+    a concurrent run's in-flight status is never clobbered by a neighbor's
+    stop.
+    """
+    live = estelam_live_runs()
+    stopped_pids = []
+    for run in live:
+        if stop_profile_process(run["pid"]):
+            stopped_pids.append(run["pid"])
     data = estelam_load()
     data["run_pid"] = 0
+    data["runs"] = []
+    stopped_ids = {str(r["device_id"]) for r in live if r["device_id"]}
     for device in data["devices"]:
-        if device.get("status") == "running":
+        owned = (not stopped_ids) or (str(device.get("id")) in stopped_ids)
+        if owned and device.get("status") == "running":
             device["status"] = "pending"
             device["result"] = "توقف دستی توسط کاربر"
-        if device.get("hamta_status") == "running":
+        if owned and device.get("hamta_status") == "running":
             device["hamta_status"] = "pending"
             device["hamta_result"] = "توقف دستی توسط کاربر"
     estelam_save(data)
-    estelam_log("warn" if stopped else "info",
-                ("استعلام متوقف و مرورگر بسته شد" if stopped
+    estelam_log("warn" if stopped_pids else "info",
+                (f"{len(stopped_pids)} اجرای استعلام متوقف شد"
+                 if stopped_pids
                  else "اجرای فعالی برای توقف پیدا نشد"),
                 step="مدیریت")
-    return {"ok": True, "stopped": stopped, "runtime": estelam_runtime()}
+    return {"ok": True, "stopped": bool(stopped_pids),
+            "stopped_count": len(stopped_pids),
+            "runtime": estelam_runtime()}
 
 
 def estelam_restart():
@@ -4845,6 +4914,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
     color:var(--faint);font-size:8.5px;font-weight:700;display:grid;place-items:center;
     font-variant-numeric:tabular-nums}
   .rail{counter-reset:stage}
+  .rail .step{border:0;padding:0;cursor:pointer;font:inherit}
+  .rail .step:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
   .rail .step.done{background:var(--ok)}
   .rail .step.done::before{background:var(--ok-soft);color:var(--ok)}
   .rail .step.cur{background:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
@@ -5016,6 +5087,7 @@ var ICONS = {
   search:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
   swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
   stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>'
+  info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11.2 12h.8v4h.8"/><path d="M11.2 12h1.6v4h1"/></svg>',
 };
 var INTAKE_STAGES = ['new','inquiry','problem','ready_owner'];
 var STAGE_CONTINUE_FA = {
@@ -5120,6 +5192,24 @@ function devTick(id, action){
 function needsAction(d){
   return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
 }
+var STAGE_GUIDE = {
+  'new': {n:1, name:'ثبت پرونده', desc:'سریال دستگاه ثبت و به مشتری وصل می‌شود. این مرحله فقط ورود اطلاعات است؛ هنوز هیچ استعلامی اجرا نشده.'},
+  'inquiry': {n:2, name:'صف استعلام', desc:'پرونده در صف استعلام گمرک و همتا است. ربات با هویت استخر، وضعیت دستگاه را از هر دو سایت می‌پرسد. سبز شد یعنی هر دو پاسخ سالم دادند.'},
+  'problem': {n:3, name:'دارای اشکال', desc:'سایت گمرک یا همتا برای این دستگاه مشکلی اعلام کرده (مثلاً قبلاً ثبت‌شده یا بلاک). برای ادامه باید مشکل حل شود یا با «بازگشت به صف» دوباره استعلام بگیرد.'},
+  'ready_owner': {n:4, name:'سالم — نیازمند مسافر', desc:'دستگاه سالم است؛ برای ثبت‌نام رجیستری به اطلاعات مسافر (نام، کد ملی، تاریخ تولد) نیاز دارد. مسافر را از دکمهٔ «اتصال مسافر» وصل کنید.'},
+  'handed': {n:5, name:'تحویل به مسئول سایت', desc:'پرونده به مسئول ثبت‌کنندهٔ سایت تحویل شده و در لیست استعلام دوره‌ای گمرک قرار می‌گیرد تا وضعیتش مرتب چک شود.'},
+  'to_payment': {n:6, name:'ثبت‌شده — در انتظار پرداخت', desc:'دستگاه در سایت گمرک ثبت شده است. حالا باید هزینهٔ رجیستری پرداخت شود؛ ربات پرداخت می‌تواند لینک را خودش بگیرد.'},
+  'payment': {n:7, name:'در حال پرداخت', desc:'ربات پرداخت روی درگاه است. رسید و اسکرین‌شات همین‌جا در کارت پرونده می‌آید؛ بعد از تأیید، مرحلهٔ بعد می‌رود.'},
+  'payment_done': {n:8, name:'پرداخت تأییدشده', desc:'پرداخت تأیید شد. فقط تحویل کد رجیستری به مشتری مانده است.'},
+  'done': {n:9, name:'تکمیل‌شده', desc:'چرخهٔ پرونده کامل شد: ثبت‌نام، پرداخت و تحویل انجام شده. استعلام دوره‌ای برای اطمینان ادامه دارد.'}
+};
+function stageGuideModal(stage){
+  var g=STAGE_GUIDE[stage];
+  if(!g)return;
+  openDlg('<h3>'+esc('گام '+g.n+' — '+g.name)+'</h3>'
+    +'<p style="margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:2">'+esc(g.desc)+'</p>'
+    +'<div class="row" style="margin-top:10px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
+}
 function railHtml(d){
   var cur = STAGE_ORDER.indexOf(d.stage);
   var steps = STAGE_ORDER.map(function(st,i){
@@ -5127,9 +5217,13 @@ function railHtml(d){
     if(d.stage==='problem' && st==='problem') cls+=' bad';
     else if(i<cur) cls+=' done';
     else if(i===cur) cls+= (st==='problem'?' bad':(STAGE_TONE[st]==='ok'?' done':' cur'));
-    return '<span class="'+cls+'" title="'+esc(STAGE_FA[st])+'"></span>';
+    var g=STAGE_GUIDE[st]||{};
+    var label='گام '+(g.n||(i+1))+' — '+(STAGE_FA[st]||st);
+    return '<button type="button" class="'+cls+'" title="'+esc(label)+'" '
+      +'onclick="stageGuideModal(\''+st+'\')" '
+      +'aria-label="'+esc(label)+'"></button>';
   }).join('');
-  return '<div class="rail" aria-hidden="true">'+steps+'</div>';
+  return '<div class="rail" role="group" aria-label="مراحل پرونده">'+steps+'</div>';
 }
 
 /* ================= KPI strip ================= */
@@ -5154,9 +5248,10 @@ function kpisHtml(){
 function devicesHtml(){
   var ds=(STATE.devices||[]).slice().sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
+  var runCount=(STATE.estelam_runs||[]).length;
   var runningBanner=(STATE.estelam_running)
     ?'<div class="row" style="margin:0 0 12px;align-items:center">'
-      +'<span class="pill warn">ربات استعلام در حال اجراست</span>'
+      +'<span class="pill warn">ربات استعلام در حال اجراست'+(runCount>1?' — '+fa(runCount)+' اجرای همزمان':'')+'</span>'
       +'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button></div>'
     :'';
   if(!ds.length) return runningBanner+'<div class="row" style="margin-bottom:12px">'
@@ -5210,6 +5305,10 @@ function devicesHtml(){
       +(INTAKE_STAGES.includes(d.stage)
         ?'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
          +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
+      +(PERIODIC_STAGES[d.stage]
+        ?(d.periodic_opt_out
+          ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
+          :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
       +(STATE.estelam_running?'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button>':'')
       +(acts?'':'<span class="muted">—</span>')
       +(acts?'<span style="flex:1"></span>'+acts:'')
@@ -5304,6 +5403,64 @@ function periodicResetSelected(){
         .catch(e=>toast(e,false));
     });
 }
+/* ---- periodic add-devices modal (search + pagesize + pagination) ---- */
+var PA_PAGE=1, PA_SIZE=10, PA_Q='';
+function periodicAddModal(){
+  PA_PAGE=1;PA_Q='';
+  openDlg('<h3>افزودن پرونده به استعلام دوره‌ای</h3>'
+    +'<div class="row" style="margin:0 0 10px">'
+    +'<input id="paQ" placeholder="جستجو: نام یا سریال…" style="flex:1" oninput="paSearch(this.value)">'
+    +'<select id="paSize" onchange="paSize(this.value)"><option value="10">۱۰ تایی</option>'
+    +'<option value="20">۲۰ تایی</option><option value="30">۳۰ تایی</option></select></div>'
+    +'<div id="paBody"></div><div id="paNav" class="row" style="margin-top:8px"></div>'
+    +'<div class="row" style="margin-top:10px">'
+    +'<button class="btn primary" onclick="paAddSelected()">افزودن به استعلام دوره‌ای</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+  paRender();
+}
+function paSearch(q){PA_Q=String(q||'').trim();PA_PAGE=1;paRender();}
+function paSize(v){PA_SIZE=Math.max(1,Number(v)||10);PA_PAGE=1;paRender();}
+function paDevices(){
+  return (STATE.devices||[]).filter(d=>{
+    if(!PERIODIC_STAGES[d.stage])return false;
+    if(!PA_Q)return true;
+    var hay=(String(d.name||'')+' '+String(d.serial1||'')+' '+String(d.serial2||''));
+    return hay.indexOf(PA_Q)>=0;
+  });
+}
+function paRender(){
+  var body=document.getElementById('paBody'),nav=document.getElementById('paNav');
+  if(!body)return;
+  var all=paDevices();
+  var pages=Math.max(1,Math.ceil(all.length/PA_SIZE));
+  if(PA_PAGE>pages)PA_PAGE=pages;
+  var slice=all.slice((PA_PAGE-1)*PA_SIZE,PA_PAGE*PA_SIZE);
+  var rows=slice.map(d=>{
+    var on=!d.periodic_opt_out;
+    return '<label class="row" style="margin:0 0 6px;align-items:center;gap:8px">'
+      +'<input type="checkbox" class="paSel" value="'+esc(d.id)+'" '+(on?'checked':'')+'>'
+      +'<b>'+esc(d.name)+'</b><span class="kbd">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
+      +(on?'<span class="pill ok">در لیست</span>':'<span class="pill n">خارج از لیست</span>')
+      +'</label>';
+  }).join('');
+  body.innerHTML=rows||'<div class="empty">پرونده‌ای برای افزودن نیست — فقط پرونده‌های «تحویل به مسئول سایت» و بعدی به استعلام دوره‌ای می‌روند.</div>';
+  var navHtml='';
+  if(pages>1){
+    for(var p=1;p<=pages;p++)
+      navHtml+='<button class="btn mini '+(p===PA_PAGE?'primary':'ghost')+'" onclick="paGo('+p+')">'+fa(p)+'</button>';
+  }
+  nav.innerHTML=navHtml+'<span class="muted">'+fa(all.length)+' پرونده</span>';
+}
+function paGo(p){PA_PAGE=p;paRender();}
+function paAddSelected(){
+  var boxes=[].slice.call(document.querySelectorAll('#paBody .paSel:checked'));
+  if(!boxes.length){toast('پرونده‌ای انتخاب نشده است',false);return;}
+  var jobs=boxes.map(b=>api('/crm-periodic',{device_id:b.value,remove:false}));
+  Promise.all(jobs).then(async()=>{
+    closeDlg();toast('به استعلام دوره‌ای اضافه شد');await refresh();
+  }).catch(e=>toast(e,false));
+}
+
 function periodicResetOne(id){
   confirmDlg('ریست تاریخچهٔ استعلام','تاریخچهٔ استعلام این دستگاه پاک شود؟ نتیجهٔ فعلی و زمان آخرین استعلام حذف می‌شود.',
     'ریست',function(){
@@ -5397,7 +5554,8 @@ function periodicHtml(){
     '<button class="btn primary" onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
     '<button class="btn" onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
     '<button class="btn warn" onclick="periodicResetSelected()">ریست تاریخچهٔ انتخاب‌شده‌ها</button>'+
-    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>یک اجرا در جریان است</b>':'')+'</span></div>'+
+    '<button class="btn" onclick="periodicAddModal()">+ افزودن پرونده</button>'+
+    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span></div>'+
     '<table><thead><tr><th><input type="checkbox" id="periodicSelAll" onchange="periodicSelAll(this)"></th><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
     '<tbody>'+(rows||'<tr><td colspan="8"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
     '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+
@@ -5516,14 +5674,39 @@ function identitiesHtml(){
 function ledgerHtml(){
   var rows='';
   (STATE.customers||[]).forEach(c=>{
-    (c.transactions||[]).slice().reverse().forEach(t=>{
+    var txs=c.transactions||[];
+    for(var idx=txs.length-1; idx>=0; idx--){            // newest first (as before)
+      var t=txs[idx];
       rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
-      +'<td class="kbd">'+esc(t.note||'—')+(t.image?' · <a target="_blank" href="/tx-artifact?name='+encodeURIComponent(t.image)+'">پیوست</a>':'')+'</td></tr>';
-    });
+      +'<td class="kbd">'+esc(t.note||'—')+'</td>'
+      +'<td><button class="btn mini ghost" title="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+' جزئیات</button></td></tr>';
+    }
   });
-  return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="4"><div class="empty"><b>تراکنشی ثبت نشده است</b>از تب مشتریان روی «تراکنش» بزنید.</div></td></tr>')+'</tbody></table></div>';
+  return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th><th></th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>تراکنشی ثبت نشده است</b>از تب مشتریان روی «تراکنش» بزنید.</div></td></tr>')+'</tbody></table></div>';
+}
+var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','':'—'};
+function txDetailModal(cid, idx){
+  var c=(STATE.customers||[]).find(x=>x.id===cid);
+  if(!c)return;
+  var t=(c.transactions||[])[idx];
+  if(!t)return;
+  var d=(STATE.devices||[]).find(x=>x.id===t.device_id);
+  var serials=[d&&d.serial1,d&&d.serial2].filter(Boolean).join(' / ');
+  var rows=[
+    ['مشتری', esc(c.full_name||'—')],
+    ['زمان', '<span class="kbd">'+esc(t.at||'—')+'</span>'],
+    ['مبلغ', t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>'
+                       :'<span class="pill ok">'+money(t.amount)+'</span>'],
+    ['نوع', esc(TX_KIND_FA[t.kind]||t.kind||'—')],
+    ['شرح', esc(t.note||'—')],
+    ['پرونده', d?esc(d.name):'<span class="muted">—</span>'],
+    ['سریال دستگاه', serials?'<span class="kbd">'+esc(serials)+'</span>':'<span class="muted">—</span>'],
+    ['پیوست', t.image?'<a target="_blank" href="/tx-artifact?name='+encodeURIComponent(t.image)+'">مشاهده تصویر</a>':'<span class="muted">—</span>']
+  ].map(r=>'<tr><td class="muted" style="white-space:nowrap">'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+  openDlg('<h3>جزئیات تراکنش</h3><table style="width:100%;font-size:13.5px">'+rows+'</table>'
+    +'<div class="row" style="margin-top:10px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
 }
 
 /* ================= reports ================= */
@@ -5851,6 +6034,7 @@ async function refresh(){
     STATE.periodic_logs=((await r[2].json()).logs||[]).reverse();
     LOADFAIL=false;
   }catch(e){ LOADFAIL=true; }
+  renderTabs();
   renderView();
   if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
@@ -6675,13 +6859,15 @@ class Handler(BaseHTTPRequestHandler):
             for entry_id in ids:
                 result = crm_start_inquiry(str(entry_id), service=service,
                                            origin="manual")
+                errors = result.get("errors") or []
                 results.append({"device_id": str(entry_id), "ok": result.get("ok"),
-                                "errors": result.get("errors")})
+                                "errors": errors})
                 if result.get("ok"):
                     queued += 1
-                    if not estelam_is_running():
-                        continue
-                    break   # a run is live; the rest go through the scheduler
+                elif any("سقف" in str(e) for e in errors):
+                    # Cap reached: stop here; the operator can re-run the rest
+                    # when a browser frees up. Keep the failure visible.
+                    break
             self._json({"ok": queued > 0, "queued": queued, "results": results})
 
         elif self.path == "/crm-inquiry-reset":

@@ -282,13 +282,16 @@ class CrmInquireRouteTests(unittest.TestCase):
         stop.assert_called_once()
 
     def test_crm_state_carries_estelam_running_flag(self):
-        with patch.object(panel, "estelam_is_running", return_value=True):
+        live = [{"pid": 4321, "device_id": "d1", "service": "gomrok",
+                 "started": "2026-09-09 10:00:00"}]
+        with patch.object(panel, "estelam_live_runs", return_value=live):
             with urllib.request.urlopen(
                     f"http://127.0.0.1:{self.port}/crm-state",
                     timeout=10) as response:
                 body = json.loads(response.read().decode("utf-8"))
         self.assertIn("estelam_running", body)
         self.assertTrue(body["estelam_running"])
+        self.assertEqual(body["estelam_runs"], live)
 
 
 class CrmStatePayloadTests(_StoreHarness):

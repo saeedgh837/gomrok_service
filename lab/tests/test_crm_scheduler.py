@@ -108,9 +108,11 @@ class TestSchedulerTick(CrmSchedulerCase):
         self.assertEqual(result["started"], [])
         start.assert_not_called()
 
-    def test_running_estelam_blocks_tick(self):
+    def test_concurrency_cap_blocks_tick(self):
         device = self._device_at_handed()
-        with patch.object(panel, "estelam_is_running", return_value=True):
+        full = [{"pid": 100 + i, "device_id": "d" + str(i), "service": "gomrok",
+                 "started": ""} for i in range(panel.ESTELAM_MAX_CONCURRENT)]
+        with patch.object(panel, "estelam_live_runs", return_value=full):
             result = panel.crm_scheduler_tick()
         self.assertFalse(result["ok"])
         self.assertEqual(result["started"], [])

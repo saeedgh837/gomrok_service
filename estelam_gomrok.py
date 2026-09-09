@@ -575,8 +575,16 @@ def main():
     ap.add_argument("--no-confirm-check", action="store_true")
     args = ap.parse_args()
 
+    # Identity via env (v1.1.4 parallel runs): with several robots starting at
+    # once, each child must use ITS OWN start's identity — the shared store's
+    # `person` may already be overwritten by the next start. Env wins over store.
+    person = {k: os.environ.get("IRICA_PERSON_" + k.upper(), "")
+              for k in ("national", "birth", "mobile")}
+    person = {k: v for k, v in person.items() if v}
     store = _store_read()
-    person = store.get("person") or {}
+    if not person.get("national") or not person.get("birth"):
+        stored_person = store.get("person") or {}
+        person = {**stored_person, **person}
     devices = store.get("devices") or []
     if args.device_id:
         devices = [d for d in devices if str(d.get("id")) == str(args.device_id)]

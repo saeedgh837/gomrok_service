@@ -583,8 +583,12 @@ def _charge_registry_fee(data, customer_id, device_id):
                   for t in customer.get("transactions", []))
     if already:
         return None
+    device = next((d for d in data.get("devices", [])
+                   if str(d.get("id")) == str(device_id or "")), None)
+    device_name = str((device or {}).get("name") or "").strip()
+    note = (REGISTRY_FEE_NOTE + (" — " + device_name if device_name else ""))
     entry = {"at": _now(), "amount": -amount,
-             "note": REGISTRY_FEE_NOTE, "kind": "base_fee",
+             "note": note, "kind": "base_fee",
              "image": "", "device_id": str(device_id or "").strip()}
     customer.setdefault("transactions", []).append(entry)
     customer["updated"] = _now()
