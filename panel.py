@@ -1421,6 +1421,25 @@ def crm_sync_queue(device_id):
     return []
 
 
+def crm_periodic_toggle(device_id, remove=True):
+    """Operator control for the periodic gomrok inquiry list (CRM tab):
+    remove=True opts the device OUT of auto periodic runs; remove=False
+    re-enrolls it. Devices reaching `handed` are enrolled by default."""
+    import crm as crm_mod
+    with crm_mod.STORE_LOCK:
+        data = crm_mod.store_read()
+        device = next((d for d in data.get("devices", [])
+                       if d.get("id") == device_id), None)
+        if not device:
+            return {"ok": False, "errors": ["دستگاه پیدا نشد"]}
+        device["periodic_opt_out"] = bool(remove)
+        device["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        crm_mod.store_write(data)
+        crm_mod.crm_log("info", "periodic_opt_out" if remove
+                        else "periodic_opt_in", device_id=device_id)
+        return {"ok": True, "device": device, "errors": []}
+
+
 def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
     """CRM-scoped inquiry start (plan section 2):
       - pick the identity FOR THIS STAGE: random valid pool entry for
@@ -1635,6 +1654,8 @@ def crm_scheduler_tick(origin="scheduler"):
     started = []
     for device in data.get("devices", []):
         if device.get("stage") not in watch:
+            continue
+        if device.get("periodic_opt_out"):
             continue
         if not _crm_is_due(device, data.get("settings") or {}):
             continue
@@ -3546,7 +3567,7 @@ h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
   <div class="stat blocked"><div class="n" id="s-blocked">—</div><div class="l">مسدود</div></div>
 </section>
 <div class="sites">
-<a class="site" data-site="crm" href="/crm"><span class="num">۱</span><h2>پنل یکپارچه رجیستری</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مالک، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
+<a class="site" data-site="crm" href="/crm"><span class="num">۱</span><h2>پنل یکپارچه رجیستری</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مسافر، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
 <a class="site" data-site="2" href="/site-2"><span class="num">۲</span><h2>استعلام سلامت دستگاه</h2><p>استعلام وضعیت دستگاه از سایت گمرک (فقط صفحه اول) با یک پروفایل شخص و لیست دستگاه‌ها.</p><div class="tags"><span class="tag">استعلام سلامت</span><span class="tag">افزودن عمده</span><span class="tag">ترتیب تصادفی</span></div><span class="go">←</span></a>
 <a class="site" data-site="1" href="/site-1"><span class="num">۳</span><h2>پنل قدیمی رجیستری</h2><p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p><div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div><span class="go">←</span></a>
 </div>
@@ -4847,7 +4868,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <div class="head">
-    <h1><span class="mono">R</span><span>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مالک ← تحویل ← پرداخت ← کد فعال‌سازی</div></span></h1>
+    <h1><span class="mono">R</span><span>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مسافر ← تحویل ← پرداخت ← کد فعال‌سازی</div></span></h1>
     <a class="back" href="/site-2">پنل استعلام‌ها →</a>
     <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
     <button class="iconbtn" id="themeBtn">پوسته</button>
@@ -4866,7 +4887,7 @@ var STATE = null, TAB = (new URLSearchParams(location.search).get('tab')||'devic
 var STAGE_ORDER = ['new','inquiry','problem','ready_owner','handed','to_payment','payment','payment_done','done'];
 var STAGE_FA = {
   'new':'جدید','inquiry':'در انتظار استعلام','problem':'دارای اشکال',
-  'ready_owner':'سالم — نیازمند مالک','handed':'تحویل به مسئول سایت',
+  'ready_owner':'سالم — نیازمند مسافر','handed':'تحویل به مسئول سایت',
   'to_payment':'ثبت‌شده — در انتظار پرداخت','payment':'در حال پرداخت',
   'payment_done':'پرداخت تأییدشده','done':'تکمیل‌شده'
 };
@@ -4879,9 +4900,13 @@ var STAGE_SKIP_NEXT = {
 var EST_FA = {'pending':'در انتظار','running':'در حال استعلام','healthy':'سالم',
   'advanced':'ثبت‌شده در گمرک','problem':'دارای اشکال','error':'بدون پاسخ','':'—'};
 var EST_PILL = {'pending':'n','running':'warn','healthy':'ok','advanced':'ok','problem':'bad','error':'bad','':'n'};
+var HAMTA_FA_CARD = {'pending':'در انتظار','running':'در حال استعلام','good':'مجاز (قابل ثبت)',
+  'registered':'ثبت‌شده (قانونی)','blocked':'مسدود/خطر','success':'موفق','unknown':'نامشخص','error':'خطای ربات','':'—'};
+var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','success':'ok',
+  'blocked':'bad','unknown':'warn','error':'bad','':'n'};
 var TABS = [
-  ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','مالکان'],
-  ['identities','استخر هویت'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها']
+  ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
+  ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها']
 ];
 
 /* ================= plumbing ================= */
@@ -4954,14 +4979,14 @@ function stageActions(d){
   if(st==='to_payment'&&!d.auto_advance) a.push(['__start_payment','شروع پرداخت','primary']);
   if(st==='payment') a.push(['confirm_payment','تأیید پرداخت','primary']);
   if(st==='payment_done') a.push(['deliver_code','تحویل کد و تکمیل','primary']);
-  if(st==='ready_owner') a.push(['__attach','اتصال مالک','']);
+  if(st==='ready_owner') a.push(['__attach','اتصال مسافر','']);
   if(STAGE_SKIP_NEXT[st]) a.push(['__skip','رد کردن مرحله ⏭','skip']);
   if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
   if(STAGE_BACK_FA[st]) a.push(['__stage_back','↩ برگشت به «'+STAGE_BACK_FA[st]+'»','']);
   return a;
 }
 var STAGE_BACK_FA = {
-  'inquiry':'جدید','ready_owner':'در انتظار استعلام','handed':'سالم — نیازمند مالک',
+  'inquiry':'جدید','ready_owner':'در انتظار استعلام','handed':'سالم — نیازمند مسافر',
   'to_payment':'تحویل به مسئول سایت','payment':'ثبت‌شده — در انتظار پرداخت',
   'payment_done':'در حال پرداخت'
 };
@@ -4971,10 +4996,13 @@ function devTick(id, action){
     var d=(STATE.devices||[]).find(x=>x.id===id);
     var next=STAGE_SKIP_NEXT[d?d.stage:'']||'';
     if(!next){toast('رد کردن مرحله در این وضعیت ممکن نیست',false);return;}
-    var skippedNow=(d.skipped_stages||[]).length;
-    confirmDlg('رد کردن مرحله',
-      'مطمئنی می‌خوای گام «'+(STAGE_FA[d.stage]||d.stage)+'» رد بشه و مستقیم به «'+(STAGE_FA[next]||next)+'» بری؟ گیت‌های استعلام و مالک دور زده می‌شن و این ردشدن در پرونده ثبت می‌شود.',
-      'رد کردن مرحله',function(){
+    var msg;
+    if(d.stage==='handed'){
+      msg='استعلام ثبت‌شدن دستگاه با اطلاعات مسافر نادیده گرفته می‌شود و پرونده مستقیم به «'+(STAGE_FA[next]||next)+'» می‌رود. این ردشدن در پرونده ثبت می‌شود.';
+    }else{
+      msg='مطمئنی می‌خوای گام «'+(STAGE_FA[d.stage]||d.stage)+'» رد بشه و مستقیم به «'+(STAGE_FA[next]||next)+'» بری؟ گیت‌های استعلام و مسافر دور زده می‌شن و این ردشدن در پرونده ثبت می‌شود.';
+    }
+    confirmDlg('رد کردن مرحله',msg,'رد کردن مرحله',function(){
         api('/crm-tick',{device_id:id,action:'stage_skip'}).then(async r=>{
           toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» رفت (رد شد)');await refresh();})
           .catch(e=>toast(e,false));
@@ -5047,7 +5075,7 @@ function devicesHtml(){
     :'';
   if(!ds.length) return runningBanner+'<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مالک.</span></div>'
+    +'<span class="muted">اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.</span></div>'
     +emptyHtml('پرونده‌ای ثبت نشده','هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
   var cards=ds.map(function(d){
     var est=d.estelam||{};
@@ -5063,7 +5091,7 @@ function devicesHtml(){
       +ICONS.user+'<span class="chip">'+esc(custName(d.customer_id))+'</span>'
       +ICONS.id+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
       +'<span class="pill '+(EST_PILL[est.status]||'n')+'">استعلام: '+(EST_FA[est.status]||esc(est.status||'—'))+'</span>'
-      +(est.hamta_status?'<span class="pill n">همتا: '+esc(est.hamta_status)+'</span>':'')
+      +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')
       +'</div>'
       +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
       +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
@@ -5114,10 +5142,114 @@ function ownersHtml(){
     +(dev?'':'<button class="btn mini danger" onclick="ownerDelete(\''+o.id+'\')">حذف</button>')+'</td></tr>';
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
-    +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مالک جدید</button>'
+    +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
     +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
     +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مالکی ثبت نشده است</b>مشخصات مالک برای استعلام نظارتی و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مسافری ثبت نشده است</b>مشخصات مسافر برای استعلام نظارتی و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
+}
+
+/* ================= periodic gomrok inquiry tab ================= */
+var PERIODIC_STAGES = {'handed':1,'to_payment':1,'payment':1,'payment_done':1};
+function periodicDevices(){
+  return (STATE.devices||[]).filter(d=>PERIODIC_STAGES[d.stage]);
+}
+function periodicSaveInterval(){
+  var raw=document.getElementById('periodicInterval').value;
+  api('/crm-settings',{watch_interval_hours:raw}).then(async r=>{
+    toast('بازهٔ استعلام ذخیره شد: هر '+fa(r.settings.watch_interval_hours)+' ساعت');await refresh();})
+    .catch(e=>toast(e,false));
+}
+function periodicRunAll(){
+  var ids=periodicDevices().filter(d=>!d.periodic_opt_out).map(d=>d.id);
+  if(!ids.length){toast('دستگاهی در لیست نیست',false);return;}
+  confirmDlg('شروع فوری استعلام','استعلام گمرک برای '+fa(ids.length)+' دستگاه همین حالا اجرا شود؟',
+    'شروع',function(){
+      api('/crm-inquiry',{service:'gomrok',device_ids:ids}).then(async r=>{
+        toast(r.ok?('استعلام برای '+fa(r.queued)+' دستگاه شروع شد'):'شروع نشد',r.ok);await refresh();})
+        .catch(e=>toast(e,false));
+    });
+}
+function periodicRunOne(id){
+  confirmDlg('اجرای فوری','استعلام گمرک همین حالا برای این دستگاه اجرا شود؟','اجرا',function(){
+    api('/crm-inquire',{device_id:id,service:'gomrok'}).then(async r=>{
+      toast('استعلام شروع شد');await refresh();}).catch(e=>toast(e,false));
+  });
+}
+function periodicRemove(id){
+  confirmDlg('حذف از لیست','دستگاه از استعلام دوره‌ای حذف شود؟ استعلام خودکار دیگر برایش اجرا نمی‌شود.',
+    'حذف',function(){
+      api('/crm-periodic',{device_id:id,remove:true}).then(async()=>{
+        toast('از لیست حذف شد');await refresh();}).catch(e=>toast(e,false));
+    });
+}
+function periodicReAdd(id){
+  api('/crm-periodic',{device_id:id,remove:false}).then(async()=>{
+    toast('دوباره به لیست اضافه شد');await refresh();}).catch(e=>toast(e,false));
+}
+function periodicHistory(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  var logs=(STATE.periodic_logs||[]).filter(l=>String(l.device_id||'')===String(id));
+  var rows=logs.map(l=>'<tr><td class="kbd">'+esc(l.ts||'')+'</td><td><span class="pill '+
+    (EST_PILL[l.status]||'n')+'">'+(EST_FA[l.status]||esc(l.status||''))+'</span></td>'+
+    '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
+  openDlg('<h3>تاریخچهٔ استعلام — '+esc((d||{}).name||id)+'</h3>'
+    +(d&&d.last_inquiry_at?'<p class="muted">آخرین استعلام: '+esc(d.last_inquiry_at)+' · نتیجهٔ فعلی: '+
+      (EST_FA[(d.estelam||{}).status]||'—')+'</p>':'')
+    +'<table><thead><tr><th>زمان</th><th>وضعیت</th><th>پیام</th></tr></thead><tbody>'+
+    (rows||'<tr><td colspan="3"><div class="empty"><b>تاریخچه‌ای ثبت نشده است</b>هنوز استعلامی برای این دستگاه اجرا نشده.</div></td></tr>')+
+    '</tbody></table>');
+}
+function periodicHtml(){
+  var settings=(STATE.settings||{});
+  var hours=settings.watch_interval_hours||2;
+  var all=periodicDevices();
+  var rows=all.map(d=>{
+    var est=d.estelam||{};
+    var opt=d.periodic_opt_out;
+    var statusPill='<span class="pill '+(opt?'n':(EST_PILL[est.status]||'n'))+'">'+
+      (opt?'خارج از لیست':(EST_FA[est.status]||'—'))+'</span>';
+    var due=dueIn(d,hours);
+    return '<tr'+(opt?' style="opacity:.55"':'')+'><td><b>'+esc(d.name)+'</b>'+
+      '<div class="kbd">'+esc(d.serial1)+'</div></td>'+
+      '<td><span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span></td>'+
+      '<td>'+statusPill+'</td>'+
+      '<td><span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">'+(HAMTA_FA_CARD[est.hamta_status]||'—')+'</span></td>'+
+      '<td class="kbd">'+esc(d.last_inquiry_at||'—')+'</td>'+
+      '<td class="kbd">'+due+'</td>'+
+      '<td><button class="btn mini ghost" onclick="periodicHistory(\''+d.id+'\')">تاریخچه</button> '+
+      '<button class="btn mini warn" onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
+      (opt?'<button class="btn mini primary" onclick="periodicReAdd(\''+d.id+'\')">افزودن</button>'
+          :'<button class="btn mini danger" onclick="periodicRemove(\''+d.id+'\')">حذف از لیست</button>')+'</td></tr>';
+  }).join('');
+  var logs=(STATE.periodic_logs||[]).slice(0,60).map(l=>'<tr><td class="kbd">'+esc(l.ts||'')+'</td>'+
+    '<td><b>'+esc((STATE.devices||[]).find(d=>String(d.id)===String(l.device_id))?.name||l.device_id||'—')+'</b></td>'+
+    '<td><span class="pill '+(EST_PILL[l.status]||'n')+'">'+(EST_FA[l.status]||esc(l.status||''))+'</span></td>'+
+    '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
+  var activeCount=all.filter(d=>!d.periodic_opt_out).length;
+  return '<div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">'+
+    '<label class="f" style="flex-direction:row;align-items:center;gap:6px">بازهٔ استعلام دوره‌ای (ساعت): '+
+    '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
+    '</label><button class="btn" onclick="periodicSaveInterval()">ذخیره بازه</button>'+
+    '<button class="btn primary" onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
+    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>یک اجرا در جریان است</b>':'')+'</span></div>'+
+    '<table><thead><tr><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
+    '<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
+    '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+
+    '<table><thead><tr><th>زمان</th><th>دستگاه</th><th>وضعیت</th><th>پیام</th></tr></thead>'+
+    '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty">هنوز لاگی ثبت نشده است.</div></td></tr>')+'</tbody></table></div></div>';
+}
+function dueIn(d,hours){
+  if(d.periodic_opt_out)return '—';
+  var last=String(d.last_inquiry_at||'');
+  if(!last)return 'همین حالا (صف)';
+  var p=last.split(/[- :]/).map(Number);
+  if(p.length<6||p.some(isNaN))return 'همین حالا (صف)';
+  var lastTs=new Date(p[0],p[1]-1,p[2],p[3],p[4],p[5]).getTime();
+  if(isNaN(lastTs))return 'همین حالا (صف)';
+  var nextMs=lastTs+hours*3600000-Date.now();
+  if(nextMs<=0)return 'همین حالا (صف)';
+  var mins=Math.ceil(nextMs/60000);
+  return mins>=60?(Math.floor(mins/60)+' ساعت و '+(mins%60)+' دقیقه'):mins+' دقیقه';
 }
 
 /* ================= identity pool ================= */
@@ -5129,7 +5261,7 @@ function identitiesHtml(){
     +'<button class="btn mini danger" onclick="identDelete(\''+i.id+'\')">حذف</button></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
-    +'<span class="muted">برای استعلام‌های ورودی یک مشخصات تصادفی معتبر انتخاب می‌شود؛ استعلام نظارتی پس از تحویل با هویت مالک اجرا می‌شود.</span></div>'
+    +'<span class="muted">برای استعلام‌های ورودی یک مشخصات تصادفی معتبر انتخاب می‌شود؛ استعلام نظارتی پس از تحویل با هویت مسافر اجرا می‌شود.</span></div>'
     +'<table><thead><tr><th>عنوان</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th></th></tr></thead>'
     +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>استخر هویت خالی است</b>بدون حداقل یک مشخصات معتبر، استعلام ورودی اجرا نمی‌شود.</div></td></tr>')+'</tbody></table></div>';
 }
@@ -5220,13 +5352,13 @@ function doAddDevice(){
 function digitsFa(s){return String(s||'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[^0-9]/g,'');}
 function dlgAttach(id){
   var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
-  openDlg('<h3>اتصال مالک به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
+  openDlg('<h3>اتصال مسافر به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
     +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
-    +'<p class="muted">هر مالک فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
+    +'<p class="muted">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
 }
 function doAttach(id){
   api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value})
-    .then(async()=>{closeDlg();toast('مالک متصل شد');await refresh();})
+    .then(async()=>{closeDlg();toast('مسافر متصل شد');await refresh();})
     .catch(e=>toast(e,false));
 }
 function devInquire(id, service){
@@ -5292,7 +5424,7 @@ function doTx(cid){
 }
 function dlgOwner(mode,id){
   var o = id?findOwner(id):{};
-  openDlg('<h3>'+(id?'ویرایش مالک':'مالک جدید')+'</h3><div class="grid">'
+  openDlg('<h3>'+(id?'ویرایش مسافر':'مسافر جدید')+'</h3><div class="grid">'
     +'<label class="f">نام *<input id="oFn" value="'+esc(o.first_name||'')+'"></label>'
     +'<label class="f">نام خانوادگی *<input id="oLn" value="'+esc(o.last_name||'')+'"></label>'
     +'<label class="f">کد ملی *<input id="oNat" value="'+esc(o.national||'')+'" inputmode="numeric"></label>'
@@ -5310,7 +5442,7 @@ function doSaveOwner(id){
     .catch(e=>{document.getElementById('oErr').textContent=e;showFieldErrors(String(e));});
 }
 function ownerDelete(id){
-  if(!confirm('این مالک حذف شود؟'))return;
+  if(!confirm('این مسافر حذف شود؟'))return;
   api('/crm-owner',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgIdent(mode,id){
@@ -5341,8 +5473,11 @@ function sendTelegram(){
 
 /* ================= render ================= */
 function renderTabs(){
-  var counts={devices:(STATE&&STATE.devices||[]).length,customers:(STATE&&STATE.customers||[]).length,
-    owners:(STATE&&STATE.owners||[]).length,identities:(STATE&&STATE.identities||[]).length,ledger:null,reports:null};
+  var devs=(STATE&&STATE.devices||[]);
+  var counts={devices:devs.length,customers:(STATE&&STATE.customers||[]).length,
+    owners:(STATE&&STATE.owners||[]).length,identities:(STATE&&STATE.identities||[]).length,
+    periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
+    ledger:null,reports:null};
   document.getElementById('tabs').innerHTML = TABS.map(t=>
     '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]
     +(counts[t[0]]!=null?'<span class="cnt">'+fa(counts[t[0]])+'</span>':'')+'</button>').join('');
@@ -5363,6 +5498,7 @@ function renderView(){
   else if(TAB==='customers')body=customersHtml();
   else if(TAB==='owners')body=ownersHtml();
   else if(TAB==='identities')body=identitiesHtml();
+  else if(TAB==='periodic')body=periodicHtml();
   else if(TAB==='ledger')body=ledgerHtml();
   else body=reportsHtml();
   el.innerHTML=head+body;
@@ -5370,10 +5506,11 @@ function renderView(){
 }
 async function refresh(){
   try{
-    var r=await Promise.all([fetch('/crm-state'),fetch('/crm-logs')]);
+    var r=await Promise.all([fetch('/crm-state'),fetch('/crm-logs'),fetch('/crm-periodic-logs')]);
     if(!r[0].ok||!r[1].ok)throw 0;
     STATE=await r[0].json();
     LOGS=(await r[1].json()).logs||[];
+    STATE.periodic_logs=((await r[2].json()).logs||[]).reverse();
     LOADFAIL=false;
   }catch(e){ LOADFAIL=true; }
   renderView();
@@ -5685,6 +5822,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_crm_page().encode("utf-8"))
         elif route == "/crm-state":
             self._json(crm_state_payload())
+        elif route == "/crm-periodic-logs":
+            self._json({"logs": [l for l in load_estelam_logs()
+                                 if l.get("device_id")]})
         elif route == "/crm-logs":
             self._json({"logs": load_crm_logs()})
         elif route == "/crm-report":
@@ -5921,6 +6061,12 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-stop":
             self._json(estelam_stop())
+
+        elif self.path == "/crm-periodic":
+            data = self._read_json()
+            result = crm_periodic_toggle(str(data.get("device_id") or ""),
+                                         remove=bool(data.get("remove")))
+            self._json(result, 200 if result.get("ok") else 404)
 
         elif self.path == "/crm-tick":
             data = self._read_json()

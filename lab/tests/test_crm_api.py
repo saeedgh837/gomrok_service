@@ -168,7 +168,7 @@ class TestCrmPageUi(CrmApiHarness):
         status, body, _ = self._get("/crm")
         self.assertEqual(status, 200)
         for marker in (
-                "دستگاه‌ها", "مشتریان", "مالکان", "استخر هویت",
+                "دستگاه‌ها", "مشتریان", "اطلاعات مسافر", "استخر هویت",
                 "تراکنش‌ها", "گزارش‌ها",
                 "/crm-tick", "/crm-start-payment", "/crm-state",
                 "irica-theme", "پرداخت خودکار", "crm-report-telegram"):

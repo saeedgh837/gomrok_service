@@ -187,7 +187,7 @@ class StageRollbackTests(_StoreHarness):
         device = self._device_at(["queue_inquiry", "mark_ready"])
         _record, errors = crm.advance(device["id"], "handover")
         self.assertTrue(errors)
-        self.assertTrue(any("مالک" in e for e in errors), errors)
+        self.assertTrue(any("مسافر" in e for e in errors), errors)
 
     def test_handover_with_owner_reaches_handed(self):
         device = self._device_at(["queue_inquiry", "mark_ready",

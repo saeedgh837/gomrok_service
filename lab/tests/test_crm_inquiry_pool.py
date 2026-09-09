@@ -118,7 +118,7 @@ class TestIdentityMaterialization(CrmInquiryCase):
         crm.store_write(data)
         result = panel.crm_start_inquiry(device["id"], service="gomrok")
         self.assertFalse(result["ok"])
-        self.assertTrue(any("مالک" in e for e in result["errors"]))
+        self.assertTrue(any("مسافر" in e for e in result["errors"]))
 
     def test_empty_pool_and_no_owner_rejected_for_intake(self):
         device = self._crm_device(stage="new")

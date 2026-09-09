@@ -220,9 +220,9 @@ def validate_owner(data):
     errors = []
     data = data or {}
     if not str(data.get("first_name") or "").strip():
-        errors.append("نام مالک الزامی است")
+        errors.append("نام مسافر الزامی است")
     if not str(data.get("last_name") or "").strip():
-        errors.append("نام خانوادگی مالک الزامی است")
+        errors.append("نام خانوادگی مسافر الزامی است")
     national = normalize_digits(data.get("national")).strip()
     if not national_checksum_ok(national):
         errors.append("کد ملی نامعتبر است")
@@ -232,7 +232,7 @@ def validate_owner(data):
     else:
         age = shamsi_age(birth)
         if age is None or age < 15 or age > 99:
-            errors.append("سن مالک باید بین ۱۵ تا ۹۹ سال باشد")
+            errors.append("سن مسافر باید بین ۱۵ تا ۹۹ سال باشد")
     mobile = normalize_digits(data.get("mobile")).strip()
     if not re.fullmatch(MOBILE_RE, mobile):
         errors.append("شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود")
@@ -583,7 +583,7 @@ def update_owner(owner_id, fields):
         record = next((o for o in data.get("owners", [])
                        if o.get("id") == owner_id), None)
         if not record:
-            return None, ["مالک پیدا نشد"]
+            return None, ["مسافر پیدا نشد"]
         merged = dict(record)
         merged.update({k: fields[k] for k in
                        ("first_name", "last_name", "national", "birth",
@@ -605,12 +605,12 @@ def delete_owner(owner_id):
         bound = next((d for d in data.get("devices", [])
                       if d.get("owner_id") == owner_id), None)
         if bound:
-            return False, ["این مالک به یک دستگاه متصل است"]
+            return False, ["این مسافر به یک دستگاه متصل است"]
         before = len(data.get("owners", []))
         data["owners"] = [o for o in data.get("owners", [])
                           if o.get("id") != owner_id]
         if len(data["owners"]) == before:
-            return False, ["مالک پیدا نشد"]
+            return False, ["مسافر پیدا نشد"]
         _store_write(data)
         return True, []
 
@@ -794,12 +794,12 @@ def attach_owner(device_id, owner_id):
         owner = next((o for o in data.get("owners", [])
                       if o.get("id") == owner_id), None)
         if not owner:
-            return None, ["مالک پیدا نشد"]
+            return None, ["مسافر پیدا نشد"]
         bound = next((d for d in data.get("devices", [])
                       if d.get("owner_id") == owner_id
                       and d.get("id") != device_id), None)
         if bound:
-            return None, ["این مالک قبلاً به دستگاه دیگری متصل است"]
+            return None, ["این مسافر قبلاً به دستگاه دیگری متصل است"]
         device["owner_id"] = owner_id
         device["updated"] = _now()
         _store_write(data)
@@ -925,12 +925,12 @@ def advance(device_id, action, **payload):
         # closed here instead of producing an un-inquirable device.
         if action == "handover":
             if not str(device.get("owner_id") or "").strip():
-                return None, ["ابتدا مالک را به دستگاه متصل کنید — استعلام "
-                              "نظارتی با هویت مالک انجام می‌شود"]
+                return None, ["ابتدا مسافر را به دستگاه متصل کنید — استعلام "
+                              "نظارتی با هویت مسافر انجام می‌شود"]
             owner = next((o for o in data.get("owners", [])
                           if o.get("id") == device.get("owner_id")), None)
             if not owner:
-                return None, ["مالک دستگاه پیدا نشد — اتصال مالک را بررسی کنید"]
+                return None, ["مسافر دستگاه پیدا نشد — اتصال مسافر را بررسی کنید"]
         # Inquiry gate (operator request): leaving the intake inquiry stage
         # requires BOTH inquiries to have passed for THIS device, as recorded
         # in the estelam store the robots write. Every other outcome
@@ -948,16 +948,16 @@ def advance(device_id, action, **payload):
         if action == "attach_owner":
             owner_id = str(payload.get("owner_id") or "").strip()
             if not owner_id:
-                return None, ["انتخاب مالک الزامی است"]
+                return None, ["انتخاب مسافر الزامی است"]
             owner = next((o for o in data.get("owners", [])
                           if o.get("id") == owner_id), None)
             if not owner:
-                return None, ["مالک پیدا نشد"]
+                return None, ["مسافر پیدا نشد"]
             bound = next((d for d in data.get("devices", [])
                           if d.get("owner_id") == owner_id
                           and d.get("id") != device_id), None)
             if bound:
-                return None, ["این مالک قبلاً به دستگاه دیگری متصل است"]
+                return None, ["این مسافر قبلاً به دستگاه دیگری متصل است"]
             device["owner_id"] = owner_id
             device["stage"] = "ready_owner"
             device["updated"] = _now()
@@ -985,7 +985,7 @@ _STAGE_FA = {
     "new": "جدید",
     "inquiry": "در انتظار استعلام",
     "problem": "دارای اشکال",
-    "ready_owner": "سالم — نیازمند مالک",
+    "ready_owner": "سالم — نیازمند مسافر",
     "handed": "تحویل‌شده به مسئول سایت",
     "to_payment": "ثبت‌شده — در انتظار پرداخت",
     "payment": "در حال پرداخت",
@@ -1028,7 +1028,7 @@ def build_report(state, stage_filter=None, fmt="txt", full_data=True, plain=Fals
             f"مشتری: {customer.get('full_name') or '—'}",
         ]
         if owner:
-            parts.append(f"مالک: {owner.get('first_name')} {owner.get('last_name')}"
+            parts.append(f"مسافر: {owner.get('first_name')} {owner.get('last_name')}"
                          f" | کد ملی: {mask_national(owner.get('national'))}"
                          f" | تولد: {owner.get('birth')}"
                          f" | موبایل: {owner.get('mobile')}")
@@ -1113,7 +1113,7 @@ def owner_identity_for(device_id):
     owner = next((o for o in data.get("owners", [])
                   if o.get("id") == device.get("owner_id")), None)
     if not owner:
-        return None, ["این دستگاه هنوز مالک ندارد — استعلام نظارتی با هویت مالک انجام می‌شود"]
+        return None, ["این دستگاه هنوز مسافر ندارد — استعلام نظارتی با هویت مسافر انجام می‌شود"]
     return {"national": owner.get("national"), "birth": owner.get("birth"),
             "mobile": owner.get("mobile")}, []
 
