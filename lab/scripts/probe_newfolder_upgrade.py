@@ -31,9 +31,8 @@ CODE = ["app_paths.py", "panel.py", "telegram_notify.py", "gomrok.py",
         "gomrok2.py", "estelam_gomrok.py", "estelam_hamta.py", "estelam_all.py",
         "exitban.py", "captcha_collector.py", "browser_window.py",
         "browser_visibility.py", "system_debug.py", "profile_inquiry.py",
-        "robot_launcher.py", "dashboard-new.html", "cloudflare_auth_relay.py",
-        "cloudflare_http_proxy.py", "telegram_api_relay.py",
-        "start_cloudflare_relay.py", "start_named_cloudflare_tunnel.py"]
+        "robot_launcher.py", "dashboard-new.html",
+        "cloudflare_http_proxy.py", "telegram_api_relay.py"]
 
 
 def install(target: Path) -> Path:

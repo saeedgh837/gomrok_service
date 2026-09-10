@@ -168,6 +168,10 @@ class FinanceApiTests(unittest.TestCase):
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
+
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
         cust, _ = crm.add_customer({"full_name": "آزمون", "mobile": "09120000000"})
         self.cid = cust["id"]
 
@@ -270,6 +274,10 @@ class PeriodicToolsApiTests(unittest.TestCase):
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
+
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
 
     def _device_at_handed(self):
         cust, _ = crm.add_customer({"full_name": "م", "mobile": "09120000000"})

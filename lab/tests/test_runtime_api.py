@@ -138,7 +138,7 @@ class RuntimeApiTests(unittest.TestCase):
                 status, payload = panel.start_profile("p2")
                 self.assertEqual(status, 200)
                 self.assertEqual(payload["profile_id"], "p2")
-                start.assert_called_once_with("p2")
+                start.assert_called_once_with("p2", actor=None)
                 profile = next(p for p in panel.load_store()["profiles"] if p["id"] == "p2")
                 self.assertEqual(profile["runner_pid"], 4321)
 

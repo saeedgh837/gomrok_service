@@ -48,6 +48,12 @@ import app_paths  # noqa: E402  (needs HERE on sys.path first)
 _MIGRATED_FILES = app_paths.bootstrap()
 DATA_DIR = app_paths.data_dir()
 
+import panel_auth  # noqa: E402  (needs HERE on sys.path first)
+
+# Seed the three operator-provisioned accounts on every start; no-op when the
+# users file already exists (it is never overwritten).
+panel_auth.seed_default_users()
+
 
 def _resolve_robot_python():
     """Interpreter that runs the robots.
@@ -657,9 +663,9 @@ def _robot_command(python_executable, script, *args):
             os.path.join(HERE, script)] + [str(arg) for arg in args]
 
 
-def start_profile_process(profile_id):
+def start_profile_process(profile_id, actor=None):
     command = _robot_command(ROBOT_PYTHON, "gomrok.py", "--profile-id", profile_id)
-    child_env = _robot_child_env()
+    child_env = _robot_child_env(actor)
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -669,9 +675,9 @@ def start_profile_process(profile_id):
     return {"pid": process.pid, "profile_id": str(profile_id)}
 
 
-def start_profile2_process(profile_id):
+def start_profile2_process(profile_id, actor=None):
     command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--profile-id", profile_id)
-    child_env = _robot_child_env()
+    child_env = _robot_child_env(actor)
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -681,9 +687,9 @@ def start_profile2_process(profile_id):
     return {"pid": process.pid, "profile_id": str(profile_id)}
 
 
-def start_site2_manual_process():
+def start_site2_manual_process(actor=None):
     command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--no-panel")
-    child_env = _robot_child_env()
+    child_env = _robot_child_env(actor)
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
@@ -693,7 +699,7 @@ def start_site2_manual_process():
     return {"pid": process.pid}
 
 
-def start_profile2(profile_id):
+def start_profile2(profile_id, actor=None):
     profile_id = str(profile_id or "").strip()
     with _locked_store():
         profile = next((p for p in load_store().get("profiles", []) if p.get("id") == profile_id), None)
@@ -704,7 +710,7 @@ def start_profile2(profile_id):
         if profile.get("registration_status") == "blocked":
             return 409, {"error": "این پروفایل قابل استفاده نیست"}
     try:
-        runtime = start_profile2_process(profile_id)
+        runtime = start_profile2_process(profile_id, actor=actor)
     except (OSError, ValueError):
         return 500, {"error": "شروع ربات سایت دوم انجام نشد"}
     # profile-ra INJA busy nemikonim; khod-e gomrok2.py ba claim_profile() an-ra
@@ -714,7 +720,7 @@ def start_profile2(profile_id):
     return 200, {"ok": True, "profile_id": profile_id, "pid": runtime["pid"]}
 
 
-def start_profile(profile_id):
+def start_profile(profile_id, actor=None):
     profile_id = str(profile_id or "").strip()
     with _locked_store():
         store = load_store()
@@ -738,14 +744,14 @@ def start_profile(profile_id):
         if missing:
             return 422, {"error": "اطلاعات پروفایل ناقص است", "missing": missing}
     try:
-        runtime = start_profile_process(profile_id)
+        runtime = start_profile_process(profile_id, actor=actor)
     except (OSError, ValueError):
         return 500, {"error": "شروع ربات انجام نشد"}
     set_profile_runtime(profile_id, runtime["pid"])
     return 200, {"ok": True, "profile_id": profile_id, "pid": runtime["pid"]}
 
 
-def start_profile_device_inquiry(profile_id, service):
+def start_profile_device_inquiry(profile_id, service, actor=None):
     profile_id = str(profile_id or "").strip()
     service = str(service or "").strip().lower()
     if service not in _DEVICE_INQUIRY_SERVICES:
@@ -771,7 +777,7 @@ def start_profile_device_inquiry(profile_id, service):
 
     command = _robot_command(ROBOT_PYTHON, "profile_inquiry.py",
                              "--profile-id", profile_id, "--service", service)
-    child_env = _robot_child_env()
+    child_env = _robot_child_env(actor)
     log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
         process = subprocess.Popen(command, cwd=HERE, env=child_env,
@@ -793,13 +799,13 @@ def start_profile_device_inquiry(profile_id, service):
     return 200, {"ok": True, "profile_id": profile_id, "service": service, "pid": process.pid}
 
 
-def start_exitban_process(profile_id):
+def start_exitban_process(profile_id, actor=None):
     log_path = app_paths.data_path("exitban_worker.log")
     command = _robot_command(ROBOT_PYTHON, "exitban.py",
                              "--profile-id", profile_id, "--submit")
     log_file = open(log_path, "a", encoding="utf-8")
     try:
-        process = subprocess.Popen(command, cwd=HERE, env=_robot_child_env(), stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=HERE, env=_robot_child_env(actor), stdin=subprocess.DEVNULL,
                                    stdout=log_file, stderr=log_file)
     finally:
         log_file.close()
@@ -1027,8 +1033,9 @@ def read_system_log(name, max_bytes=512000):
     return raw.decode("utf-8", errors="replace")
 
 
-def _robot_child_env():
+def _robot_child_env(actor=None):
     child_env = os.environ.copy()
+    child_env["IRICA_ACTOR"] = str(actor or "").strip() or "سیستم"
     child_env.pop("PYTHONPATH", None)
     child_env.pop("VIRTUAL_ENV", None)
     child_env["PYTHONIOENCODING"] = "utf-8"
@@ -1457,7 +1464,8 @@ def crm_periodic_toggle(device_id, remove=True):
         return {"ok": True, "device": device, "errors": []}
 
 
-def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
+def crm_start_inquiry(device_id, service="gomrok", origin="manual",
+                      actor=None):
     """CRM-scoped inquiry start (plan section 2):
       - pick the identity FOR THIS STAGE: random valid pool entry for
         pre-registration intake, the device OWNER for the watch stages (F1);
@@ -1493,7 +1501,8 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
     errors = crm_sync_queue(device_id)
     if errors:
         return {"ok": False, "errors": errors}
-    result = estelam_start(device_id=device_id, service=service)
+    result = estelam_start(device_id=device_id, service=service,
+                           actor=actor)
     if result.get("ok"):
         data = crm_mod.store_read()
         device = next((d for d in data.get("devices", [])
@@ -1965,12 +1974,13 @@ ESTELAM_SERVICES = {
 ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه استعلام‌ها"}
 
 
-def start_estelam_process(device_id=None, service="gomrok", person=None):
+def start_estelam_process(device_id=None, service="gomrok", person=None,
+                          actor=None):
     script, base_args = ESTELAM_SERVICES.get(service, ESTELAM_SERVICES["gomrok"])
     command = _robot_command(ROBOT_PYTHON, script, *base_args)
     if device_id:
         command += ["--device-id", str(device_id)]
-    child_env = _robot_child_env()
+    child_env = _robot_child_env(actor)
     # Race-free identity handoff (v1.1.4 parallel runs): the child reads its own
     # identity from env instead of the shared store, which a parallel start may
     # overwrite between spawn and the child's first read.
@@ -1988,7 +1998,7 @@ def start_estelam_process(device_id=None, service="gomrok", person=None):
     return {"pid": process.pid}
 
 
-def estelam_start(device_id=None, service="gomrok"):
+def estelam_start(device_id=None, service="gomrok", actor=None):
     """Ghabl az ejra: etela'at-e shakhs bayad KAMEL va MOTABAR bashad."""
     if service not in ESTELAM_SERVICES:
         service = "gomrok"
@@ -2013,7 +2023,8 @@ def estelam_start(device_id=None, service="gomrok"):
     if not targets:
         return {"ok": False, "errors": ["دستگاهی برای استعلام وجود ندارد"]}
     runtime = start_estelam_process(device_id, service=service,
-                                    person=data.get("person") or {})
+                                    person=data.get("person") or {},
+                                    actor=actor)
     data = estelam_load()
     data["run_pid"] = runtime.get("pid")
     data["run_device_id"] = str(device_id or "")
@@ -2139,14 +2150,15 @@ def estelam_stop():
             "runtime": estelam_runtime()}
 
 
-def estelam_restart():
+def estelam_restart(actor=None):
     """Stop +start-e dobare (hamun scope-e ejra-ye ghabli)."""
     prev = estelam_load()
     previous = prev.get("run_device_id") or ""
     service = prev.get("run_service") or "gomrok"
     estelam_stop()
     time.sleep(0.6)
-    result = estelam_start(previous or None, service=service)
+    result = estelam_start(previous or None, service=service,
+                           actor=actor)
     result["restarted"] = True
     return result
 
@@ -5014,6 +5026,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
     <a class="back" href="/site-2">پنل استعلام‌ها →</a>
     <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
     <button class="iconbtn" id="themeBtn">پوسته</button>
+    <button class="iconbtn" id="logoutBtn" title="خروج از حساب">خروج (__ACTOR__)</button>
   </div>
   <div class="tabs" id="tabs"></div>
   <div id="view"></div>
@@ -5098,6 +5111,11 @@ document.getElementById('themeBtn').onclick=function(){
   var next=dark?'light':'dark';
   document.documentElement.setAttribute('data-theme',next);
   localStorage.setItem('irica-theme',next);
+};
+document.getElementById('logoutBtn').onclick=function(){
+  fetch('/logout',{method:'POST'}).then(function(){
+    window.location.replace('/login');
+  }).catch(function(){ toast('خروج ناموفق بود',false); });
 };
 
 /* ================= lookups ================= */
@@ -6215,9 +6233,9 @@ setInterval(refresh, 5000);
 
 
 
-def render_crm_page():
-    """CRM page (full UI in phase E); minimal functional shell for now."""
-    return CRM_PAGE
+def render_crm_page(actor="system"):
+    """CRM page; __ACTOR__ becomes the logged-in user chip in the header."""
+    return CRM_PAGE.replace("__ACTOR__", str(actor or "system"))
 
 
 def render_estelam_page():
@@ -6293,67 +6311,10 @@ def _tx_artifact(self, query):
         self._send(404, b"not found", "text/plain")
 
 
-def _crm_inquiry_reset(self, data):
-    """Reset inquiry history for devices (periodic-panel group tool).
-    restart=True additionally queues each device for an immediate run."""
-    import crm as crm_mod
-    ids = data.get("device_ids") or []
-    restart = bool(data.get("restart"))
-    if not isinstance(ids, list) or not ids:
-        self._json({"ok": False, "queued": 0,
-                    "errors": ["دستگاهی انتخاب نشده است"]}, 400)
-        return
-    results, queued, restart_ids = [], 0, []
-    for device_id in ids:
-        device_id = str(device_id)
-        data_crm = crm_mod.store_read()
-        device = next((d for d in data_crm.get("devices", [])
-                       if str(d.get("id")) == device_id), None)
-        if not device:
-            results.append({"device_id": device_id, "ok": False,
-                            "errors": ["دستگاه پیدا نشد"]})
-            continue
-        est = estelam_load()
-        row = next((d for d in est.get("devices", [])
-                    if str(d.get("id")) == device_id), None)
-        if row:
-            row["status"] = "pending"
-            row["result"] = ""
-            row["error"] = ""
-            row["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            estelam_save(est)
-        data_crm = crm_mod.store_read()
-        device = next((d for d in data_crm.get("devices", [])
-                       if str(d.get("id")) == device_id), None)
-        if device is not None:
-            device["last_inquiry_at"] = ""
-            crm_mod.store_write(data_crm)
-        crm_mod.crm_log("info", "inquiry_history_reset", device_id=device_id)
-        results.append({"device_id": device_id, "ok": True})
-        if restart:
-            restart_ids.append(device_id)
-    if restart and restart_ids and not estelam_is_running():
-        first = restart_ids.pop(0)
-        result = crm_start_inquiry(first, service="gomrok",
-                                   origin="reinquiry")
-        if result.get("ok"):
-            queued += 1
-        else:
-            results.append({"device_id": first, "ok": False,
-                            "errors": result.get("errors")})
-        for extra in restart_ids:
-            sync_errors = crm_sync_queue(extra)
-            results.append({"device_id": extra,
-                            "ok": not sync_errors,
-                            "errors": sync_errors})
-            if not sync_errors:
-                queued += 1
-    ok = all(r.get("ok") for r in results)
-    self._json({"ok": ok, "queued": queued, "results": results},
-               200 if ok else 400)
-
 
 class Handler(BaseHTTPRequestHandler):
+    actor = "system"  # set by the login gate for authenticated requests
+
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -6433,7 +6394,7 @@ class Handler(BaseHTTPRequestHandler):
         if restart and restart_ids and not estelam_is_running():
             first = restart_ids.pop(0)
             result = crm_start_inquiry(first, service="gomrok",
-                                       origin="reinquiry")
+                                       origin="reinquiry", actor=self.actor)
             if result.get("ok"):
                 queued += 1
             else:
@@ -6548,9 +6509,9 @@ class Handler(BaseHTTPRequestHandler):
         profile_id = str(device.get("profile_id") or "").strip()
         if not profile_id:
             self._json({"ok": False,
-                        "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است"]}, 400)
+                                    "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است"]}, 400)
             return
-        status, payload = start_profile(profile_id)
+        status, payload = start_profile(profile_id, actor=self.actor)
         if status != 200:
             crm_mod.crm_log("error", "payment_start_failed", device_id=device_id,
                             profile_id=profile_id, detail=str(payload))
@@ -6577,7 +6538,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             import telegram_notify as tg
             for chunk in chunks:
-                if tg.send_message(chunk, timeout=20):
+                if tg.send_message(chunk, timeout=20, actor=self.actor):
                     sent += 1
         except Exception as exc:
             crm_mod.crm_log("error", "report_telegram_failed", detail=str(exc))
@@ -6636,9 +6597,97 @@ class Handler(BaseHTTPRequestHandler):
                 # hich manba'-e salemi nist: 503 ba flag ta JS store-e fe'li ra negah darad.
                 self._json({"error": "store temporarily unreadable", "retry": True}, 503)
 
+    # ------------------------------------------------------------- gate
+    PUBLIC_GET_PATHS = ("/login", "/favicon.ico", "/fonts/Vazirmatn-var.woff2",
+                       "/fonts/Vazirmatn-Bold.woff2")
+
+    def _gate(self, route):
+        """Returns True when the request may proceed. Handles the login page,
+        login POST and logout POST itself; everything else requires a valid
+        session cookie."""
+        from urllib.parse import urlsplit
+        method = self.command
+        if method == "GET":
+            if route == "/login":
+                self._send(200, render_login_page())
+                return False
+            if any(route == p or route.startswith(p)
+                   for p in self.PUBLIC_GET_PATHS if p != "/login"):
+                return True
+        if method == "POST":
+            if route == "/login":
+                self._handle_login()
+                return False
+            if route == "/logout":
+                self._handle_logout()
+                return False
+        token = _cookie_token(self.headers)
+        username = panel_auth.session_user(token)
+        if username is None:
+            if method == "GET" and route in ("/", "/index.html"):
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._json({"ok": False, "errors": ["برای ادامه وارد شوید"]},
+                           401)
+            return False
+        self.actor = username
+        return True
+
+    def _handle_login(self):
+        try:
+            payload = self._read_json()
+        except Exception:
+            payload = {}
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "")
+        if panel_auth.is_locked_out(username):
+            self._json({"ok": False,
+                        "errors": ["تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید"]},
+                       429)
+            return
+        if panel_auth.verify_password(panel_auth.USERS_PATH, username, password):
+            panel_auth.register_success(username)
+            token = panel_auth.create_session(username)
+            cookie = ("irica_session=" + token +
+                      "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" +
+                      str(panel_auth.SESSION_TTL_SECONDS))
+            self.send_response(200)
+            self.send_header("Set-Cookie", cookie)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            try:
+                import crm as crm_mod
+                crm_mod.crm_log("info", "login_ok", user=username)
+            except Exception:
+                pass
+            return
+        if panel_auth.valid_username(username):
+            panel_auth.register_failed_login(username)
+        self._json({"ok": False,
+                    "errors": ["نام کاربری یا رمز عبور اشتباه است"]}, 401)
+
+    def _handle_logout(self):
+        token = _cookie_token(self.headers)
+        if token:
+            panel_auth.destroy_session(token)
+        self.send_response(302)
+        self.send_header("Location", "/login")
+        self.send_header("Set-Cookie",
+                         "irica_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         from urllib.parse import urlsplit
         route = urlsplit(self.path).path
+        if not self._gate(route):
+            return
         if route in ("/", "/index.html"):
             self._send(200, render_home_page())
         elif route == "/launch":
@@ -6726,7 +6775,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, b"not found", "text/plain")
         elif route == "/crm":
-            self._send(200, render_crm_page().encode("utf-8"))
+            self._send(200, render_crm_page(self.actor).encode("utf-8"))
         elif route == "/crm-state":
             self._json(crm_state_payload())
         elif route == "/crm-periodic-logs":
@@ -6746,6 +6795,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
+        from urllib.parse import urlsplit
+        if not self._gate(urlsplit(self.path).path):
+            return
         try:
             store = load_store()
         except StoreUnreadableError:
@@ -6795,17 +6847,19 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/start":
             data = self._read_json()
-            status, payload = start_profile(str(data.get("id") or ""))
+            status, payload = start_profile(str(data.get("id") or ""),
+                                            actor=self.actor)
             self._json(payload if status != 200 else load_store(), status)
 
         elif self.path == "/start2":
             data = self._read_json()
-            status, payload = start_profile2(str(data.get("id") or ""))
+            status, payload = start_profile2(str(data.get("id") or ""),
+                                             actor=self.actor)
             self._json(payload if status != 200 else load_store(), status)
 
         elif self.path == "/start2-manual":
             try:
-                runtime = start_site2_manual_process()
+                runtime = start_site2_manual_process(actor=self.actor)
             except (OSError, ValueError):
                 self._json({"error": "شروع ربات سایت دوم انجام نشد"}, 500)
             else:
@@ -6814,7 +6868,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/profile-device-inquiry":
             data = self._read_json()
             status, payload = start_profile_device_inquiry(
-                str(data.get("id") or ""), str(data.get("service") or ""))
+                str(data.get("id") or ""), str(data.get("service") or ""),
+                actor=self.actor)
             self._json(payload, status)
 
         elif self.path == "/profile-device-stop":
@@ -6841,7 +6896,7 @@ class Handler(BaseHTTPRequestHandler):
             if missing:
                 self._json({"error": "اطلاعات هویتی ناقص است", "missing": missing}, 422)
                 return
-            runtime = start_exitban_process(profile_id)
+            runtime = start_exitban_process(profile_id, actor=self.actor)
             self._json({"ok": True, "profile_id": profile_id, "pid": runtime["pid"], "submitted": False})
 
         elif self.path == "/exitban-result":
@@ -6942,14 +6997,15 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/estelam-start":
             data = self._read_json()
             result = estelam_start(str(data.get("id") or "") or None,
-                                   service=str(data.get("service") or "gomrok"))
+                                   service=str(data.get("service") or "gomrok"),
+                                   actor=self.actor)
             self._json(result, 200 if result.get("ok") else 400)
 
         elif self.path == "/estelam-stop":
             self._json(estelam_stop())
 
         elif self.path == "/estelam-restart":
-            result = estelam_restart()
+            result = estelam_restart(actor=self.actor)
             self._json(result, 200 if result.get("ok") else 400)
 
         elif self.path == "/estelam-clear-logs":
@@ -6967,7 +7023,8 @@ class Handler(BaseHTTPRequestHandler):
                             "errors": ["نوع استعلام نامعتبر است"]}, 400)
                 return
             result = crm_start_inquiry(str(data.get("device_id") or ""),
-                                       service=service, origin="manual")
+                                       service=service, origin="manual",
+                                       actor=self.actor)
             self._json(result, 200 if result.get("ok") else 400)
 
         elif self.path == "/crm-stop":
@@ -7025,7 +7082,7 @@ class Handler(BaseHTTPRequestHandler):
             queued = 0
             for entry_id in ids:
                 result = crm_start_inquiry(str(entry_id), service=service,
-                                           origin="manual")
+                                           origin="manual", actor=self.actor)
                 errors = result.get("errors") or []
                 results.append({"device_id": str(entry_id), "ok": result.get("ok"),
                                 "errors": errors})
@@ -7172,6 +7229,121 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# --------------------------------------------------------------- login gate
+def render_login_page():
+    return LOGIN_PAGE.encode("utf-8")
+
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ورود — ایریکا</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: Vazirmatn, Tahoma, sans-serif;
+  background: #0b1220; color: #e7edf7; min-height: 100vh;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.card {
+  width: 100%; max-width: 380px; background: #111a2e; border: 1px solid #22304d;
+  border-radius: 14px; padding: 28px 26px;
+}
+h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+.sub { font-size: 12px; color: #8fa3c8; margin-bottom: 22px; }
+label { display: block; font-size: 12px; color: #8fa3c8; margin: 12px 0 6px; }
+input {
+  width: 100%; padding: 10px 12px; border-radius: 8px; font-size: 14px;
+  border: 1px solid #2c3d61; background: #0d1526; color: #e7edf7;
+  font-family: inherit;
+}
+input:focus { outline: 2px solid #4f7cd1; border-color: transparent; }
+button {
+  width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
+  background: #2f6fdb; color: #fff; font-size: 14px; font-weight: 700;
+  font-family: inherit; cursor: pointer;
+}
+button:hover { background: #3a7ce8; }
+button:disabled { opacity: .6; cursor: default; }
+.err {
+  display: none; margin-top: 14px; padding: 9px 12px; border-radius: 8px;
+  background: #3a1520; border: 1px solid #7a2a3a; color: #f2a0b0; font-size: 12px;
+}
+.foot { margin-top: 18px; font-size: 11px; color: #5d719a; text-align: center; }
+</style>
+</head>
+<body>
+<form class="card" id="f" autocomplete="off">
+  <h1>ورود به پنل</h1>
+  <div class="sub">برای ادامه، نام کاربری و رمز عبور خود را وارد کنید</div>
+  <label for="u">نام کاربری</label>
+  <input id="u" name="username" autofocus autocomplete="username" required>
+  <label for="p">رمز عبور</label>
+  <input id="p" name="password" type="password"
+         autocomplete="current-password" required>
+  <button type="submit" id="btn">ورود</button>
+  <div class="err" id="err"></div>
+  <div class="foot">ایریکا — سامانهٔ استعلام و ثبت سفارش</div>
+</form>
+<script>
+"use strict";
+var f = document.getElementById("f");
+var btn = document.getElementById("btn");
+var err = document.getElementById("err");
+function fail(msg) {
+  err.textContent = msg;
+  err.style.display = "block";
+  btn.disabled = false;
+}
+f.addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  btn.disabled = true;
+  err.style.display = "none";
+  var payload = {
+    username: document.getElementById("u").value.trim(),
+    password: document.getElementById("p").value
+  };
+  fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }).then(function (r) {
+    if (r.status === 429) { fail("تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید"); return null; }
+    if (r.ok) { window.location.replace("/"); return null; }
+    return r.json().then(function (j) {
+      fail((j.errors && j.errors[0]) || "ورود ناموفق بود");
+    }, function () { fail("ورود ناموفق بود"); });
+  }).catch(function () { fail("ارتباط با سرور برقرار نشد"); });
+});
+</script>
+</body>
+</html>
+"""
+
+
+def _cookie_token(headers_get):
+    """Extract the irica_session token from a Cookie header, if any."""
+    raw = headers_get.get("Cookie") or ""
+    for part in raw.split(";"):
+        part = part.strip()
+        if part.startswith("irica_session="):
+            return part.split("=", 1)[1]
+    return None
+
+
+def _actor_env(username):
+    """Child-process env carrying the acting user for Telegram attribution."""
+    env = os.environ.copy()
+    env["IRICA_ACTOR"] = username
+    return env
+
+
 
 
 

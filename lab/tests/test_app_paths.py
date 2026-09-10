@@ -366,12 +366,10 @@ class ModuleWiringTests(unittest.TestCase):
             importlib.reload(estelam_hamta)
 
     def test_relay_modules_read_the_shared_config(self):
-        import cloudflare_auth_relay
         import cloudflare_http_proxy
         import telegram_api_relay
         expected = os.path.normcase(app_paths.data_dir())
-        for module, attribute in ((cloudflare_auth_relay, "CONFIG_PATH"),
-                                  (telegram_api_relay, "CONFIG_PATH"),
+        for module, attribute in ((telegram_api_relay, "CONFIG_PATH"),
                                   (cloudflare_http_proxy, "LOCAL_UPSTREAM_CONFIG")):
             with self.subTest(module=module.__name__):
                 value = os.path.normcase(getattr(module, attribute))

@@ -102,7 +102,7 @@ def test_token_input_has_no_value_attribute():
 def test_telegram_files_are_inside_project():
     """Hame-ye file-haye lazem baraye ersal-e telegram bayad dar mas'ir-e proje bashand."""
     needed = ("telegram_notify.py", "telegram_api_relay.py", "cloudflare_http_proxy.py",
-              "cloudflare_named_tunnel.yml", "telegram_config.json", "upstream_proxy.json",
+              "telegram_config.json", "upstream_proxy.json",
               "start_telegram_relay_chain.bat", ".tools/cloudflared.exe",
               "secrets/cert.pem")
     for rel in needed:
@@ -150,12 +150,11 @@ def test_upstream_proxy_read_from_project_file():
 
 
 def test_tunnel_config_credentials_inside_project():
-    text = open(os.path.join(ROOT, "cloudflare_named_tunnel.yml"), encoding="utf-8").read()
-    assert "irica\\secrets\\" in text or "irica/secrets/" in text, text
-    assert ".cloudflared" not in text
-    creds_line = [l for l in text.splitlines() if l.startswith("credentials-file:")][0]
-    creds_path = creds_line.split(":", 1)[1].strip()
-    assert os.path.isfile(creds_path), creds_path
+    """Removed with the panel-access cloudflare stack (v1.2.0): the named tunnel
+    only ever forwarded to the local auth relay. Keep .tools/cloudflared.exe
+    (telegram relay watchdog) out of the panel path instead."""
+    assert not os.path.exists(os.path.join(ROOT, "cloudflare_named_tunnel.yml"))
+    assert not os.path.exists(os.path.join(ROOT, "cloudflare_auth_relay.py"))
 
 
 def _run_all():

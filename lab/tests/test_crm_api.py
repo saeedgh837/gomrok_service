@@ -37,6 +37,10 @@ class CrmApiHarness(unittest.TestCase):
         crm.reset_cache()
         self.addCleanup(crm.reset_cache)
 
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
+
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -218,7 +222,7 @@ class TestCrmReports(CrmApiHarness):
         import crm as crm_mod
         sent = []
         fake = type("tg", (), {"send_message": staticmethod(
-            lambda text, timeout=20: sent.append(text) or True)})
+            lambda text, timeout=20, actor=None: sent.append(text) or True)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-report-telegram", {"full_data": True})
         self.assertEqual(status, 200)

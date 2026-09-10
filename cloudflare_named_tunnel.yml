@@ -1,8 +1,0 @@
-tunnel: 48386190-68cf-4e17-83ea-dbdfd7148825
-credentials-file: C:\Users\Saeed\ai_projects\irica\laptop\irica\secrets\48386190-68cf-4e17-83ea-dbdfd7148825.json
-protocol: http2
-
-ingress:
-  - hostname: register.techbysaeed.ir
-    service: http://127.0.0.1:8751
-  - service: http_status:404

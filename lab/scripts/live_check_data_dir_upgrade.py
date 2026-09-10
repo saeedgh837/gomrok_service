@@ -38,9 +38,8 @@ APP_MODULES = [
     "browser_window.py", "browser_visibility.py", "system_debug.py",
     "profile_inquiry.py", "robot_launcher.py", "estelam_all.py",
     "exitban.py", "gomrok2.py", "dashboard-new.html",
-    "cloudflare_auth_relay.py", "cloudflare_http_proxy.py",
-    "telegram_api_relay.py", "start_cloudflare_relay.py",
-    "start_named_cloudflare_tunnel.py",
+    "cloudflare_http_proxy.py",
+    "telegram_api_relay.py",
 ]
 
 rows = []

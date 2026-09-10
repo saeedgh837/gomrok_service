@@ -228,6 +228,10 @@ class CrmInquireRouteTests(unittest.TestCase):
                          daemon=True).start()
         self.addCleanup(self.httpd.server_close)
 
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
+
     def _post(self, path, payload):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}",
@@ -248,7 +252,7 @@ class CrmInquireRouteTests(unittest.TestCase):
     def test_crm_inquire_starts_hamta_for_device(self):
         started = {}
 
-        def fake_start(device_id, service="gomrok", origin="manual"):
+        def fake_start(device_id, service="gomrok", origin="manual", actor=None):
             started["args"] = (device_id, service, origin)
             return {"ok": True, "pid": 4321, "count": 1, "service": service}
 
@@ -340,6 +344,10 @@ class InquiryGateTests(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever,
                          daemon=True).start()
         self.addCleanup(self.httpd.server_close)
+
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
 
     def _seed_estelam(self, device_id, status="healthy",
                       hamta_status="good"):

@@ -164,10 +164,29 @@ def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=Non
     raise RuntimeError(f"Telegram delivery failed for all chats: {detail}")
 
 
-def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None):
+import html as _html
+
+
+def _actor_name():
+    """Acting panel user for attribution; worker processes get IRICA_ACTOR from
+    the panel when spawned. Anything outside the panel is "سیستم"."""
+    who = (os.environ.get("IRICA_ACTOR") or "").strip()
+    return who or "سیستم"
+
+
+def actor_prefix(who=None):
+    """HTML prefix naming the acting user; prepended to every outbound text."""
+    name = (who or _actor_name())
+    return "<b>کاربر: " + _html.escape(str(name)) + "</b>\n"
+
+
+def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None,
+                 actor=None):
     """Payam mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
-    TimeoutError partab mishavad (baraye jaha ke robot nabayad gir konad)."""
+    TimeoutError partab mishavad (baraye jaha ke robot nabayad gir konad).
+    `actor` overrides the attribution name for this message."""
     cfg = ensure_config()
+    text = actor_prefix(actor) + text
     deadline = (time.monotonic() + timeout) if timeout else None
     return _fanout("sendMessage", cfg, _target_chat_ids(cfg, extra_chat_ids),
                    lambda chat_id: {"chat_id": chat_id, "text": text,
@@ -175,10 +194,12 @@ def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None):
                    deadline=deadline)
 
 
-def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None, timeout=None):
+def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None,
+               timeout=None, actor=None):
     """Aks mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
     TimeoutError partab mishavad (aks az ghabl mahali zakhire shode)."""
     cfg = ensure_config()
+    caption = actor_prefix(actor) + caption
     deadline = (time.monotonic() + timeout) if timeout else None
     return _fanout("sendPhoto", cfg, _target_chat_ids(cfg, extra_chat_ids),
                    lambda chat_id: {"chat_id": chat_id, "caption": caption,

@@ -73,13 +73,12 @@ RUNTIME_REQS = [
 
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
-    "app_paths.py", "crm.py",
+    "app_paths.py", "crm.py", "panel_auth.py",
     "estelam_all.py", "estelam_gomrok.py", "estelam_hamta.py", "exitban.py",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
     "browser_window.py", "browser_visibility.py",
-    "cloudflare_auth_relay.py", "cloudflare_http_proxy.py",
-    "start_cloudflare_relay.py", "start_named_cloudflare_tunnel.py",
+    "cloudflare_http_proxy.py",
     "telegram_api_relay.py",
     "panel_gui.pyw",
     "panel_tray.pyw",

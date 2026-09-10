@@ -36,7 +36,7 @@ FORBIDDEN_NAMES = {
     "profiles.json.lock", "inputs.json", "estelam_store.json",
     "logs.jsonl", "estelam_logs.jsonl", "hamta_logs.jsonl",
     "site2_notif.json", "exitban_errors.jsonl", "cloudflare_public_url.txt",
-    "system_debug.json",
+    "system_debug.json", "panel_users.json",
 }
 FORBIDDEN_GLOBS = ["*.log", "*.pt", "secrets/*", "*-chrome-profile/*",
                    "_dbg_last.*", "_after_submit.*"]
@@ -52,7 +52,7 @@ SECRET_PATTERNS = [
 ]
 REQUIRED = [
     "panel.py", "gomrok.py", "telegram_notify.py", "dashboard-new.html",
-    "app_paths.py", "crm.py",
+    "app_paths.py", "crm.py", "panel_auth.py",
     "run_panel.bat", "install.bat", "FIRST_RUN.txt", "README.md", "VERSION",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "telegram_config.example.json",
@@ -302,16 +302,47 @@ def check_function(dist: Path) -> None:
                   (proc.stdout.read() if proc.stdout else "")[-300:])
             return
         check("panel starts from the bundle", True, f"port {port}")
-        for route, needle in (("/site-1", "nav-tab"), ("/site-2", "svc-btns")):
+        # v1.2.0: every page sits behind the login gate. Without credentials in
+        # the environment we can only verify the gate shape; with
+        # IRICA_VERIFY_USER/IRICA_VERIFY_PASS set (never stored in the repo) we
+        # log in and check the pages render.
+        import urllib.error
+
+        def _fetch(route, headers=None):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{route}", headers=headers or {})
             try:
-                with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}{route}", timeout=20) as r:
-                    body = r.read().decode("utf-8", "ignore")
-                    check(f"{route} serves HTTP 200", r.status == 200, str(r.status))
-                    check(f"{route} renders its markup", needle in body,
-                          f"looked for {needle!r}")
-            except Exception as exc:
-                check(f"{route} serves HTTP 200", False, f"{type(exc).__name__}: {exc}")
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    return r.status, dict(r.headers), r.read().decode("utf-8", "ignore")
+            except urllib.error.HTTPError as exc:
+                return exc.code, dict(exc.headers), exc.read().decode("utf-8", "ignore")
+
+        vuser = os.environ.get("IRICA_VERIFY_USER", "").strip()
+        vpass = os.environ.get("IRICA_VERIFY_PASS", "")
+        if vuser and vpass:
+            import json as _json
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/login",
+                data=_json.dumps({"username": vuser, "password": vpass}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                cookie = (r.headers.get("Set-Cookie") or "").split(";", 1)[0]
+                check("login accepts the verify account", r.status == 200
+                      and cookie.startswith("irica_session="),
+                      f"status {r.status}")
+            for route, needle in (("/site-1", "nav-tab"), ("/site-2", "svc-btns")):
+                status, _h, body = _fetch(route, {"Cookie": cookie})
+                check(f"{route} serves HTTP 200", status == 200, str(status))
+                check(f"{route} renders its markup", needle in body,
+                      f"looked for {needle!r}")
+        else:
+            status, headers, _body = _fetch("/site-1")
+            gated = status in (302, 401)
+            check("pages are gated (set IRICA_VERIFY_USER/PASS for deep checks)",
+                  gated, f"status {status}")
+            status, _h, body = _fetch("/login")
+            check("login page serves HTTP 200", status == 200
+                  and ("ورود" in body), f"status {status}")
         check("panel did not create files outside its own directory",
               not (ROOT / "profiles.json.lock").exists()
               or (ROOT / "profiles.json").exists())
