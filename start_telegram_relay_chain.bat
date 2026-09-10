@@ -25,9 +25,4 @@ if errorlevel 1 (
   echo %date% %time% started telegram_relay 8752 >> "%LOG%"
 )
 
-rem 3) named tunnel: telegram.techbysaeed.ir + register.techbysaeed.ir
-tasklist /FI "IMAGENAME eq cloudflared.exe" | findstr /I /C:"cloudflared.exe" >nul 2>&1
-if errorlevel 1 (
-  powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath '%HERE%\.tools\cloudflared.exe' -ArgumentList 'tunnel','--config','%HERE%\cloudflare_named_tunnel.yml','run' -WorkingDirectory '%HERE%\.tools'"
-  echo %date% %time% started cloudflared >> "%LOG%"
-)
+rem 3) named tunnel removed 2026-09-10 (panel-access cloudflare stack retired)
