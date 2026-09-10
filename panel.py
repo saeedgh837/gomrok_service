@@ -7158,23 +7158,40 @@ def start_gate_decision(probe_ok, probe_version):
 def _panel_already_running(timeout=1.5):
     """True when a panel of THIS project already answers on HOST:PORT.
 
-    New panels embed 'irica-version'; panels from releases older than 1.0.11
-    are still recognized via their Persian site-picker markers, so upgrading
-    over a running old install still refuses instead of crashing on bind.
-    An unrelated service on the port (different markup) does not block us.
+    v1.2.0 note: / redirects to /login for fresh visitors, so the probe targets
+    /login — public, always 200, and (since v1.2.0) carries the same
+    'irica-version' chip the old home page had. Panels from releases older than
+    1.0.11 are still recognized via their Persian site-picker markers, so
+    upgrading over a running old install still refuses instead of crashing on
+    bind. An unrelated service on the port (different markup) does not block us.
     """
-    probe_url = f"http://{HOST}:{PORT}/"
-    try:
-        import urllib.request
-        with urllib.request.urlopen(probe_url, timeout=timeout) as resp:
-            body = resp.read(65536).decode("utf-8", "replace")
-    except Exception:
-        return False
+    for probe_path in ("/login", "/"):
+        probe_url = f"http://{HOST}:{PORT}{probe_path}"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(probe_url, timeout=timeout) as resp:
+                body = resp.read(65536).decode("utf-8", "replace")
+        except Exception:
+            continue
+        if "irica-version" in body or app_version_text() in body:
+            return True
+        # Pre-1.0.11 marker: the site picker's title + a site-1 link together
+        # are specific enough to be this project and nothing else.
+        if "سامانه مدیریت گمرک" in body and "/site-1" in body:
+            return True
+    return False
     if "irica-version" in body or app_version_text() in body:
         return True
     # Pre-1.0.11 marker: the site picker's title + a site-1 link together
     # are specific enough to be this project and nothing else.
     return "سامانه مدیریت گمرک" in body and "/site-1" in body
+
+
+class PanelHTTPServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR (the socketserver default) silently allows a second
+    # bind of the same listening port -> two panels racing on one socket.
+    # Refuse reuse so a second bind fails loudly instead.
+    allow_reuse_address = False
 
 
 def main():
@@ -7189,7 +7206,21 @@ def main():
             pass
         return
     url = f"http://{HOST}:{PORT}"
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+
+    try:
+        srv = PanelHTTPServer((HOST, PORT), Handler)
+    except OSError:
+        # Probe failed but the port is taken: a running panel is the only
+        # legitimate holder (robots bind other ports). Treat as already-running.
+        if _panel_already_running():
+            print(f">>> Panel-e digari hamin port ast: {url}")
+            try:
+                import webbrowser
+                webbrowser.open(url + "/site-1")
+            except Exception:
+                pass
+            return
+        raise
     load_store()  # motmaen sho profiles.json +inputs.json sakhte/sync shode-and
     clear_stale_busy_profiles()
     clean_project_root()
@@ -7233,7 +7264,7 @@ if __name__ == "__main__":
 
 # --------------------------------------------------------------- login gate
 def render_login_page():
-    return LOGIN_PAGE.encode("utf-8")
+    return LOGIN_PAGE.replace("__VERSION__", app_version_text() or "—").encode("utf-8")
 
 
 LOGIN_PAGE = """<!DOCTYPE html>
@@ -7290,6 +7321,7 @@ button:disabled { opacity: .6; cursor: default; }
   <button type="submit" id="btn">ورود</button>
   <div class="err" id="err"></div>
   <div class="foot">ایریکا — سامانهٔ استعلام و ثبت سفارش</div>
+  <div class="foot irica-version">نسخه __VERSION__</div>
 </form>
 <script>
 "use strict";

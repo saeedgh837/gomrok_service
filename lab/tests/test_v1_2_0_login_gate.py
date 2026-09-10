@@ -344,6 +344,46 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertFalse(panel_auth.USERS_PATH.startswith(ROOT))
 
 
+class SingleInstanceProbeTests(unittest.TestCase):
+    """_panel_already_running must recognize a gated panel via /login.
+
+    Regression: v1.2.0 moved the home page behind the gate (/ now 302s with an
+    empty body), so the old probe of "/" stopped seeing the irica-version chip
+    and a second launch could double-bind the port (Windows SO_REUSEADDR) or
+    die with "پنل اجرا نشد".
+    """
+
+    def _serve(self):
+        import panel
+        import threading
+        httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        return port
+
+    def test_probe_recognizes_gated_panel_via_login_page(self):
+        import panel
+        port = self._serve()
+        with patch.object(panel, "HOST", "127.0.0.1"), \
+                patch.object(panel, "PORT", port):
+            self.assertTrue(panel._panel_already_running(timeout=2.0))
+
+    def test_probe_false_for_unrelated_port(self):
+        import panel
+        # nothing listens here
+        with patch.object(panel, "HOST", "127.0.0.1"), \
+                patch.object(panel, "PORT", 59999):
+            self.assertFalse(panel._panel_already_running(timeout=0.5))
+
+    def test_server_refuses_reuse_address(self):
+        import panel
+        # The panel's server class must not set SO_REUSEADDR (Windows
+        # double-bind hazard); socketserver's ThreadingHTTPServer defaults to 1.
+        self.assertEqual(panel.PanelHTTPServer.allow_reuse_address, False)
+        self.assertEqual(panel.ThreadingHTTPServer.allow_reuse_address, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 
