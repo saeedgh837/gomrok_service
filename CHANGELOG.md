@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.5] - 2026-09-10
+
+### Added
+
+- CRM tabs reorganized around case outcomes: «تکمیل شده‌ها» (completed cases,
+  read-only), «دارای اشکال» (problem cases with «بازگشت به صف» and close actions),
+  and «مختومه‌ها» (terminated cases with their reason and date). The KPI tile
+  now links to the completed tab.
+- Terminal case state «مختومه» (closed): an operator can terminate a case from
+  the inquiry or problem stage with a mandatory written reason (stored on the
+  case with a timestamp). Closed cases reject every further action — the
+  scheduler, watch runs, auto-advance, periodic re-inquiry and inquiry starts
+  all exclude them — and they can never be rolled back.
+- Left summary rail on the devices view: «جدیدترین مشتری‌ها» (newest customers
+  with balance pills), «پرونده‌های اخیر» (recent cases; clicking scrolls to and
+  flashes the device card), and «بیشترین بدهکاری» (top debtors). Pure
+  client-side; no new server routes.
+- Ledger trace for terminations: a `case_closed` event records the reason's
+  LENGTH only, never the reason text (privacy §12).
+
+### Tests
+
+- Suite grew 409 → 465 (summary-rail 26, tabs/closed 30 including an
+  HTTP end-to-end close-case flow); all green.
+
 ## [1.1.4] - 2026-09-09 (assets refreshed 2026-09-10)
 
 ### Fixed (asset refresh)
