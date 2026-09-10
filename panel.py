@@ -6601,6 +6601,23 @@ class Handler(BaseHTTPRequestHandler):
     PUBLIC_GET_PATHS = ("/login", "/favicon.ico", "/fonts/Vazirmatn-var.woff2",
                        "/fonts/Vazirmatn-Bold.woff2")
 
+    def _is_browser_navigation(self):
+        """True for real browser navigations (typed URL, link, refresh).
+
+        Browsers send Accept: text/html,... on navigations; fetch()/XHR from
+        the page JS sends Accept: */* (api() sets no Accept header). Sec-Fetch-
+        Mode: navigate is the modern explicit signal — used when present.
+        """
+        fetch_mode = (self.headers.get("Sec-Fetch-Mode") or "").strip().lower()
+        if fetch_mode:
+            return fetch_mode == "navigate"
+        accept = self.headers.get("Accept")
+        if accept is None:
+            # No Accept header at all: page JS fetch always sends one (default
+            # "*/*"), so this is a plain client (curl, scripts) — redirect it.
+            return True
+        return "text/html" in accept.lower()
+
     def _gate(self, route):
         """Returns True when the request may proceed. Handles the login page,
         login POST and logout POST itself; everything else requires a valid
@@ -6624,7 +6641,10 @@ class Handler(BaseHTTPRequestHandler):
         token = _cookie_token(self.headers)
         username = panel_auth.session_user(token)
         if username is None:
-            if method == "GET" and route in ("/", "/index.html"):
+            if method == "GET" and self._is_browser_navigation():
+                # Typed URLs / link clicks / refreshes land on the login page;
+                # fetch()/XHR (Accept: */* or cors mode) still get JSON 401 so
+                # page scripts can show their own "برای ادامه وارد شوید".
                 self.send_response(302)
                 self.send_header("Location", "/login")
                 self.send_header("Content-Length", "0")

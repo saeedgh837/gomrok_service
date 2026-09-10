@@ -18,6 +18,11 @@ import urllib.error
 import urllib.request
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 class SeedTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -186,10 +191,12 @@ class _GateHarness(unittest.TestCase):
             def redirect_request(self, *a, **k):
                 return None
         opener = urllib.request.build_opener(NoRedirect)
+        base_headers = {"Accept": "*/*"}  # what page-JS fetch() sends
+        base_headers.update(headers or {})
         req = urllib.request.Request(
             self.base + path,
             data=json.dumps(data).encode() if data is not None else None,
-            headers=headers or {}, method=method)
+            headers=base_headers, method=method)
         try:
             resp = opener.open(req, timeout=10)
             return resp.status, dict(resp.headers), resp.read().decode("utf-8", "replace")
@@ -209,7 +216,8 @@ class _GateHarness(unittest.TestCase):
 
 class GateTests(_GateHarness):
     def test_root_redirects_to_login_when_unauthenticated(self):
-        status, headers, body = self._op("/")
+        status, headers, body = self._op("/", headers={
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         self.assertEqual(status, 302)
         self.assertTrue(headers.get("Location", "").startswith("/login"))
 
@@ -382,6 +390,75 @@ class SingleInstanceProbeTests(unittest.TestCase):
         # double-bind hazard); socketserver's ThreadingHTTPServer defaults to 1.
         self.assertEqual(panel.PanelHTTPServer.allow_reuse_address, False)
         self.assertEqual(panel.ThreadingHTTPServer.allow_reuse_address, 1)
+
+
+
+class BrowserNavigationRedirectTests(unittest.TestCase):
+    """Unauthenticated PAGE navigations must 302 to /login; fetch() gets 401."""
+
+    def _serve(self):
+        import panel
+        httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        return f"http://127.0.0.1:{port}"
+
+    def _status(self, base, path, accept=None, sec_mode=None, method=None,
+                data=None):
+        headers = {}
+        if accept:
+            headers["Accept"] = accept
+        if sec_mode:
+            headers["Sec-Fetch-Mode"] = sec_mode
+        body = json.dumps(data).encode() if data is not None else None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(base + path, data=body,
+                                     headers=headers, method=method)
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(req, timeout=15) as resp:
+                return resp.status, dict(resp.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers)
+
+    def test_typed_page_urls_redirect_to_login(self):
+        base = self._serve()
+        browser_accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        for path in ("/", "/site-1", "/site-2", "/crm", "/site-1/robot",
+                     "/crm-report?fmt=html"):
+            st, h = self._status(base, path, accept=browser_accept)
+            self.assertEqual(st, 302, f"{path} -> {st}")
+            self.assertEqual(h.get("Location"), "/login", path)
+
+    def test_sec_fetch_mode_navigate_redirects(self):
+        base = self._serve()
+        st, h = self._status(base, "/crm", sec_mode="navigate")
+        self.assertEqual(st, 302)
+        self.assertEqual(h.get("Location"), "/login")
+
+    def test_fetch_style_requests_get_json_401(self):
+        base = self._serve()
+        for path in ("/site-1", "/crm", "/state"):
+            st, h = self._status(base, path, accept="*/*")
+            self.assertEqual(st, 401, path)
+        st, h = self._status(base, "/crm-state", accept="*/*")
+        self.assertEqual(st, 401)
+
+    def test_authed_navigation_still_serves_pages(self):
+        base = self._serve()
+        import panel_auth
+        panel_auth.seed_default_users()
+        token = panel_auth.create_session("saeed")
+        req = urllib.request.Request(
+            base + "/crm",
+            headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                     "Cookie": "irica_session=" + token})
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("خروج (saeed)", resp.read().decode("utf-8"))
 
 
 if __name__ == "__main__":
