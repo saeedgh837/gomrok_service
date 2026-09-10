@@ -308,11 +308,17 @@ def check_function(dist: Path) -> None:
         # log in and check the pages render.
         import urllib.error
 
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        _opener = urllib.request.build_opener(_NoRedirect)
+
         def _fetch(route, headers=None):
             req = urllib.request.Request(
                 f"http://127.0.0.1:{port}{route}", headers=headers or {})
             try:
-                with urllib.request.urlopen(req, timeout=20) as r:
+                with _opener.open(req, timeout=20) as r:
                     return r.status, dict(r.headers), r.read().decode("utf-8", "ignore")
             except urllib.error.HTTPError as exc:
                 return exc.code, dict(exc.headers), exc.read().decode("utf-8", "ignore")
