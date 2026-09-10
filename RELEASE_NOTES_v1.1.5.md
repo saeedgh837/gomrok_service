@@ -28,6 +28,6 @@
 | فایل | حجم | sha256 |
 |---|---|---|
 | irica-v1.1.5-win64.zip | — | a86e773ed8c87f4790d98e874170863a32c7f9d11dea3b26425d959d4a68b2a9 |
-| IRICA-Setup-v1.1.5.exe | — | SHA256_EXE_PLACEHOLDER |
+| IRICA-Setup-v1.1.5.exe | — | 0456fdc681ced851171477fa8c2d5b072742cb15d8ec0da6998c6e148271db14 |
 
 (جای‌نگهدارها پس از بیلد با هش واقعی پر می‌شوند.)
