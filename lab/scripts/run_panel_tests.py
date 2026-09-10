@@ -38,6 +38,7 @@ DEFAULT = [
     "test_robot_interpreter", "test_manual_scroll", "test_app_paths",
     "test_v1_1_5_summary_rail",
     "test_v1_1_5_tabs_closed",
+    "test_v1_2_0_login_gate",
 ]
 
 names = sys.argv[1:] or DEFAULT
