@@ -3,6 +3,51 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-09-10
+
+### Added
+
+- Login gate for the whole panel: every fresh visit lands on a login page
+  (`/login`); every other route requires a valid session cookie. Unauthenticated
+  page requests redirect to `/login`, API requests get HTTP 401 with a Persian
+  message, and `/shutdown` is gated like everything else.
+- Three operator-provisioned accounts (saeed, hasan, arsalan) seeded on first
+  start into `panel_users.json` inside the data directory — PBKDF2-HMAC-SHA256
+  (390k iterations, per-user salt), never plaintext. No user-management UI by
+  design; the file is created outside the release tree and is excluded from
+  bundles by the release verifier.
+- Session handling: HttpOnly `SameSite=Lax` cookie with a 7-day sliding server
+  session; «خروج (user)» in the CRM header and `POST /logout` destroy the
+  session server-side. Restarting the panel logs everyone out (sessions are
+  in-memory).
+- Brute-force throttle: 5 failed attempts lock the username for 30 seconds
+  (HTTP 429); unknown usernames verify against a dummy hash so response timing
+  does not reveal account existence. Successful logins are recorded in the CRM
+  event log (`login_ok` with the username only).
+- Telegram attribution: every outbound Telegram message (reports, robot
+  notifications, estelam/hamta/exitban workers) now starts with
+  «کاربر: <name>». The acting user is stamped onto child processes at spawn
+  time (`IRICA_ACTOR`); panel-initiated sends pass the user explicitly, and
+  scheduled background runs are attributed to «سیستم».
+
+### Removed
+
+- The panel-access Cloudflare stack (cloudflare_auth_relay.py on :8751,
+  start_cloudflare_relay.py, start_named_cloudflare_tunnel.py,
+  cloudflare_named_tunnel.yml and the watchdog section that kept the tunnel
+  alive): the panel is a localhost service again, reachable only on
+  127.0.0.1:8750. The Telegram relay chain (telegram_api_relay.py +
+  cloudflare_http_proxy.py) is untouched.
+
+### Changed
+
+- The release verifier gates page probes behind the login: with
+  IRICA_VERIFY_USER/IRICA_VERIFY_PASS set it logs in and checks the pages;
+  without credentials it verifies the gate shape (401/302 + login page 200).
+- Test harnesses drive the real gate: a shared helper
+  (`lab/tests/_auth_harness.py`) seeds a session and injects the cookie into
+  every request, so the suite exercises the authenticated paths end to end.
+
 ## [1.1.5] - 2026-09-10
 
 ### Added
