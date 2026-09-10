@@ -1446,6 +1446,9 @@ def crm_periodic_toggle(device_id, remove=True):
                        if d.get("id") == device_id), None)
         if not device:
             return {"ok": False, "errors": ["دستگاه پیدا نشد"]}
+        if device.get("stage") == "closed":
+            return {"ok": False, "errors": [
+                "پروندهٔ این دستگاه مختومه شده است — تغییر استعلام دوره‌ای مجاز نیست"]}
         device["periodic_opt_out"] = bool(remove)
         device["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
         crm_mod.store_write(data)
@@ -1475,6 +1478,9 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual"):
                        if d.get("id") == device_id), None)
         if not device:
             return {"ok": False, "errors": ["دستگاه پیدا نشد"]}
+        if device.get("stage") == "closed":
+            return {"ok": False, "errors": [
+                "پروندهٔ این دستگاه مختومه شده است — استعلام مجاز نیست"]}
         person, errors = crm_mod.identity_for_stage(device_id)
         if errors:
             crm_mod.crm_log("warn", "inquiry_identity_missing",
@@ -1775,6 +1781,11 @@ def crm_advance_logged(device_id, action, **payload):
     if not errors:
         crm_mod.crm_log("info", "stage", device_id=device_id, action=action,
                         to_stage=str((device or {}).get("stage") or ""))
+        if action == "close_case":
+            # Closure trace: record THAT it happened and the reason's length —
+            # never the reason text itself (free-text personal data, §12).
+            crm_mod.crm_log("info", "case_closed", device_id=device_id,
+                            reason_len=len(str(payload.get("reason") or "")))
     else:
         crm_mod.crm_log("warn", "stage_rejected", device_id=device_id,
                         action=action, errors="; ".join(errors))
@@ -4894,6 +4905,21 @@ CRM_PAGE = r"""<!DOCTYPE html>
     border-radius:7px;padding:2px 9px;font-size:11.5px}
   /* device cards */
   .devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+  .devwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
+  .devrail{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .devrail .card{padding:10px 12px}
+  .devrail h4{margin:0 0 6px;font-size:12.5px;color:var(--muted);font-weight:600}
+  .sumrow{display:flex;align-items:center;gap:8px;padding:4px 2px;border-top:1px solid var(--line);cursor:pointer}
+  .sumrow:first-of-type{border-top:0}
+  .sumrow:hover{background:var(--brand-soft)}
+  .sumrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  .sumrow .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .sumbox{max-height:230px;overflow:auto;padding-bottom:4px}
+  .dev.flash{animation:devflash 1.6s ease-out 1}
+  @keyframes devflash{0%{box-shadow:0 0 0 3px var(--brand-soft)}70%{box-shadow:0 0 0 3px var(--brand-soft)}100%{box-shadow:none}}
+  @media (prefers-reduced-motion:reduce){.dev.flash{animation:none}}
+  .closedreason{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;unicode-bidi:plaintext}
+  @media (max-width:900px){.devwrap{grid-template-columns:1fr}.closedreason{max-width:60vw}}
   .dev{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px 12px;
     box-shadow:var(--shadow-1);display:flex;flex-direction:column;gap:10px;
     border-inline-start:3px solid transparent}
@@ -5009,10 +5035,10 @@ var STAGE_FA = {
   'new':'ثبت پرونده','inquiry':'استعلام ثبت‌نبودن','problem':'دارای اشکال',
   'ready_owner':'اتصال مسافر','handed':'تحویل به مسئول ثبت',
   'to_payment':'استعلام ثبت‌بودن — پرداخت','payment':'در حال پرداخت',
-  'payment_done':'پرداخت تأییدشده','done':'تکمیل‌شده'
+  'payment_done':'پرداخت تأییدشده','done':'تکمیل‌شده','closed':'مختومه'
 };
 var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
-  'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok'};
+  'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok','closed':'n'};
 var STAGE_SKIP_NEXT = {
   'new':'inquiry','inquiry':'ready_owner','ready_owner':'handed','handed':'to_payment',
   'to_payment':'payment','payment':'payment_done','payment_done':'done','problem':'inquiry'
@@ -5027,6 +5053,7 @@ var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','
 var TABS = [
   ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
   ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
+  ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
   ['settings','تنظیمات']
 ];
 
@@ -5142,6 +5169,7 @@ function stageActions(d){
   var cont=stageContinue(d);
   if(cont&&cont.ready) a.push([cont.action,cont.label,'primary']);
   if(st==='inquiry') a.push(['mark_problem','ثبت اشکال','danger']);
+  if(st==='inquiry'||st==='problem') a.push(['__close_case','مختومه کردن پرونده','danger']);
   if(st==='problem') a.push(['requeue_inquiry','بازگشت به صف','primary']);
   if(st==='ready_owner') a.push(['__attach','اتصال مسافر','']);
   if(STAGE_SKIP_WARN[st]) a.push(['__skip','رد کردن این مرحله ⏭','skip']);
@@ -5187,10 +5215,81 @@ function devTick(id, action){
       .catch(e=>toast(e,false));
     return;
   }
+  if(action==='__close_case'){closeCaseDialog(id);return;}
   if(action==='__noop'){return;}
   api('/crm-tick',{device_id:id,action:action}).then(async r=>{
       toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
     .catch(e=>toast(e,false));
+}
+/* ================= completed / problem / closed tabs (v1.1.5) ================= */
+function devRow(d, extra){
+  var st=d.stage;
+  var cust=esc(custName(d.customer_id));
+  var row='<div class="card" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
+    +'<b>'+esc(d.name)+'</b>'
+    +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
+    +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
+    +(cust?'<span class="chip">'+ICONS.user+cust+'</span>':'')
+    +(extra||'')+'</div>';
+  if(extra===undefined||extra==='')row+='';
+  return row+'</div>';
+}
+function doneTabHtml(){
+  var ds=(STATE.devices||[]).filter(d=>d.stage==='done')
+    .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+  var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
+    +'پرونده‌های تکمیل‌شده — از جریان اصلی خارج شده‌اند و فقط برای مرور نگه‌داری می‌شوند.</span></div>';
+  if(!ds.length)return note+emptyHtml('پروندهٔ تکمیل‌شده‌ای نیست','پرونده‌ها پس از تحویل کد فعال‌سازی به این‌جا می‌آیند.');
+  return note+ds.map(d=>devRow(d)).join('');
+}
+function problemTabHtml(){
+  var ds=(STATE.devices||[]).filter(d=>d.stage==='problem')
+    .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+  var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
+    +'پرونده‌های دارای اشکال — با «بازگشت به صف» دوباره وارد جریان می‌شوند یا مختومه می‌گردند.</span></div>';
+  if(!ds.length)return note+emptyHtml('پروندهٔ دارای اشکالی نیست','اگر استعلامی اشکال پیدا کند پروندهٔ آن این‌جا می‌آید.');
+  return note+ds.map(d=>devRow(d,
+    '<button class="btn mini primary" onclick="devRequeue(\''+d.id+'\')">بازگشت به صف</button>'
+    +'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن پرونده</button>')).join('');
+}
+function closedTabHtml(){
+  var ds=(STATE.devices||[]).filter(d=>d.stage==='closed')
+    .sort((a,b)=>String(b.closed_at||'').localeCompare(String(a.closed_at||'')));
+  var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
+    +'پرونده‌های مختومه — بسته‌شده و غیرقابل ادامه.</span></div>';
+  if(!ds.length)return note+emptyHtml('پروندهٔ مختومه‌ای نیست','پرونده‌هایی که قابل ادامه نباشند پس از مختومه‌کردن این‌جا می‌آیند.');
+  return note+ds.map(d=>'<div class="card" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
+    +'<b>'+esc(d.name)+'</b>'
+    +'<span class="pill n">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
+    +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
+    +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
+    +'<span class="chip closedreason">دلیل: '+esc(d.closed_reason||'—')+'</span>'
+    +'<span class="chip">'+esc(d.closed_at||'—')+'</span>'
+    +'</div></div>').join('');
+}
+function devRequeue(id){
+  confirmDlg('بازگشت به صف','پرونده به مرحلهٔ «'+(STAGE_FA['inquiry']||'استعلام')+'» برمی‌گردد و استعلام از نو اجرا می‌شود. مطمئنی؟',
+    'بازگشت به صف',function(){
+      devTick(id,'requeue_inquiry');
+    });
+}
+function closeCaseDialog(id){
+  openDlg('<h3>مختومه کردن پرونده</h3>'
+    +'<p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.8">پرونده برای همیشه بسته می‌شود و دیگر قابل ادامه نیست. دلیل آن ثبت می‌شود.</p>'
+    +'<input id="closeReason" placeholder="دلیل مختومه‌کردن پرونده…" class="inp" style="width:100%">'
+    +'<div class="row" style="margin-top:12px"><button class="btn danger" onclick="closeCaseYes(\''+id+'\')">مختومه کردن پرونده</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function closeCaseYes(id){
+  var reason=(document.getElementById('closeReason')||{}).value||'';
+  reason=reason.trim();
+  if(!reason){toast('ثبت دلیل الزامی است',false);return;}
+  closeDlg();
+  confirmDlg('مختومه کردن پرونده','پرونده با دلیل «'+reason+'» مختومه می‌شود. مطمئنی؟','مختومه کردن',function(){
+    api('/crm-tick',{device_id:id,action:'close_case',reason:reason}).then(async r=>{
+      toast('پرونده مختومه شد');await refresh();})
+      .catch(e=>toast(e,false));
+  });
 }
 function needsAction(d){
   return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
@@ -5246,7 +5345,7 @@ function kpisHtml(){
   return '<div class="kpis">'
     +k('','همهٔ پرونده‌ها',c.all,'devices')
     +k('attention','نیازمند اقدام',c.need,'devices')
-    +k('k-ok','تکمیل‌شده',c.ok,'devices')
+    +k('k-ok','تکمیل شده‌ها',c.ok,'done_tab')
     +k('k-problem','مشتری بدهکار',c.debt,'customers')
     +'</div>';
 }
@@ -5293,7 +5392,7 @@ function devicesHtml(){
           +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
           +'</div>';
     }
-    return '<div class="dev'+(needsAction(d)?' needs-action':'')+'">'
+    return '<div class="dev'+(needsAction(d)?' needs-action':'')+'" id="devcard-'+d.id+'">'
       +'<div class="devhead">'+ICONS.dev+'<b>'+esc(d.name)+'</b>'
       +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
       +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')+'</div>'
@@ -5327,7 +5426,60 @@ function devicesHtml(){
   return '<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌شده: نیازمند اقدام در بالا · استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند</span></div>'
-    +'<div class="devgrid">'+cards+'</div>';
+    +'<div class="devwrap"><div class="devmain"><div class="devgrid">'+cards+'</div></div>'
+    +'<div class="devrail">'+devicesRailHtml()+'</div></div>';
+}
+/* ================= left summary rail (v1.1.5) ================= */
+function sumBalPill(id){
+  var b=bal(id);
+  if(bal(id)<0)return '<span class="pill bad">بدهکار '+money(b)+'</span>';
+  if(b>0)return '<span class="pill ok">'+money(b)+'</span>';
+  return '<span class="pill n">تسویه</span>';
+}
+function sumCustomersHtml(){
+  var cs=(STATE.customers||[]).slice()
+    .sort((a,b)=>String(b.created||'').localeCompare(String(a.created||'')));
+  if(!cs.length)return '<div class="muted">هنوز مشتری‌ای ثبت نشده است.</div>';
+  return '<div class="sumbox">'+cs.slice(0,5).map(c=>
+    '<div class="sumrow" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">'
+    +'<span class="nm">'+esc(c.full_name)+'</span>'
+    +'<span class="kbd">'+esc(c.mobile||'—')+'</span>'
+    +sumBalPill(c.id)+'</div>').join('')+'</div>';
+}
+function sumCasesHtml(){
+  var ds=(STATE.devices||[]).slice()
+    .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+  if(!ds.length)return '<div class="muted">هنوز پرونده‌ای ثبت نشده است.</div>';
+  return '<div class="sumbox">'+ds.slice(0,5).map(d=>
+    '<div class="sumrow" onclick="sumFocusDevice(\''+d.id+'\')">'
+    +'<span class="dot" style="background:var(--'+(STAGE_TONE[d.stage]==='bad'?'danger':(STAGE_TONE[d.stage]==='ok'?'ok':(STAGE_TONE[d.stage]==='warn'?'warn':'muted')))+')"></span>'
+    +'<span class="nm">'+esc(d.name||d.serial1||'')+'</span>'
+    +'<span class="kbd">'+esc(d.serial1||'')+'</span>'
+    +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
+    +'</div>').join('')+'</div>';
+}
+function sumFocusDevice(id){
+  var el=document.getElementById('devcard-'+id);
+  if(!el){setTab('devices');setTimeout(function(){sumFocusDevice(id);},250);return;}
+  el.scrollIntoView({behavior:'smooth',block:'center'});
+  el.classList.add('flash');
+  setTimeout(function(){el.classList.remove('flash');},1700);
+}
+function sumDebtorsHtml(){
+  var ds=(STATE.customers||[]).filter(c=>bal(c.id)<0)
+    .sort((a,b)=>bal(a.id)-bal(b.id));
+  if(!ds.length)return '<div class="muted">مشتری بدهکاری نیست.</div>';
+  var rows=ds.slice(0,5).map(c=>
+    '<div class="sumrow" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">'
+    +'<span class="nm">'+esc(c.full_name)+'</span>'
+    +'<span class="pill bad">'+money(bal(c.id))+'</span></div>').join('');
+  if(ds.length>5)rows+='<div class="muted" style="margin-top:6px">… و '+fa(ds.length-5)+' مورد دیگر</div>';
+  return '<div class="sumbox">'+rows+'</div>';
+}
+function devicesRailHtml(){
+  return '<div class="card"><h4>جدیدترین مشتری‌ها</h4>'+sumCustomersHtml()+'</div>'
+    +'<div class="card"><h4>پرونده‌های اخیر</h4>'+sumCasesHtml()+'</div>'
+    +'<div class="card"><h4>بیشترین بدهکاری</h4>'+sumDebtorsHtml()+'</div>';
 }
 function emptyHtml(title,sub){
   return '<div class="card"><div class="empty"><b>'+esc(title)+'</b>'+esc(sub)+'</div></div>';
@@ -6004,7 +6156,10 @@ function renderTabs(){
   var counts={devices:devs.length,customers:(STATE&&STATE.customers||[]).length,
     owners:(STATE&&STATE.owners||[]).length,identities:(STATE&&STATE.identities||[]).length,
     periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
-    ledger:null,reports:null};
+    ledger:null,reports:null,
+    done_tab:devs.filter(d=>d.stage==='done').length,
+    problem_tab:devs.filter(d=>d.stage==='problem').length,
+    closed_tab:devs.filter(d=>d.stage==='closed').length};
   document.getElementById('tabs').innerHTML = TABS.map(t=>
     '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]
     +(counts[t[0]]!=null?'<span class="cnt">'+fa(counts[t[0]])+'</span>':'')+'</button>').join('');
@@ -6022,6 +6177,9 @@ function renderView(){
   var head='<div id="kpis">'+kpisHtml()+'</div>';
   var body;
   if(TAB==='devices')body=devicesHtml();
+  else if(TAB==='done_tab')body=doneTabHtml();
+  else if(TAB==='problem_tab')body=problemTabHtml();
+  else if(TAB==='closed_tab')body=closedTabHtml();
   else if(TAB==='customers')body=customersHtml();
   else if(TAB==='owners')body=ownersHtml();
   else if(TAB==='identities')body=identitiesHtml();
@@ -6846,7 +7004,8 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             device, errors = crm_advance_logged(str(data.get("device_id") or ""),
                                                 str(data.get("action") or ""),
-                                                owner_id=data.get("owner_id") or "")
+                                                owner_id=data.get("owner_id") or "",
+                                                reason=str(data.get("reason") or ""))
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:

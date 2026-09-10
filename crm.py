@@ -52,9 +52,11 @@ ALLOWED = {
     "inquiry": {
         "mark_problem": "problem",
         "mark_ready": "ready_owner",      # scheduler auto-join also uses this
+        "close_case": "closed",           # operator terminates the case
     },
     "problem": {
         "requeue_inquiry": "inquiry",
+        "close_case": "closed",           # operator terminates the case
     },
     "ready_owner": {
         "attach_owner": "ready_owner",    # stays until handover tick
@@ -74,6 +76,9 @@ ALLOWED = {
         "deliver_code": "done",
     },
     "done": {},
+    # Terminal like `done`: a closed (مختومه) case can no longer proceed and
+    # is intentionally NOT rollback-able via _STAGE_BACK.
+    "closed": {},
 }
 
 # Stage rollback: for each stage, the previous MAINLINE stage a device may be
@@ -963,6 +968,14 @@ def advance(device_id, action, **payload):
         next_stage = ALLOWED.get(stage, {}).get(action)
         if not next_stage:
             return None, [f"این کنش در مرحلهٔ فعلی مجاز نیست ({stage})"]
+        if action == "close_case":
+            # Operator terminates the case (مختومه): a written reason is
+            # mandatory so the closed tab always shows why the case ended.
+            reason = str(payload.get("reason") or "").strip()
+            if not reason:
+                return None, ["ثبت دلیل برای مختومه‌کردن پرونده الزامی است"]
+            device["closed_reason"] = reason
+            device["closed_at"] = _now()
         # Owner gate (F1 at the source): watch-stage inquiries run under the
         # device OWNER identity, so handing a device over without one would
         # strand it at `handed` with un-runnable customs inquiries. Fail
@@ -1035,6 +1048,7 @@ _STAGE_FA = {
     "payment": "در حال پرداخت",
     "payment_done": "پرداخت تأییدشده",
     "done": "تکمیل‌شده",
+    "closed": "مختومه",
 }
 
 
