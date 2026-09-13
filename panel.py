@@ -2747,7 +2747,7 @@ PAGE_HEAD = """<!DOCTYPE html>
   .log-item.success .log-step .ic { color:var(--ok); }
   .log-item.warn .log-step .ic { color:var(--busy); }
   .log-item.info .log-step .ic { color:var(--info); }
-  .log-ts { direction:ltr; font-family:var(--mono); font-size:10.5px; color:var(--faint);
+  .log-ts { font-size:10.5px; color:var(--faint);
     white-space:nowrap; }
   .log-msg { font-size:12.5px; margin-top:5px; line-height:1.7; }
   .log-serial { direction:ltr; text-align:right; font-size:11.5px; color:var(--brand); margin-top:5px;
@@ -2783,8 +2783,7 @@ PAGE_HEAD = """<!DOCTYPE html>
   .device-result-profile { color:var(--muted); font-size:11px; margin-top:5px; }
   .device-result-text { color:var(--muted); font-size:12px; line-height:1.8; white-space:pre-line;
     word-break:break-word; margin-top:7px; }
-  .device-result-time { font-size:10.5px; color:var(--faint); direction:ltr; margin-top:6px;
-    font-family:var(--mono); }
+  .device-result-time { font-size:10.5px; color:var(--faint); margin-top:6px; }
   .exitban-result-card { border-radius:12px; padding:14px 16px; margin:12px 0;
     border:1px solid var(--line); background:var(--card); }
   .exitban-result-card.not_checked { border-color:var(--line); background:var(--card2); color:var(--muted); }
@@ -2795,8 +2794,7 @@ PAGE_HEAD = """<!DOCTYPE html>
   .exitban-result-head { display:flex; justify-content:space-between; gap:12px; align-items:center;
     font-weight:700; }
   .exitban-result-text { margin-top:10px; line-height:1.8; font-size:13px; }
-  .exitban-result-time { margin-top:8px; font-size:10.5px; opacity:.75; direction:ltr; text-align:right;
-    font-family:var(--mono); }
+  .exitban-result-time { margin-top:8px; font-size:10.5px; opacity:.75; text-align:right; }
   .soon { display:inline-flex; align-items:center; color:var(--busy); background:var(--busy-soft);
     border-radius:999px; padding:4px 11px; font-size:11px; font-weight:600; }
   /* blocked-profile release panel */
@@ -2818,8 +2816,7 @@ PAGE_HEAD = """<!DOCTYPE html>
     border-radius:9px; padding:8px 10px; background:var(--card); }
   .system-log-name { direction:ltr; text-align:left; font-family:var(--mono); font-weight:700;
     font-size:11px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .system-log-meta { color:var(--faint); font-size:10px; white-space:nowrap; direction:ltr;
-    font-family:var(--mono); }
+  .system-log-meta { color:var(--faint); font-size:10px; white-space:nowrap; }
   .system-log-open { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--brand);
     color:var(--brand); background:transparent; border-radius:8px; padding:5px 10px; cursor:pointer;
     font-family:inherit; font-size:11px; font-weight:650; transition:.15s; }
@@ -2891,8 +2888,10 @@ PAGE_HEAD = """<!DOCTYPE html>
   .api-health-toast.show { opacity:1; transform:translate(-50%,0); pointer-events:auto; }
   .api-health-toast.ok { border-inline-start-color:var(--ok); }
   .api-health-toast.fail { border-inline-start-color:var(--danger); }
-  .api-health-toast .api-meta { display:none; color:var(--muted); font-size:11px; direction:ltr;
-    text-align:left; font-family:var(--mono); }
+  .api-health-toast .api-meta { display:none; color:var(--muted); font-size:11px;
+    /* v1.4.2 (H review): the meta line now carries a Shamsi date — LTR
+       direction scrambled it; the URL renders fine under bidi. */
+    font-family:var(--mono); }
   .api-health-toast:hover .api-meta { display:block; }
   .api-health-toast button { position:absolute; top:6px; inset-inline-end:8px; border:0;
     background:transparent; color:var(--faint); font-size:20px; cursor:pointer; }
@@ -3032,6 +3031,18 @@ var ICON={
   pointer:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>'
 };
 function toFa(n){return String(n).replace(/\d/g,function(d){return FA_DIGITS[d];});}
+/* Jalali calendar display helpers: stored values stay ISO Gregorian and are
+   converted only at render time. Empty/invalid input renders as an em-dash. */
+function faDate(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'});}catch(e){return String(iso||'—');}
+}
+function faDateTime(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'})+'، '+d.toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(iso||'—');}
+}
 function statusOf(p){
   if(p.run_status==='busy')             return {key:'running',cls:'b-busy',   label:'در حال اجرا'};
   if(p.registration_status==='success') return {key:'success',cls:'b-success',label:'موفق'};
@@ -3284,7 +3295,7 @@ function buildExitbanResult(p){
   return '<div id="exitban-result-card" class="exitban-result-card '+status+'">'+
     '<div class="exitban-result-head"><span>'+icons[status]+' '+titles[status]+'</span></div>'+
     '<div class="exitban-result-text">'+escHtml(text)+'</div>'+
-    (p.exitban_checked_at?'<div class="exitban-result-time">'+escHtml(p.exitban_checked_at)+'</div>':'')+'</div>';
+    (p.exitban_checked_at?'<div class="exitban-result-time">'+escHtml(faDateTime(p.exitban_checked_at))+'</div>':'')+'</div>';
 }
 
 function renderProfileEditorEmpty(){
@@ -3555,7 +3566,7 @@ function renderLogs(){
   list.forEach(function(log){
     var d=document.createElement('div'); d.className='log-item '+(log.status||'');
     var icon={'error':ICON.xCircle,'success':ICON.checkCircle,'warn':ICON.alert,'info':ICON.info}[log.status]||ICON.dot;
-    d.innerHTML='<div class="log-top"><span class="log-step">'+icon+' '+escHtml(log.step||'')+'</span><span class="log-ts">'+escHtml(log.ts||'')+'</span></div><div class="log-msg">'+escHtml(log.message||'')+'</div>'+(log.title?'<div class="hint">'+ICON.user+' '+escHtml(log.title)+'</div>':'');
+    d.innerHTML='<div class="log-top"><span class="log-step">'+icon+' '+escHtml(log.step||'')+'</span><span class="log-ts">'+escHtml(faDateTime(log.ts))+'</span></div><div class="log-msg">'+escHtml(log.message||'')+'</div>'+(log.title?'<div class="hint">'+ICON.user+' '+escHtml(log.title)+'</div>':'');
     listEl.appendChild(d);
   });
 }
@@ -3611,7 +3622,7 @@ function pushLogNotif(l){
   d.className='lognotif s-'+st;
   d.innerHTML='<button class="x" aria-label="بستن" onclick="this.parentNode.remove()">×</button>'+
     '<div class="t">'+(NOTIF_ICON[st]||ICON.dot)+' <span>'+escHtml(l.step||'رویداد جدید')+'</span>'+
-    '<span style="margin-inline-start:auto;font-size:10.5px;color:var(--muted);direction:ltr">'+escHtml(l.ts||'')+'</span></div>'+
+    '<span style="margin-inline-start:auto;font-size:10.5px;color:var(--muted)">'+escHtml(faDateTime(l.ts))+'</span></div>'+
     (l.imei?'<div class="sn">سریال: '+escHtml(l.imei)+'</div>':'')+
     (l.title?'<div class="sn">'+ICON.user+' '+escHtml(l.title)+'</div>':'')+
     '<div class="m">'+escHtml(l.message||'')+'</div>';
@@ -3648,7 +3659,7 @@ function buildServiceResults(p,service){
     if (row.serial2) {
         serialDisplay += ' / ' + escHtml(row.serial2);
     }
-    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-profile">'+ICON.user+' پروفایل: '+escHtml(p.title||p.national||'بدون عنوان')+'</div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
+    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-profile">'+ICON.user+' پروفایل: '+escHtml(p.title||p.national||'بدون عنوان')+'</div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(faDateTime(row.checked_at))+'</div>':'')+'</div>';
   }).join('');
   if(error)html+='<div class="device-result bad"><strong>خطای اجرا — '+profileInquiryLabel(p,service)+'</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
   return html;
@@ -3754,7 +3765,7 @@ function showApiHealth(h){
   if(!box||!h)return;
   box.classList.remove('ok','fail'); box.classList.add(h.ok?'ok':'fail','show');
   document.getElementById('api-health-message').innerHTML=(h.ok?ICON.check:ICON.alert)+' '+escHtml(h.message||'نتیجه تست نامشخص است');
-  document.getElementById('api-health-meta').textContent=(h.api_base||'')+(h.ts?' • '+h.ts:'');
+  document.getElementById('api-health-meta').textContent=(h.api_base||'')+(h.ts?' • '+faDateTime(h.ts):'');
   clearTimeout(window.__apiToastTimer);
   window.__apiToastTimer=setTimeout(function(){
     if(!box.matches(':hover'))box.classList.remove('show');
@@ -3771,7 +3782,7 @@ var SYSTEM_LOGS=[];
 function renderSystemLogs(){
   var list=document.getElementById('system-log-list'); if(!list)return;
   if(!SYSTEM_LOGS.length){list.innerHTML='<div class="hint">هنوز لاگ سیستمی ساخته نشده است.</div>';return;}
-  list.innerHTML=SYSTEM_LOGS.map(function(item){return '<div class="system-log-item"><span class="system-log-name">'+escHtml(item.name)+'</span><span class="system-log-meta">'+escHtml(item.modified)+'</span><button type="button" class="system-log-open" onclick="openSystemLog(\''+escHtml(item.name)+'\')">مشاهده</button></div>';}).join('');
+  list.innerHTML=SYSTEM_LOGS.map(function(item){return '<div class="system-log-item"><span class="system-log-name">'+escHtml(item.name)+'</span><span class="system-log-meta">'+escHtml(faDateTime(item.modified))+'</span><button type="button" class="system-log-open" onclick="openSystemLog(\''+escHtml(item.name)+'\')">مشاهده</button></div>';}).join('');
 }
 function loadSystemLogs(){
   fetch('/system-logs',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){SYSTEM_LOGS=data.logs||[];renderSystemLogs();}).catch(function(){});
@@ -4347,8 +4358,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
      tables so the main table's row selectors stay intact */
   .stgrid{display:grid;grid-template-columns:auto auto 1fr;gap:5px 8px;align-items:center}
   .stgrid .slab{color:var(--muted);font-size:10.5px;white-space:nowrap}
-  .stgrid .when{color:var(--faint);font-size:11px;direction:ltr;text-align:left;white-space:nowrap;
-    font-family:Consolas,ui-monospace,monospace}
+  .stgrid .when{color:var(--faint);font-size:11px;white-space:nowrap}
   /* serials one and two stacked in a single column (less width) */
   .mono.sn1,.mono.sn2{direction:ltr;text-align:left;font-family:Consolas,ui-monospace,monospace;line-height:1.5}
   .mono.sn2{color:var(--muted);font-size:12px;margin-top:2px}
@@ -4394,8 +4404,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
           animation:pulse 1.6s infinite}
   @keyframes pulse{50%{box-shadow:0 0 0 9px transparent}}
   .runbar .st{font-size:13.5px;font-weight:650}
-  .runbar .meta{font-size:11.5px;color:var(--faint);direction:ltr;
-    font-family:Consolas,ui-monospace,monospace}
+  .runbar .meta{font-size:11.5px;color:var(--faint)}
   .chips{display:flex;gap:7px;flex-wrap:wrap;margin-inline-start:auto}
   .chip{font-size:11.5px;padding:3px 10px;border-radius:999px;font-weight:600;
         background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
@@ -4434,7 +4443,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .li .h{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px}
   .li .h b{font-size:12.5px;font-weight:650}
   .li .h b .ic{color:currentColor}
-  .li .ts{color:var(--faint);font-size:11px;direction:ltr;font-family:Consolas,ui-monospace,monospace}
+  .li .ts{color:var(--faint);font-size:11px}
   .li .sn{color:var(--sn);font-size:11.5px;direction:ltr;margin-top:3px;
     font-family:Consolas,ui-monospace,monospace}
   .li .msg{font-size:12.5px;margin-top:5px;line-height:1.6;max-height:36px;overflow:hidden}
@@ -4657,6 +4666,18 @@ var HAMTA_FA={pending:'در انتظار',running:'در حال استعلام',g
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function digits(s){return String(s||'').replace(/[^0-9]/g,'');}
+/* Jalali calendar display helpers: stored values stay ISO Gregorian and are
+   converted only at render time. Empty/invalid input renders as an em-dash. */
+function faDate(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'});}catch(e){return String(iso||'—');}
+}
+function faDateTime(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'})+'، '+d.toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(iso||'—');}
+}
 
 /* Inline SVG icon set — display only, no emoji anywhere on the page. */
 function icsvg(p){return '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none"'+
@@ -4753,14 +4774,9 @@ function renderDevices(){
     '<th>نتیجه</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
-/* zaman-e estelam: '--' agar hanooz estelam nashode. faghat MM-DD HH:MM neshan
-   dade mishavad (sal ezafe ast va sotoon ra pahn mikonad). */
+/* zaman-e estelam: tarikh-e shamsi ba saat (faDateTime); khali/na-mo'tabar '—'. */
 function fmtWhen(ts){
-  ts=String(ts||'').trim();
-  if(!ts) return '--';
-  var m=ts.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-  if(!m) return ts;
-  return toFa(m[2]+'/'+m[3]+' '+m[4]+':'+m[5]);
+  return faDateTime(ts);
 }
 
 function refresh(){
@@ -4815,8 +4831,8 @@ function renderRuntime(rt){
   dot.className='dot'+(running?' on':'');
   st.textContent=running?('در حال اجرا'+(rt.service_fa?(' — '+rt.service_fa):'')):'متوقف';
   st.style.color=running?'var(--busy)':'var(--muted)';
-  meta.textContent=running?('pid '+rt.pid+(rt.started?(' · '+rt.started):'')):
-    (rt.started?('آخرین اجرا: '+rt.started):'');
+  meta.textContent=running?('pid '+rt.pid+(rt.started?(' · '+faDateTime(rt.started)):'')):
+    (rt.started?('آخرین اجرا: '+faDateTime(rt.started)):'');
   // chips ba servis-e entekhab-shode hamahang mishavad
   var c,fa;
   if(SVC==='hamta'){c=rt.hamta_counts||{};fa=HAMTA_FA;}
@@ -5124,7 +5140,7 @@ function paintLogs(){
     var open=LOG_OPEN[key]?' open':'';
     return '<div class="li s-'+esc(st)+open+'" onclick="toggleLog(\''+esc(key)+'\')">'+
       '<div class="h"><b>'+(LOG_ICON[st]||'•')+' '+esc(LOG_FA[st]||st)+
-      (l.step?(' · '+esc(l.step)):'')+'</b><span class="ts">'+esc(l.ts||'')+'</span></div>'+
+      (l.step?(' · '+esc(l.step)):'')+'</b><span class="ts">'+esc(faDateTime(l.ts))+'</span></div>'+
       (l.serial?('<div class="sn">سریال: '+esc(l.serial)+'</div>'):'')+
       '<div class="msg">'+esc(l.message||'')+'</div>'+
       (LOG_OPEN[key]?'':'<div class="more">برای جزئیات کلیک کنید</div>')+
@@ -5176,8 +5192,8 @@ function pushLogNotif(l){
   d.className='lognotif s-'+st;
   d.innerHTML='<button class="x" aria-label="بستن" onclick="this.parentNode.remove()">×</button>'+
     '<div class="t">'+(LOG_ICON[st]||'•')+' <span>'+esc(LOG_FA[st]||st)+'</span>'+
-    '<span style="margin-inline-start:auto;font-size:10.5px;color:var(--muted);direction:ltr">'+
-    esc(l.ts||'')+'</span></div>'+
+    '<span style="margin-inline-start:auto;font-size:10.5px;color:var(--muted)">'+
+    esc(faDateTime(l.ts))+'</span></div>'+
     (l.serial?('<div class="sn">سریال: '+esc(l.serial)+'</div>'):'')+
     '<div class="m">'+esc(l.message||'')+'</div>';
   wrap.appendChild(d);
@@ -5703,6 +5719,21 @@ var TAB_SEARCH={
   closed_tab:{ph:'جستجو در مختومه‌ها…',unit:'پرونده'}
 };
 
+/* Jalali display helpers (v1.4.2): stored timestamps stay ISO Gregorian;
+   conversion happens only at render time. faDate for plain dates,
+   faDateTime when the clock matters (logs, last change, last inquiry).
+   Empty or unparsable values render as «—». */
+function faDate(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'});}catch(e){return String(iso||'—');}
+}
+function faDateTime(iso){
+  var d=new Date(String(iso||'').replace(' ','T'));
+  if(isNaN(d))return String(iso||'—');
+  try{return d.toLocaleDateString('fa-IR-u-ca-persian',{day:'numeric',month:'long',year:'numeric'})+'، '+d.toLocaleTimeString('fa-IR',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(iso||'—');}
+}
+
 /* ================= plumbing ================= */
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function money(n){n=Number(n||0);return n.toLocaleString('fa-IR')+' تومان';}
@@ -6031,7 +6062,7 @@ function devRow(d, extra){
     +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
     +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
     +(cust?'<span class="chip">'+ICONS.user+cust+'</span>':'')
-    +'<span class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+'</span>'
+    +'<span class="kbd">ایجاد: '+esc(faDate(d.created))+' · آخرین تغییر: '+esc(faDateTime(d.updated))+'</span>'
     +(extra||'')+'</div>';
   if(extra===undefined||extra==='')row+='';
   return row+'</div>';
@@ -6048,7 +6079,7 @@ function doneTabHtml(){
     return note+emptyHtml('پروندهٔ تکمیل‌شده‌ای نیست','پرونده‌ها پس از تحویل کد فعال‌سازی به این‌جا می‌آیند.');
   }
   return note+ds.map(d=>devRow(d,
-    '<span class="kbd">تاریخ تکمیل: '+esc(d.done_at||'—')+'</span>'
+    '<span class="kbd">تاریخ تکمیل: '+esc(faDate(d.done_at))+'</span>'
     +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
     +'<button class="btn mini danger" onclick="doneRollback(\''+d.id+'\')">بازگشت به مرحلهٔ قبل</button>')).join('');
 }
@@ -6098,8 +6129,8 @@ function closedTabHtml(){
     +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
     +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
     +'<span class="chip closedreason">دلیل: '+esc(d.closed_reason||'—')+'</span>'
-    +'<span class="chip">'+esc(d.closed_at||'—')+'</span>'
-    +'<span class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+'</span>'
+    +'<span class="chip">'+esc(faDate(d.closed_at))+'</span>'
+    +'<span class="kbd">ایجاد: '+esc(faDate(d.created))+' · آخرین تغییر: '+esc(faDateTime(d.updated))+'</span>'
     +'</div></div>').join('');
 }
 function devRequeue(id){
@@ -6427,15 +6458,14 @@ function devicesHtml(){
         +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
         +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
       +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
-      +'<td class="kbd">'+esc(d.created||'—')+'</td>'
-      +'<td class="kbd">'+esc(d.updated||'—')+'</td>'
+      +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
       +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
   }).join('');
   return runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
     +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
-    +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
+    +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
     +rows+'</tbody></table></div></div>';
 }
 /* Case detail modal (v1.5 B7): every per-case action that used to sit on
@@ -6462,7 +6492,7 @@ function caseDetail(id){
   var nextHtml='';
   if(st==='done'){
     nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>'
-      +'<div class="muted">پرونده تکمیل شده — تاریخ تکمیل: '+esc(d.done_at||'—')+'</div>';
+      +'<div class="muted">پرونده تکمیل شده — تاریخ تکمیل: '+esc(faDate(d.done_at))+'</div>';
   }else if(st==='closed'){
     nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>'
       +'<div class="muted">پرونده مختومه — قابل ادامه نیست</div>';
@@ -6543,7 +6573,7 @@ function caseDetail(id){
     +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
     +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')
     +'</div>'
-    +'<div class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+(d.done_at?' · تکمیل: '+esc(d.done_at):'')+'</div>'
+    +'<div class="kbd">ایجاد: '+esc(faDate(d.created))+' · آخرین تغییر: '+esc(faDateTime(d.updated))+(d.done_at?' · تکمیل: '+esc(faDate(d.done_at)):'')+'</div>'
     +(d.notes?'<div class="kbd">یادداشت: '+esc(d.notes)+'</div>':'')
     +'<div class="dlg-lbl">استعلام</div>'
     +'<div class="dlg-sec">'
@@ -6552,7 +6582,7 @@ function caseDetail(id){
     +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')
     +'</div>'
     +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
-    +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
+    +'<div class="kbd">آخرین استعلام: '+esc(faDateTime(d.last_inquiry_at))+'</div>'
     +(toolsHtml?'<div class="grp"><div class="grp-lbl">ابزار این گام</div>'
       +'<div class="tools">'+toolsHtml+'</div></div>':'')
     +(payRow?'<div class="grp"><div class="grp-lbl">پرداخت</div>'+payRow+'</div>':'')
@@ -6862,11 +6892,11 @@ function periodicReAdd(id){
 function periodicHistory(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   var logs=(STATE.periodic_logs||[]).filter(l=>String(l.device_id||'')===String(id));
-  var rows=logs.map(l=>'<tr><td class="kbd">'+esc(l.ts||'')+'</td><td><span class="pill '+
+  var rows=logs.map(l=>'<tr><td class="kbd">'+esc(faDateTime(l.ts))+'</td><td><span class="pill '+
     (EST_PILL[l.status]||'n')+'">'+(EST_FA[l.status]||esc(l.status||''))+'</span></td>'+
     '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
   openDlg('<h3>تاریخچهٔ استعلام — '+esc((d||{}).name||id)+'</h3>'
-    +(d&&d.last_inquiry_at?'<p class="muted">آخرین استعلام: '+esc(d.last_inquiry_at)+' · نتیجهٔ فعلی: '+
+    +(d&&d.last_inquiry_at?'<p class="muted">آخرین استعلام: '+esc(faDateTime(d.last_inquiry_at))+' · نتیجهٔ فعلی: '+
       (EST_FA[(d.estelam||{}).status]||'—')+'</p>':'')
     +'<table><thead><tr><th>زمان</th><th>وضعیت</th><th>پیام</th></tr></thead><tbody>'+
     (rows||'<tr><td colspan="3">'+emptyInnerHtml('تاریخچه‌ای ثبت نشده است','هنوز استعلامی برای این دستگاه اجرا نشده.')+'</td></tr>')+
@@ -6894,7 +6924,7 @@ function periodicHtml(){
       '<td><span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span></td>'+
       '<td>'+statusPill+'</td>'+
       '<td><span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">'+(HAMTA_FA_CARD[est.hamta_status]||'—')+'</span></td>'+
-      '<td class="kbd">'+esc(d.last_inquiry_at||'—')+'</td>'+
+      '<td class="kbd">'+esc(faDateTime(d.last_inquiry_at))+'</td>'+
       '<td class="kbd">'+due+'</td>'+
       '<td><button class="btn mini ghost" onclick="periodicHistory(\''+d.id+'\')">تاریخچه</button> '+
       '<button class="btn mini warn"'+gomrokGateAttrs()+' onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
@@ -6903,7 +6933,7 @@ function periodicHtml(){
       (opt?'<button class="btn mini primary" onclick="periodicReAdd(\''+d.id+'\')">افزودن</button>'
           :'<button class="btn mini danger" onclick="periodicRemove(\''+d.id+'\')">حذف از لیست</button>')+'</td></tr>';
   }).join('');
-  var logs=(STATE.periodic_logs||[]).slice(0,60).map(l=>'<tr><td class="kbd">'+esc(l.ts||'')+'</td>'+
+  var logs=(STATE.periodic_logs||[]).slice(0,60).map(l=>'<tr><td class="kbd">'+esc(faDateTime(l.ts))+'</td>'+
     '<td><b>'+esc((STATE.devices||[]).find(d=>String(d.id)===String(l.device_id))?.name||l.device_id||'—')+'</b></td>'+
     '<td><span class="pill '+(EST_PILL[l.status]||'n')+'">'+(EST_FA[l.status]||esc(l.status||''))+'</span></td>'+
     '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
@@ -7060,7 +7090,7 @@ function ledgerHtml(){
       // sides of the match). idx stays the true transaction index.
       if(!tabSearchMatches([c.full_name,t.note,String(t.amount==null?'':t.amount)].join(' '),q))continue;
       count++;
-      rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
+      rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(faDateTime(t.at))+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
       +'<td class="kbd">'+esc(t.note||'—')+'</td>'
       +'<td><button class="btn mini ghost" title="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+' جزئیات</button></td></tr>';
@@ -7080,7 +7110,7 @@ function txDetailModal(cid, idx){
   var serials=[d&&d.serial1,d&&d.serial2].filter(Boolean).join(' / ');
   var rows=[
     ['مشتری', esc(c.full_name||'—')],
-    ['زمان', '<span class="kbd">'+esc(t.at||'—')+'</span>'],
+    ['زمان', '<span class="kbd">'+esc(faDateTime(t.at))+'</span>'],
     ['مبلغ', t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>'
                        :'<span class="pill ok">'+money(t.amount)+'</span>'],
     ['نوع', esc(TX_KIND_FA[t.kind]||t.kind||'—')],
@@ -7461,7 +7491,7 @@ function historyHtml(){
     if(!keys.length)return true;
     return keys.some(k=>l[k]!==undefined&&l[k]!=='');
   }).slice(-40).reverse();
-  var items=rows.map(l=>'<div class="kbd">'+esc(l.at)+' — <b>'+esc(l.event)+'</b> '
+  var items=rows.map(l=>'<div class="kbd">'+esc(faDateTime(l.at))+' — <b>'+esc(l.event)+'</b> '
     +esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
   return '<div class="card history"><h3>تاریخچه</h3>'
     +(items||'<div class="muted">رویدادی برای این بخش ثبت نشده است.</div>')+'</div>';
@@ -7484,7 +7514,7 @@ function renderLogs(){
   var box=document.getElementById('logBox');
   if(!box)return;
   box.innerHTML=(LOGS||[]).slice().reverse().map(l=>
-    '<div class="kbd">'+esc(l.at)+' — <b>'+esc(l.event)+'</b> '+esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
+    '<div class="kbd">'+esc(faDateTime(l.at))+' — <b>'+esc(l.event)+'</b> '+esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
 }
 function renderView(){
   var el=document.getElementById('view');

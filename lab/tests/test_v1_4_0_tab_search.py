@@ -141,10 +141,11 @@ class CaseTableColumnsTests(unittest.TestCase):
 
     def test_thead_order(self):
         src = open(panel.__file__, encoding="utf-8").read()
+        # v1.4.2: «آخرین تغییر» left the case table (it stays in the modal)
         self.assertIn(
             "<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th>"
             "<th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th>"
-            "<th>شناسه پرونده</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th>"
+            "<th>شناسه پرونده</th><th>تاریخ ایجاد</th>"
             "<th></th></tr></thead>", src)
 
     def test_row_number_counts_the_filtered_view(self):

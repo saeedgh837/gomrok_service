@@ -46,6 +46,8 @@ DEFAULT = [
     "test_crm_v1_3_ui",
     "test_v1_4_0_tab_search",
     "test_v1_4_1_crm_width",
+    "test_v1_4_2_jalali",
+    "test_v1_4_2_fa_dates",
     "test_v1_5_inquiry_gate",
     "test_v1_5_forms_tabs",
     "test_v1_5_sections_wiring",

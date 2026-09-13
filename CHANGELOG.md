@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-09-13
+
+### Changed
+
+- **Shamsi (Persian solar) dates everywhere (operator request):** all
+  displayed dates now render as «روز ماه سال» (e.g. «۲۲ شهریور ۱۴۰۵»,
+  with time «۲۲ شهریور ۱۴۰۵، ۱۷:۳۰») across the CRM (case table,
+  case modal, history, ledger, periodic tab), the estelam panel and
+  the old registry panel logs, and the server-built reports
+  (text/printable/Telegram). Stored data stays Gregorian ISO — the
+  conversion is display-only, so nothing about sorting, syncing or
+  existing records changes. Frontend conversion uses the browser's
+  Persian calendar locale; server-side reports use a new stdlib
+  `jalali.py` module (reference- and leap-year-tested; the duplicated
+  conversion copy in crm.py now delegates to it).
+- **Case list slimmed (operator request):** the «آخرین تغییر» column
+  left the devices table (it remains in the case-detail modal); the
+  «تاریخ ثبت» column shows the Shamsi creation date.
+
 ## [1.4.1] - 2026-09-13
 
 ### Added

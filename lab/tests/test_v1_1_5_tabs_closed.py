@@ -351,7 +351,8 @@ class TabsMarkupTests(unittest.TestCase):
     def test_closed_tab_rows_show_reason_and_date(self):
         self.assertIn("function closedTabHtml(){", self.page)
         self.assertIn("esc(d.closed_reason||'—')", self.page)
-        self.assertIn("esc(d.closed_at||'—')", self.page)
+        # v1.4.2: the closure date renders Jalali
+        self.assertIn("faDate(d.closed_at)", self.page)
 
     def test_stage_fa_and_tone_have_closed(self):
         self.assertIn("'closed':'مختومه'", self.page)

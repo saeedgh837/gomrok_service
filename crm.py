@@ -24,6 +24,7 @@ Entities:
 All English in code per the project contract; Persian appears only in
 user-facing error strings.
 """
+import jalali
 import json
 import os
 import re
@@ -153,30 +154,8 @@ def normalize_digits(text):
 # --------------------------------------------------------------------------
 
 def gregorian_to_jalali(gy, gm, gd):
-    """Gregorian -> Jalali (the classic 20-line Borkowski-style conversion)."""
-    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-    gy2 = gy - 1600
-    gm2 = gm - 1
-    gd2 = gd - 1
-    g_day_no = 365 * gy2 + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400
-    g_day_no += g_d_m[gm2] + gd2
-    if gm2 > 1 and ((gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)):
-        g_day_no += 1
-    j_day_no = g_day_no - 79
-    j_np = j_day_no // 12053
-    j_day_no %= 12053
-    jy = 979 + 33 * j_np + 4 * (j_day_no // 1461)
-    j_day_no %= 1461
-    if j_day_no >= 366:
-        jy += (j_day_no - 1) // 365
-        j_day_no = (j_day_no - 1) % 365
-    if j_day_no < 186:
-        jm = 1 + j_day_no // 31
-        jd = 1 + j_day_no % 31
-    else:
-        jm = 7 + (j_day_no - 186) // 30
-        jd = 1 + (j_day_no - 186) % 30
-    return jy, jm, jd
+    """Gregorian -> Jalali; delegates to the shared jalali module (v1.4.2)."""
+    return jalali.gregorian_to_jalali(gy, gm, gd)
 
 
 def today_jalali():
@@ -1202,7 +1181,9 @@ def build_report(state, stage_filter=None, fmt="txt", full_data=True, plain=Fals
         return " | ".join(parts)
 
     report_items = [line(d) for d in devices]
-    header = f"گزارش دستگاه‌ها — {time.strftime('%Y-%m-%d %H:%M')} — {len(devices)} مورد"
+    header = (f"گزارش دستگاه‌ها — "
+              f"{jalali.to_fa_datetime(time.strftime('%Y-%m-%d %H:%M'))} — "
+              f"{jalali.fa_digits(len(devices))} مورد")
     if fmt == "html":
         rows = "".join(
             f"<tr><td>{_esc(device.get('name'))}</td>"

@@ -67,5 +67,39 @@ class DashboardRewriteTests(unittest.TestCase):
         self.assertIn("p.imeis", source)
 
 
+class JalaliDateDisplayTests(unittest.TestCase):
+    """v1.4.2 — site-1 timestamps render as Jalali dates (render-time only).
+
+    Storage stays ISO Gregorian; every visible timestamp goes through the
+    faDateTime helper defined once in PAGE_JS.
+    """
+
+    def test_helpers_are_defined_once(self):
+        source = panel.PAGE_JS
+        self.assertIn("function faDate(iso){", source)
+        self.assertIn("function faDateTime(iso){", source)
+        self.assertIn("toLocaleDateString('fa-IR-u-ca-persian'", source)
+        self.assertEqual(source.count("function faDateTime(iso)"), 1)
+
+    def test_every_site1_timestamp_routes_through_faDateTime(self):
+        source = panel.PAGE_JS
+        for marker in (
+            "escHtml(faDateTime(log.ts))",               # renderLogs
+            "escHtml(faDateTime(l.ts))",                 # log notifications
+            "escHtml(faDateTime(p.exitban_checked_at))",  # exitban result card
+            "escHtml(faDateTime(row.checked_at))",        # device inquiry results
+            "faDateTime(h.ts)",                           # telegram api-health meta
+            "escHtml(faDateTime(item.modified))",         # system log files
+        ):
+            self.assertIn(marker, source)
+
+    def test_no_raw_timestamp_passthrough_remains(self):
+        source = panel.PAGE_JS
+        for marker in ("escHtml(log.ts||'')", "escHtml(l.ts||'')",
+                       "escHtml(p.exitban_checked_at)", "escHtml(row.checked_at)",
+                       "escHtml(item.modified)"):
+            self.assertNotIn(marker, source)
+
+
 if __name__ == "__main__":
     unittest.main()

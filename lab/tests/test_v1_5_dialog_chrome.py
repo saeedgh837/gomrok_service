@@ -292,7 +292,9 @@ class GuideAndGroupDesignTests(unittest.TestCase):
 
 
 class TimestampSurfaceTests(unittest.TestCase):
-    """created/updated (+ «تاریخ تکمیل» for done) on every case surface."""
+    """created/updated (+ «تاریخ تکمیل» for done) on every case surface —
+    rendered Jalali since v1.4.2 (faDate for plain dates, faDateTime when
+    the clock matters)."""
 
     def setUp(self):
         self.js = crm_js()
@@ -300,23 +302,23 @@ class TimestampSurfaceTests(unittest.TestCase):
     def test_devrow_shows_created_and_updated(self):
         body = fn_body(self.js, "devRow")
         self.assertTrue(body, "devRow not found")
-        self.assertIn("esc(d.created||'—')", body)
-        self.assertIn("esc(d.updated||'—')", body)
+        self.assertIn("faDate(d.created)", body)
+        self.assertIn("faDateTime(d.updated)", body)
 
     def test_done_tab_completion_date_chip(self):
         body = fn_body(self.js, "doneTabHtml")
         self.assertTrue(body, "doneTabHtml not found")
         self.assertIn("تاریخ تکمیل", body)
-        self.assertIn("esc(d.done_at||'—')", body)
+        self.assertIn("faDate(d.done_at)", body)
 
     def test_closed_tab_created_updated_and_preserved_markers(self):
         body = fn_body(self.js, "closedTabHtml")
         self.assertTrue(body, "closedTabHtml not found")
-        self.assertIn("esc(d.created||'—')", body)
-        self.assertIn("esc(d.updated||'—')", body)
+        self.assertIn("faDate(d.created)", body)
+        self.assertIn("faDateTime(d.updated)", body)
         # v1.1.5 marker protection: reason/date chips survive byte-exact
         self.assertIn("esc(d.closed_reason||'—')", body)
-        self.assertIn("esc(d.closed_at||'—')", body)
+        self.assertIn("faDate(d.closed_at)", body)
 
 
 class QuickBoxMarkerTests(unittest.TestCase):

@@ -560,6 +560,30 @@ def test_site_zoom_lives_in_captcha_collector():
     assert src.count("install_site_zoom(build_") >= 2  # roo-ye Chrome va Edge
 
 
+def test_estelam_page_renders_jalali_dates():
+    """v1.4.2 — estelam page (site-2) timestamps render as Jalali dates.
+
+    Storage stays ISO Gregorian; fmtWhen, the runbar meta, the interactive
+    logs and the log notifications all route through the page's faDateTime
+    helper instead of formatting raw ISO text.
+    """
+    import panel
+    html = panel.render_estelam_page().decode("utf-8")
+    assert "function faDate(iso){" in html
+    assert "function faDateTime(iso){" in html
+    assert "toLocaleDateString('fa-IR-u-ca-persian'" in html
+    for marker in (
+        "return faDateTime(ts)",    # fmtWhen -> hamta_at / gomrok_at cells
+        "faDateTime(rt.started)",   # runbar: last run time / pid line
+        "esc(faDateTime(l.ts))",    # paintLogs + log notifications
+    ):
+        assert marker in html, marker
+    # the inquiry-time cells still resolve through fmtWhen
+    assert "fmtWhen(d.hamta_at)" in html
+    # no raw timestamp passthrough is left on the display paths
+    assert "esc(l.ts||'')" not in html
+
+
 def _run_all():
     failures = 0
     for name, fn in sorted(globals().items()):

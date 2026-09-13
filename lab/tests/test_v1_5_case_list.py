@@ -45,8 +45,7 @@ def fn_body(js, name):
 
 
 TABLE_HEADERS = ("ردیف", "دستگاه", "مشتری", "مسافر", "سریال",
-                 "گام فعلی", "وضعیت", "شناسه پرونده", "تاریخ ایجاد",
-                 "آخرین تغییر")
+                 "گام فعلی", "وضعیت", "شناسه پرونده", "تاریخ ایجاد")
 
 
 class CaseListSourceTests(unittest.TestCase):
@@ -74,8 +73,10 @@ class CaseListSourceTests(unittest.TestCase):
         self.assertIn(">جزئیات</button>", body)
         self.assertIn("maskSerial(d.serial1)", body)
         self.assertIn("ownerName(d.owner_id)", body)
-        self.assertIn("esc(d.created||'—')", body)
-        self.assertIn("esc(d.updated||'—')", body)
+        # v1.4.2: the created column renders Jalali; the «آخرین تغییر»
+        # column left the table (it stays in the caseDetail modal).
+        self.assertIn("faDate(d.created)", body)
+        self.assertNotIn("d.updated", body)
 
     def test_table_wrapper_css(self):
         self.assertIn(".tbl-wrap{overflow-x:auto}", self.src)
