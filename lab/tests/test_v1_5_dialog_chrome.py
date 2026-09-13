@@ -128,9 +128,10 @@ class DialogInventoryTests(unittest.TestCase):
     def test_native_escape_path_untouched(self):
         # native cancel/ESC close: backdrop CSS present, plain opening tag
         # (no oncancel interception), showModal still opens #dlg
+        # (v1.3.2: openDlg caches the element in `dlg` first)
         self.assertIn("dialog::backdrop{", self.src)
         self.assertIn("<dialog id=\"dlg\">", panel.CRM_PAGE)
-        self.assertIn("document.getElementById('dlg').showModal()", self.src)
+        self.assertIn("dlg.showModal()", self.src)
 
     def test_estelam_modal_markers_survive(self):
         # site-2 result modal: untouched compliant chrome (.x button,
@@ -180,6 +181,23 @@ class DialogChromeTests(unittest.TestCase):
         self.assertEqual(body.count(".innerHTML="), 1,
                          "openDlg must set exactly one innerHTML (#dlgBody)")
         self.assertIn('<div id="dlgBody">', panel.CRM_PAGE)
+
+    def test_toast_container_tracks_the_open_dialog(self):
+        # v1.3.2: a showModal() dialog renders in the browser top layer,
+        # above every z-index — toasts left in the body show dimmed
+        # underneath it. The container must move INSIDE the dialog while it
+        # is open and back to the body on every close path (the close
+        # listener covers ×, Esc and programmatic closes).
+        open_body = fn_body(self.js, "openDlg")
+        self.assertIn(
+            "dlg.appendChild(document.getElementById('toasts'))", open_body)
+        listener = re.search(
+            r"getElementById\('dlg'\)\.addEventListener\('close',"
+            r"function\(\)\{[\s\S]*?\}\);", self.js)
+        self.assertTrue(listener, "dlg close listener not found")
+        self.assertIn(
+            "document.body.appendChild(document.getElementById('toasts'))",
+            listener.group(0))
 
 
 class TimestampSurfaceTests(unittest.TestCase):

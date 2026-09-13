@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] - 2026-09-13
+
+### Fixed
+
+- **Toasts rendered dimmed underneath the case modal (operator report):**
+  a `showModal()` dialog renders in the browser top layer, above every
+  z-index, so the toast container could never overlay it. While a dialog
+  is open the toast container now moves inside the dialog element (and
+  back to the body on every close path — ×, Esc, programmatic), so
+  notifications always render above the modal and its backdrop at full
+  opacity. Fixed positioning is unchanged — the dialog has no
+  transform/filter, so the container still anchors to the viewport.
+
 ## [1.3.1] - 2026-09-13
 
 The case-modal UX update: three operator-reviewed refinement rounds on the

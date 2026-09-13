@@ -5261,13 +5261,21 @@ function dlgCaseSync(){
 function dlgCaseRestore(id){
   if(CASE_MODAL.id===id&&!CASE_MODAL.live)caseDetail(id);
 }
-function openDlg(html){CASE_MODAL.live=false;document.getElementById('dlgBody').innerHTML=html;document.getElementById('dlg').showModal();}
+function openDlg(html){CASE_MODAL.live=false;document.getElementById('dlgBody').innerHTML=html;
+  var dlg=document.getElementById('dlg');dlg.showModal();
+  /* The modal dialog renders in the browser top layer, above every
+     z-index — a toast left in the body shows dimmed underneath it. Pull
+     the toast container inside the dialog while it is open; the close
+     listener moves it back. Fixed positioning is unaffected (the dialog
+     has no transform/filter). */
+  dlg.appendChild(document.getElementById('toasts'));}
 function closeDlg(){document.getElementById('dlg').close();CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;}
 /* Native Esc/cancel never passes through closeDlg — arm a close listener so
    the sync loop can never resurrect a dialog the operator dismissed. It also
    fires for the × and programmatic closes, where it is an idempotent no-op. */
 document.getElementById('dlg').addEventListener('close',function(){
   CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
+  document.body.appendChild(document.getElementById('toasts'));
 });
 /* Confirm dialog (native confirm() is blocking & unstyled): a small dialog
    reusing #dlg with a confirm/cancel pair — used by stage rollback. */
