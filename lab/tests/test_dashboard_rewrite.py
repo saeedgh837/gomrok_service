@@ -44,11 +44,13 @@ class DashboardRewriteTests(unittest.TestCase):
         self.assertIn("profileRunButton(p,'profile-run-primary')", source)
 
     def test_dark_theme_header_active_banner_and_artifact_icons_exist(self):
+        # site-1 redesign: emoji glyphs were replaced by the IRICA inline SVG
+        # icon language, so the markers follow the icon/text pairs instead.
         html = panel.render_page().decode("utf-8")
         for marker in (
             'data-theme="dark"', "toggleTheme", "localStorage.getItem('irica-theme')",
-            "panel-title", "active-profile-banner", "🌙", "🧾 رسید",
-            "💳 پرداخت", "🔗 لینک پرداخت",
+            "panel-title", "active-profile-banner", 'id="theme-toggle"', 'class="ic"',
+            "artifact-links", "رسید</a>", "پرداخت</a>", "لینک پرداخت</a>",
             "استعلام آنلاین خروج از کشور",
         ):
             self.assertIn(marker, html)

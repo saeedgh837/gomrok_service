@@ -3,6 +3,57 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-09-13
+
+The product-wide UI/UX overhaul: every page rebuilt on one IRICA design
+system, live search and filtering in every CRM tab, and a restructured
+case table — built by a five-worker UI/UX team under a reviewed
+lead-engineer pipeline (per-workstream reports, independent reviews).
+
+### Added
+
+- **Search & filter bar in every list tab (devices, customers, owners,
+  identity pool, periodic, ledger, done/problem/closed):** a sticky
+  toolbar with a live search box (icon, clear button, per-tab
+  placeholder), Persian/Arabic digit normalization (typing «۰۹۱۲» finds
+  "0912", ZWNJ-insensitive), a live result counter, stage filter chips
+  on the devices tab («همه» / «نیازمند اقدام» / per active stage), and
+  a friendly no-result state with a one-click reset. Typing never loses
+  focus, even across the 5-second background refresh.
+- **Case table restructured (operator request):** ردیف (row number) |
+  دستگاه | مشتری | مسافر | سریال | گام | وضعیت | شناسه | dates —
+  the customer column is new, row numbers renumber the filtered view.
+- **IRICA design system + brand kit** (`lab/design/`): a 50-icon SVG
+  library (RTL mirroring rules, legacy-name mapping), the brand
+  monogram/favicon, the light/dark token palette and typography rules.
+- **Brand favicon:** the path-drawn IRICA «R» mark (font-independent,
+  legible at 16px) replaces the old text-based one.
+
+### Changed
+
+- **Every page rebuilt on one design system** (Vazirmatn font, unified
+  light/dark tokens, one icon language — all emojis replaced with
+  inline SVGs, consistent buttons/cards/tables): the CRM (primary-button
+  contrast raised to 5.2:1, faint text darkened, upgraded tab states,
+  table headers/hover, unified empty states, modal inner scroll), the
+  estelam panel (sticky blurred top bar with brand mark and a live
+  robot-status pill, segmented service switcher, mobile-stacked device
+  tables), the old registry panel site-1 (glass header, clickable
+  status tiles, restyled profile cards/logs/settings), and the front
+  door (login, service-start launch card, service-picker home).
+- **Unified brand color** across all pages (light brand #4460e3 for
+  AA+ contrast on primary buttons; faint text darkened for
+  readability).
+
+### Fixed
+
+- A pre-existing narrow-screen overflow in the estelam panel's device
+  table (its fixed columns exceeded the available track width; the
+  table now stacks per-device on mobile inside a safe minmax grid),
+  duplicate conflicting layout rules in the old registry panel's CSS,
+  missing `.btn.ok` / `.logbox` styles in the CRM, and unlabeled
+  inputs in the estelam form (a11y).
+
 ## [1.3.7] - 2026-09-13
 
 ### Changed

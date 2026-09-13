@@ -44,8 +44,9 @@ def fn_body(js, name):
     return js[match.start():i]
 
 
-TABLE_HEADERS = ("شناسه پرونده", "مسافر", "دستگاه", "سریال",
-                 "گام فعلی", "وضعیت", "تاریخ ایجاد", "آخرین تغییر")
+TABLE_HEADERS = ("ردیف", "دستگاه", "مشتری", "مسافر", "سریال",
+                 "گام فعلی", "وضعیت", "شناسه پرونده", "تاریخ ایجاد",
+                 "آخرین تغییر")
 
 
 class CaseListSourceTests(unittest.TestCase):

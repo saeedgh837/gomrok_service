@@ -2345,377 +2345,263 @@ PAGE_HEAD = """<!DOCTYPE html>
 <title>پنل ربات گمرک</title>
 <link rel="icon" href="data:,">
 <style>
-  :root {
-    --bg:#f2f4fb; --card:#ffffff; --card2:#f6f7fd; --line:#dfe3f2;
-    --txt:#1b1f33; --muted:#6b7191; --brand:#4f6bef; --brand2:#8250e6;
-    --ok:#12a05f; --danger:#e04555; --warn:#c97a10;
-    --input:#ffffff;
+  /* IRICA design system — registry operations dashboard (site-1).
+     Light by default; dark via html[data-theme="dark"]. Icons are inline
+     SVG only (no emoji). Logical properties for RTL. */
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+    font-weight:100 900;font-style:normal;font-display:swap;
   }
-  html[data-theme="dark"] {
-    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
-    --txt:#eef1fb; --muted:#aeb6d0; --brand:#7d95ff; --brand2:#a878ff;
-    --ok:#3ad28b; --danger:#ff6678; --warn:#f6b94b; --input:#1a1e2e;
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
+  :root{
+    --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;--faint:#687291;
+    --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);
+    --on-brand:#ffffff;--ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+    --busy:#b9770e;--busy-soft:rgba(185,119,14,.13);
+    --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
+    --info:#2f6fd6;--mono:Consolas,ui-monospace,Menlo,monospace;
+    --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+    --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+    --ring:0 0 0 3px rgba(68,96,227,.30);
+  }
+  html[data-theme="dark"]{
+    --bg:#101322;--card:#181c2e;--card2:#1f2438;--line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.14);--txt:#eef1fb;--muted:#aeb6d0;--faint:#848cad;
+    --brand:#7d95ff;--brand-hover:#93a7ff;--brand-soft:rgba(125,149,255,.12);
+    --on-brand:#0e1330;--ok:#3ad28b;--ok-soft:rgba(58,210,139,.13);
+    --busy:#f6b94b;--busy-soft:rgba(246,185,75,.13);
+    --danger:#ff6678;--danger-soft:rgba(255,102,120,.13);
+    --info:#9db9ff;
+    --shadow-1:0 1px 2px rgba(0,0,0,.35),0 1px 6px rgba(0,0,0,.25);
+    --shadow-2:0 6px 18px rgba(0,0,0,.45),0 2px 5px rgba(0,0,0,.3);
+    --ring:0 0 0 3px rgba(125,149,255,.30);
   }
   * { box-sizing:border-box; }
+  html { color-scheme:light; scrollbar-gutter:stable; }
+  html[data-theme="dark"] { color-scheme:dark; }
   body {
-    margin:0; min-height:100vh; font-family:Tahoma,"Segoe UI",system-ui,sans-serif;
-    background:radial-gradient(1200px 600px at 80% -10%,#dfe5ff 0%,transparent 60%),
-               radial-gradient(900px 500px at -10% 110%,#ece1ff 0%,transparent 55%),
+    margin:0; min-height:100vh; color:var(--txt);
+    font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;
+    font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased;
+    background:radial-gradient(1000px 520px at 85% -12%,rgba(79,107,239,.10),transparent 60%),
+               radial-gradient(760px 440px at 6% 6%,rgba(124,92,245,.07),transparent 55%),
                var(--bg);
-    color:var(--txt);
   }
-  .layout { display:flex; flex-direction:row-reverse; min-height:100vh; gap:0; }
-  /* --- SIDEBAR (right, chon RTL) --- */
-  .sidebar {
-    width:430px; flex:0 0 auto; background:linear-gradient(180deg,var(--card),transparent);
-    border-inline-start:1px solid var(--line); padding:14px 12px; overflow:hidden;
-    display:flex; flex-direction:column; gap:9px;
+  html[data-theme="dark"] body {
+    background:radial-gradient(1000px 520px at 85% -12%,rgba(125,149,255,.05),transparent 60%),
+               var(--bg);
   }
-  .side-sec-title { font-size:12px; color:var(--muted); margin:4px 2px 2px;
-    display:flex; align-items:center; justify-content:space-between; }
-  /* kadr-e SABET-e profile-ha (scroll dakheli) */
-  #prof-list { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; min-height:200px;
-    padding:6px 4px 6px 2px; border:1px solid var(--line); border-radius:14px;
-    background:color-mix(in srgb,var(--card2) 55%,transparent); scroll-behavior:smooth; }
-  #prof-list::-webkit-scrollbar { width:9px; }
-  #prof-list::-webkit-scrollbar-thumb { background:color-mix(in srgb,var(--brand) 35%,var(--line)); border-radius:9px; }
-  /* --- profile cards: stable anatomy (avatar / identity / status+run / footer) --- */
-  .prof-item { position:relative; background:var(--card); border:1px solid var(--line);
-    border-radius:12px; padding:12px; transition:.16s; margin-bottom:9px;
-    box-shadow:0 1px 2px rgba(16,24,40,.04); }
-  .prof-item:hover { border-color:#c9cdd5; box-shadow:0 5px 16px rgba(16,24,40,.09); transform:translateY(-1px); }
-  html[data-theme="dark"] .prof-item:hover { border-color:#3a3e47; }
-  .prof-item:focus-within { border-color:var(--brand); }
-  .prof-item.active { border-color:var(--brand);
-    background:color-mix(in srgb,var(--brand) 6%,var(--card));
-    box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 14%,transparent); }
-  .prof-item.active::before { content:""; position:absolute; inset-inline-start:-1px; top:10px; bottom:10px;
-    width:3px; border-radius:3px; background:linear-gradient(180deg,var(--brand),var(--brand2)); }
-  .prof-head { display:flex; align-items:center; gap:10px; min-width:0; }
-  .prof-avatar { flex:0 0 auto; width:38px; height:38px; border-radius:50%; cursor:pointer;
-    display:flex; align-items:center; justify-content:center; color:#fff; font-size:16px; font-weight:800;
-    background:linear-gradient(135deg,hsl(var(--av,220) 62% 52%),hsl(calc(var(--av,220) + 42) 62% 42%));
-    user-select:none; }
-  .prof-item.active .prof-avatar { box-shadow:0 0 0 2px var(--card),0 0 0 4px color-mix(in srgb,var(--ok) 55%,transparent); }
-  .prof-id { flex:1 1 auto; min-width:0; }
-  .prof-title { font-size:13.5px; font-weight:bold; display:flex; align-items:center; gap:6px; min-width:0; }
-  .prof-title-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-  .prof-title-text:hover { color:var(--brand); }
-  .profile-number { display:inline-flex; min-width:22px; height:22px; padding:0 4px; align-items:center; justify-content:center;
-    border-radius:6px; background:var(--card2); border:1px solid var(--line); color:var(--muted); font-size:10.5px; font-weight:700; }
-  .prof-meta { font-size:11px; color:var(--muted); margin-top:3px; direction:ltr; text-align:right;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .mdot { opacity:.55; }
-  .imei-chip { display:inline-block; font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:99px;
-    border:1px solid var(--line); background:var(--card2); color:var(--muted); }
-  .prof-side { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
-  .prof-alert { display:flex; gap:8px; align-items:flex-start; margin-top:9px; padding:8px 11px;
-    border-radius:9px; font-size:11.5px; line-height:1.6; }
-  .prof-alert .ai { flex:0 0 auto; font-size:13px; }
-  .prof-alert b { font-size:11.5px; }
-  .prof-alert .ad { margin-top:2px; opacity:.85; }
-  .prof-alert.danger { border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line));
-    background:color-mix(in srgb,var(--danger) 8%,var(--card)); color:var(--danger); }
-  .prof-alert.ok { border:1px solid color-mix(in srgb,var(--ok) 35%,var(--line));
-    background:color-mix(in srgb,var(--ok) 9%,var(--card)); color:var(--ok); }
-  .mini-btn.profile-run-primary { flex:0 0 auto; min-width:112px; padding:9px 12px; border-radius:10px; font-size:13px; font-weight:800; white-space:nowrap; }
-  .prof-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; flex-wrap:wrap; }
-  .artifact-links { display:flex; flex-wrap:wrap; gap:5px; margin-top:0; }
-  .artifact-links a { display:inline-flex; align-items:center; gap:4px; padding:3px 9px; border-radius:99px;
-    border:1px solid color-mix(in srgb,var(--ok) 35%,var(--line));
-    background:color-mix(in srgb,var(--ok) 8%,var(--card));
-    color:var(--ok); text-decoration:none; font-size:10.5px; font-weight:700; transition:.15s; }
-  .artifact-links a:hover { background:color-mix(in srgb,var(--ok) 16%,var(--card)); }
-  /* --- dokme-ye namayesh/makhfi-kardan-e morurgar-e robot-e dar hal-e ejra --- */
-  .prof-browser-row { margin-top:7px; }
-  .browser-btn { position:relative; width:100%; display:inline-flex; align-items:center;
-    justify-content:center; gap:6px; min-height:32px; padding:7px 10px; border-radius:9px;
-    cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; transition:.15s;
-    border:1px dashed var(--brand); background:rgba(109,139,255,.08); color:var(--brand); }
-  .browser-btn:hover { background:rgba(109,139,255,.16); border-style:solid; }
-  .browser-btn.visible { border-style:solid; border-color:var(--warn,#e5a13a);
-    background:rgba(229,161,58,.12); color:var(--warn,#e5a13a); }
-  .browser-btn[disabled] { opacity:.55; cursor:progress; }
-  .prof-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
-  .mini-btn {
-    flex:1 1 60px; font-size:10.5px; padding:6px 5px; border-radius:7px; cursor:pointer;
-    border:1px solid var(--line); background:var(--input); color:var(--muted);
-    font-family:inherit; transition:.15s;
-  }
-  .mini-btn:hover { color:var(--txt); border-color:var(--brand); }
-  .mini-btn.on { color:var(--ok); border-color:var(--ok); }
-  .mini-btn.start { color:#fff; border-color:transparent; background:linear-gradient(135deg,#12a05f,#18bd75); }
-  .mini-btn.stop { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d73e50,#f05d6c); }
-  .mini-btn.blocked { color:#b71c1c; border-color:#ef9a9a; background:#ffebee; cursor:not-allowed; opacity:.75; }
-  .mini-btn.del { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d92f45,#f05b6b); }
-  .mini-btn.del:hover { color:#fff; border-color:#ff98a3; filter:brightness(1.08); }
-  /* --- dokme-haye ICON-i ba tooltip-e hover --- */
-  .prof-actions { display:flex; gap:7px; flex-wrap:wrap; margin-top:9px; }
-  .ibtn { position:relative; width:38px; height:38px; flex:0 0 auto; display:inline-flex;
-    align-items:center; justify-content:center; font-size:17px; line-height:1; cursor:pointer;
-    border:1px solid var(--line); border-radius:11px; background:var(--input); color:var(--muted);
-    transition:.16s; }
-  .ibtn:hover { color:var(--txt); border-color:var(--brand); transform:translateY(-2px);
-    box-shadow:0 6px 16px rgba(16,24,40,.14); }
-  .ibtn.on { color:var(--ok); border-color:var(--ok); background:color-mix(in srgb,var(--ok) 12%,var(--input)); }
-  .ibtn.danger:hover { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d92f45,#f05b6b); }
-  .ibtn.warn:hover { color:#20160a; border-color:transparent; background:var(--warn,#f6b94b); }
-  .ibtn::after { content:attr(data-tip); position:absolute; bottom:calc(100% +7px); right:50%;
-    transform:translate(50%,4px); white-space:nowrap; font-size:11px; font-weight:700;
-    padding:5px 9px; border-radius:8px; background:#111827; color:#fff; opacity:0;
-    pointer-events:none; transition:.16s; z-index:40; box-shadow:0 8px 20px rgba(0,0,0,.28); }
-  .ibtn::before { content:''; position:absolute; bottom:calc(100% +2px); right:50%;
-    transform:translateX(50%); border:5px solid transparent; border-top-color:#111827;
-    opacity:0; pointer-events:none; transition:.16s; z-index:40; }
-  .ibtn:hover::after,.ibtn:focus-visible::after { opacity:1; transform:translate(50%,0); }
-  .ibtn:hover::before,.ibtn:focus-visible::before { opacity:1; }
-  /* token-e bot: hargez namayesh dade nemishavad — faghat vaziat */
-  .token-badge { display:inline-block; margin:0 0 7px; padding:5px 10px; border-radius:99px;
-    font-size:11.5px; font-weight:700; border:1px solid var(--line); }
-  .token-badge.ok { color:var(--ok); border-color:color-mix(in srgb,var(--ok) 45%,var(--line));
-    background:color-mix(in srgb,var(--ok) 10%,transparent); }
-  .token-badge.warn { color:var(--warn); border-color:color-mix(in srgb,var(--warn) 45%,var(--line));
-    background:color-mix(in srgb,var(--warn) 10%,transparent); }
-  #tg_token { -webkit-text-security:disc; user-select:none; }
-  /* --- notification-e log-e zende (bala-chap) --- */
-  .lognotif-wrap { position:fixed; top:14px; left:14px; z-index:70; display:flex;
-    flex-direction:column; gap:8px; width:min(360px,86vw); pointer-events:none; }
-  .lognotif { pointer-events:auto; background:var(--card); border:1px solid var(--line);
-    border-inline-start:4px solid var(--brand); border-radius:12px; padding:10px 32px 10px 12px;
-    box-shadow:0 16px 40px rgba(16,24,40,.22); position:relative; opacity:0;
-    transform:translateX(-14px); transition:.26s; }
-  .lognotif.show { opacity:1; transform:translateX(0); }
-  .lognotif.s-success,.lognotif.s-healthy { border-inline-start-color:var(--ok); }
-  .lognotif.s-error,.lognotif.s-problem { border-inline-start-color:var(--danger); }
-  .lognotif.s-warn,.lognotif.s-retry,.lognotif.s-advanced { border-inline-start-color:#e8a33d; }
-  .lognotif .t { font-size:12.5px; font-weight:800; display:flex; gap:6px; align-items:center; }
-  .lognotif .m { font-size:11.5px; color:var(--muted); margin-top:4px; line-height:1.6;
-    max-height:54px; overflow:hidden; }
-  .lognotif .x { position:absolute; top:5px; left:7px; border:0; background:transparent;
-    color:var(--muted); font-size:15px; cursor:pointer; padding:1px 5px; }
-  .lognotif .sn { font-size:10.5px; color:var(--brand); direction:ltr; margin-top:3px;
-    font-family:Consolas,monospace; }
-  .notif-toggle { position:fixed; top:14px; left:14px; z-index:69; font-size:11.5px;
-    padding:6px 10px; border-radius:99px; border:1px solid var(--line); cursor:pointer;
-    background:var(--card); color:var(--muted); }
-  .add-prof {
-    background:linear-gradient(135deg,var(--brand),var(--brand2)); border:1px solid transparent; color:#fff;
-    padding:13px; border-radius:12px; cursor:pointer; font-size:16px; font-weight:800; font-family:inherit;
-    transition:.15s; width:100%; box-shadow:0 8px 20px rgba(79,107,239,.24);
-  }
-  .add-prof:hover { filter:brightness(1.08); transform:translateY(-1px); }
-  .profile-search-wrap { position:relative; }
-  .profile-search-icon { position:absolute; right:13px; top:50%; transform:translateY(-50%); pointer-events:none; }
-  #profile-search { width:100%; padding:11px 40px 11px 34px; border:1px solid var(--line); border-radius:12px; background:var(--input); color:var(--txt); font:13px inherit; outline:none; }
-  #profile-search:focus { border-color:var(--brand); box-shadow:0 0 0 3px rgba(79,107,239,.16); }
-  .search-clear { position:absolute; left:9px; top:50%; transform:translateY(-50%); border:0; background:transparent; color:var(--muted); font-size:19px; cursor:pointer; display:none; }
-  .search-clear.visible { display:block; }
-  .profiles-empty { padding:24px 12px; border:1px dashed var(--line); border-radius:12px; text-align:center; color:var(--muted); font-size:13px; }
-  .profiles-empty .pe-icon { font-size:26px; margin-bottom:6px; }
-  .profiles-empty .pe-hint { font-size:11px; margin-top:5px; opacity:.8; }
-  /* view switcher (compact/comfortable) */
-  .view-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-  .view-switch button { border:0; background:var(--card); color:var(--muted); font-size:13px;
-    padding:4px 9px; cursor:pointer; transition:.15s; }
-  .view-switch button+button { border-inline-start:1px solid var(--line); }
-  .view-switch button.active { background:color-mix(in srgb,var(--brand) 14%,var(--card)); color:var(--brand); font-weight:700; }
-  /* compact list mode */
-  #prof-list.compact .prof-item { padding:8px 10px; margin-bottom:6px; }
-  #prof-list.compact .prof-avatar { width:30px; height:30px; font-size:13px; }
-  #prof-list.compact .prof-actions,
-  #prof-list.compact .prof-foot { display:none; }
-  #prof-list.compact .mini-btn.profile-run-primary { min-width:82px; padding:6px 9px; font-size:11px; }
-  .nav-tabs { display:flex; gap:6px; margin-top:6px; }
-  .nav-tab {
-    flex:1; text-align:center; padding:9px; border-radius:10px; cursor:pointer;
-    font-size:13px; border:1px solid var(--line); background:var(--input); color:var(--muted);
-    transition:.15s;
-  }
-  .nav-tab.active { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); border-color:transparent; }
-  /* --- MAIN --- */
-  .main { flex:1; padding:28px; display:flex; justify-content:center; align-items:flex-start; }
-  .card {
-    width:100%; max-width:1100px; background:linear-gradient(180deg,var(--card),var(--card2));
-    border:1px solid var(--line); border-radius:20px; padding:26px; box-shadow:0 18px 44px rgba(27,31,51,.10);
-  }
-  .head { position:relative; display:flex; flex-direction:column; align-items:center; text-align:center; gap:8px; margin-bottom:18px; }
-  .logo { width:42px; height:42px; border-radius:12px; flex:0 0 auto;
-    background:linear-gradient(135deg,var(--brand),var(--brand2));
-    display:flex; align-items:center; justify-content:center; font-size:22px; }
-  h1 { font-size:19px; margin:0; }
-  .panel-title { font-size:30px; font-weight:900; letter-spacing:-.5px; }
-  .theme-btn { position:absolute; left:0; top:0; border:1px solid var(--line); background:var(--input); color:var(--txt); border-radius:10px; padding:8px 11px; cursor:pointer; }
-  .active-profile-banner { min-width:min(520px,100%); padding:11px 18px; border:1px solid var(--brand); border-radius:14px; background:linear-gradient(135deg,rgba(79,107,239,.16),rgba(130,80,230,.13)); color:var(--txt); font-size:17px; font-weight:bold; box-shadow:0 8px 24px rgba(79,107,239,.12); }
-  .sub { color:var(--muted); font-size:12.5px; margin:2px 0; }
-  label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
-  input[type=text] { width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--line);
-    background:var(--input); color:var(--txt); font-size:15px; outline:none; transition:.15s; font-family:inherit; }
-  input[type=text]:focus { border-color:var(--brand); box-shadow:0 0 0 3px rgba(109,139,255,.18); }
-  textarea { width:100%; min-height:90px; padding:12px 14px; border-radius:12px;
-    border:1px solid var(--line); background:var(--input); color:var(--txt); font-family:inherit; }
-  input.ltr { direction:ltr; text-align:left; letter-spacing:1px; }
-  /* field ba dokme-ye paste-e kenari */
-  .field-row { display:flex; gap:8px; align-items:stretch; }
-  .field-row > input[type=text] { flex:1 1 auto; min-width:0; }
-  .paste-btn { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; gap:5px;
-    min-width:46px; padding:0 11px; border-radius:12px; cursor:pointer; font-family:inherit; font-size:12px;
-    border:1px solid var(--line); background:var(--card2); color:var(--muted); transition:.15s; }
-  .paste-btn .paste-ico { font-size:14px; line-height:1; }
-  .paste-btn .paste-label { font-size:11.5px; }
-  .paste-btn:hover { color:var(--brand); border-color:var(--brand); background:rgba(109,139,255,.10); }
-  .paste-btn:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
-  .paste-btn.ok { color:var(--ok); border-color:var(--ok); background:rgba(46,204,113,.12); }
-  .paste-btn.err { color:var(--danger); border-color:var(--danger); background:rgba(255,107,122,.12); }
-  .imei-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
-  .imei-row input { flex:1; }
-  .icon-btn { width:42px; height:44px; border-radius:12px; border:1px solid var(--line);
-    background:var(--input); color:var(--muted); font-size:20px; cursor:pointer; flex:0 0 auto; transition:.15s; }
-  .icon-btn:hover { color:var(--danger); border-color:var(--danger); }
-  .add-btn { margin-top:4px; background:transparent; border:1px dashed var(--line); color:var(--brand);
-    padding:9px 12px; border-radius:12px; cursor:pointer; font-size:13px; font-family:inherit; transition:.15s; }
-  .add-btn:hover { border-color:var(--brand); background:rgba(109,139,255,.08); }
-  .switches { margin-top:18px; display:flex; flex-direction:column; gap:10px; }
-  .switch { display:flex; align-items:center; justify-content:space-between; gap:10px;
-    background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:11px 14px; }
-  .switch .t { font-size:13.5px; }
-  .switch .d { font-size:11.5px; color:var(--muted); margin-top:2px; }
-  .toggle { position:relative; width:46px; height:26px; flex:0 0 auto; }
-  .toggle input { display:none; }
-  .track { position:absolute; inset:0; background:#c9cee4; border-radius:20px; cursor:pointer; transition:.2s; }
-  .track:before { content:""; position:absolute; width:20px; height:20px; border-radius:50%;
-    background:#fff; top:3px; right:3px; transition:.2s; }
-  .toggle input:checked +.track { background:linear-gradient(135deg,var(--brand),var(--brand2)); }
-  .toggle input:checked +.track:before { right:23px; }
-  .toggle.danger input:checked +.track { background:linear-gradient(135deg,#ff6b7a,#ff9166); }
-  .save { margin-top:22px; width:100%; padding:14px; border:none; border-radius:14px;
-    background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; font-size:15.5px;
-    font-weight:bold; cursor:pointer; font-family:inherit; transition:.15s; }
-  .save:hover { filter:brightness(1.08); }
-  .toast { margin-top:14px; text-align:center; font-size:13.5px; color:var(--ok); opacity:0; transition:.3s; min-height:18px; }
-  .toast.show { opacity:1; }
-  .api-health-toast { position:fixed; top:16px; left:50%; transform:translate(-50%,-18px);
-    z-index:2147483000; min-width:min(520px,calc(100vw - 28px)); max-width:720px;
-    border:1px solid var(--line); border-inline-start:5px solid var(--warn); border-radius:8px;
-    padding:12px 46px 12px 16px; background:var(--card); color:var(--txt);
-    box-shadow:0 14px 42px #0004; opacity:0; pointer-events:none; transition:.22s;
-    font-size:13.5px; line-height:1.7; }
-  .api-health-toast.show { opacity:1; transform:translate(-50%,0); pointer-events:auto; }
-  .api-health-toast.ok { border-inline-start-color:var(--ok); }
-  .api-health-toast.fail { border-inline-start-color:var(--danger); }
-  .api-health-toast .api-meta { display:none; color:var(--muted); font-size:11px; direction:ltr; text-align:left; }
-  .api-health-toast:hover .api-meta { display:block; }
-  .api-health-toast button { position:absolute; top:7px; left:9px; border:0; background:transparent;
-    color:var(--muted); font-size:22px; cursor:pointer; }
-  .hint { font-size:11px; color:var(--muted); margin-top:4px; }
-  /* --- LOGS --- */
-  .log-item { background:var(--card2); border:1px solid var(--line); border-radius:12px;
-    padding:11px 13px; margin-bottom:9px; border-inline-start:4px solid var(--muted); }
-  .log-item.error { border-inline-start-color:var(--danger); }
-  .log-item.success { border-inline-start-color:var(--ok); }
-  .log-item.warn { border-inline-start-color:var(--warn); }
-  .log-top { display:flex; justify-content:space-between; gap:8px; font-size:11.5px; color:var(--muted); }
-  .log-msg { font-size:13px; margin-top:5px; line-height:1.6; }
-  .log-serial { direction:ltr; text-align:right; font-size:12px; color:var(--brand); margin-top:5px; letter-spacing:1px; }
-  .log-empty { color:var(--muted); text-align:center; padding:30px; font-size:13px; }
-  .hidden { display:none !important; }
-  .section-title { margin:18px 0 10px; padding:10px 12px; border-inline-start:4px solid var(--brand); background:rgba(79,107,239,.08); border-radius:10px; font-weight:bold; color:var(--brand); }
-  .profile-tabs { display:flex; gap:8px; margin:10px 0 16px; }
-  .profile-tab { flex:1; border:1px solid var(--line); background:var(--input); color:var(--muted); padding:10px; border-radius:10px; cursor:pointer; font-family:inherit; }
-  .profile-tab.active { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); border-color:transparent; }
-  .exitban-result-card { border-radius:16px; padding:16px 18px; margin:14px 0; border:1px solid var(--line); background:var(--card2); }
-  .exitban-result-card.not_checked { border-color:#c9cee4; background:#f5f6fb; color:var(--muted); }
-  .exitban-result-card.clear { border-color:#9bd8b8; background:#eafaf1; color:#147a43; }
-  .exitban-result-card.blocked { border-color:#f2a5ad; background:#fff0f2; color:#b42333; }
-  .exitban-result-head { display:flex; justify-content:space-between; gap:12px; align-items:center; font-weight:bold; }
-  .exitban-result-text { margin-top:10px; line-height:1.8; font-size:14px; }
-  .exitban-result-time { margin-top:8px; font-size:11px; opacity:.75; direction:ltr; text-align:right; }
-  .settings-section,.inquiry-card { background:var(--card2);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0; }
-  .settings-section h3,.inquiry-card h3 { margin:0 0 8px; }
-  .system-debug-card { display:grid; gap:12px; }
-  .system-debug-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-  .system-debug-help { color:var(--muted); font-size:11.5px; line-height:1.8; }
-  .system-log-list { display:grid; gap:7px; max-height:260px; overflow:auto; }
-  .system-log-item { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--input); }
-  .system-log-name { direction:ltr; text-align:left; font:700 11px Consolas,monospace; flex:1; overflow:hidden; text-overflow:ellipsis; }
-  .system-log-meta { color:var(--muted); font-size:10px; white-space:nowrap; direction:ltr; }
-  .system-log-open { border:1px solid var(--brand); color:var(--brand); background:transparent; border-radius:7px; padding:5px 9px; cursor:pointer; font:700 11px inherit; }
-  .system-log-viewer { min-height:230px; max-height:440px; overflow:auto; white-space:pre-wrap; word-break:break-word; direction:ltr; text-align:left; padding:12px; border:1px solid var(--line); border-radius:8px; background:#080b12; color:#d9e2f2; font:11px/1.65 Consolas,monospace; }
-  .inquiry-picker { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin:14px 0; }
-  .inquiry-picker button { min-height:42px; border:1px solid var(--line); background:var(--input); color:var(--txt); border-radius:9px; cursor:pointer; font:700 12px inherit; }
-  .inquiry-picker button.active { background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; border-color:transparent; }
-  .device-results { display:grid; gap:10px; margin:12px 0 16px; }
-  .device-result { border:1px solid var(--line); border-inline-start:4px solid var(--muted); background:var(--card); border-radius:8px; padding:12px; }
-  .device-result.good { border-inline-start-color:var(--ok); }
-  .device-result.bad { border-inline-start-color:var(--danger); }
-  .device-result.running { border-inline-start-color:var(--warn); }
-  .device-result-head { display:flex; align-items:center; gap:8px; justify-content:space-between; }
-  .device-result-head .serial { direction:ltr; font:700 12px Consolas,monospace; }
-  .device-result-text { color:var(--muted); font-size:12px; line-height:1.8; white-space:pre-line; word-break:break-word; margin-top:7px; }
-  .device-result-time { font-size:10.5px; color:var(--muted); direction:ltr; margin-top:6px; }
-  @media(max-width:620px){.inquiry-picker{grid-template-columns:1fr}.device-result-head{align-items:flex-start;flex-direction:column}}
-  .soon { display:inline-block;color:var(--warn);background:#fff4df;border-radius:20px;padding:5px 10px;font-size:11px; }
-  /* --- back-to-home button --- */
-  .home-btn { position:absolute; right:0; top:0; border:1px solid var(--line); background:var(--input); color:var(--txt);
-    border-radius:10px; padding:8px 12px; cursor:pointer; text-decoration:none; font-size:13px; font-family:inherit;
-    transition:.15s; display:inline-flex; align-items:center; gap:6px; }
-  .home-btn:hover { border-color:var(--brand); color:var(--brand); }
-  /* --- stats bar --- */
-  .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin:2px 0 18px; }
-  .stat { text-align:center; padding:13px 8px; border:1px solid var(--line); border-radius:14px; background:var(--card2);
-    cursor:pointer; transition:.15s; user-select:none; }
-  .stat:hover { border-color:var(--brand); transform:translateY(-2px); }
-  .stat.active { border-color:var(--brand); box-shadow:0 0 0 2px rgba(109,139,255,.25);
-    background:linear-gradient(135deg,rgba(109,139,255,.14),rgba(157,109,255,.08)); }
-  .stat .n { font-size:25px; font-weight:900; line-height:1.1; }
-  .stat .l { font-size:11.5px; color:var(--muted); margin-top:3px; }
-  .stat.s-total .n{color:var(--brand)} .stat.s-running .n{color:var(--warn)} .stat.s-ready .n{color:var(--brand)}
-  .stat.s-success .n{color:var(--ok)} .stat.s-blocked .n{color:var(--danger)}
-  /* --- profile status badge (parity with site 2) --- */
-  .p-badge { display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:800; padding:3px 9px;
-    border-radius:999px; border:1px solid transparent; white-space:nowrap; }
-  .p-badge .d { width:6px; height:6px; border-radius:50%; background:currentColor; }
-  .p-badge.b-ready{color:var(--brand); background:rgba(79,107,239,.12); border-color:rgba(79,107,239,.3)}
-  .p-badge.b-busy{color:var(--warn); background:rgba(201,122,16,.14); border-color:rgba(201,122,16,.35)}
-  .p-badge.b-success{color:var(--ok); background:rgba(18,160,95,.12); border-color:rgba(18,160,95,.3)}
-  .p-badge.b-blocked{color:var(--danger); background:rgba(224,69,85,.12); border-color:rgba(224,69,85,.3)}
-  .p-badge.b-off{color:var(--muted); background:rgba(107,113,145,.1); border-color:rgba(107,113,145,.25)}
-  .b-busy .d{animation:pulse-dot 1s steps(2) infinite}
-  @keyframes pulse-dot{50%{opacity:.3}}
-  /* Premium product UI layer */
-  :root {
-    --bg:#f6f7f9; --card:#ffffff; --card2:#f8f9fb; --line:#e4e7ec;
-    --txt:#17191f; --muted:#717784; --brand:#5b5bd6; --brand2:#5b5bd6;
-    --ok:#16875f; --danger:#d14343; --warn:#ad6800; --input:#ffffff;
-    --shadow:0 1px 2px rgba(16,24,40,.03),0 12px 32px rgba(16,24,40,.06);
-  }
-  html[data-theme="dark"] {
-    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
-    --txt:#eef1fb; --muted:#aeb6d0; --brand:#7d8cff; --brand2:#7d8cff;
-    --ok:#34b583; --danger:#ef6a6a; --warn:#e4a43a; --input:#1a1e2e;
-    --shadow:0 1px 1px rgba(0,0,0,.14),0 18px 42px rgba(0,0,0,.16);
-  }
-  html { scrollbar-gutter:stable; }
-  body { font-family:"Segoe UI",Tahoma,system-ui,sans-serif; background:var(--bg); font-size:14px; line-height:1.65; }
   button,input,textarea { font:inherit; }
-  button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
-  .layout { min-height:100vh; background:var(--bg); }
-  .sidebar { width:430px; padding:24px 18px; gap:12px; background:var(--card); border-inline-start:1px solid var(--line); overflow:hidden; }
-  .side-sec-title { margin:0; font-size:12px; font-weight:700; letter-spacing:.01em; color:var(--muted); }
-  .add-prof { padding:11px 14px; border-radius:9px; font-size:14px; font-weight:700; background:var(--txt); box-shadow:none; }
-  html[data-theme="dark"] .add-prof { color:#1f2333; background:#f3f4f6; }
-  .add-prof:hover { filter:none; transform:none; opacity:.88; }
-  #profile-search { min-height:42px; padding:10px 38px 10px 32px; border-radius:9px; background:var(--card2); }
-  #profile-search:focus { box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 16%,transparent); }
-  .prof-item { padding:12px; margin-bottom:9px; border-radius:10px; background:var(--card); box-shadow:0 1px 1px rgba(16,24,40,.02); }
-  .prof-item:hover { border-color:#c9cdd5; background:var(--card); }
-  html[data-theme="dark"] .prof-item:hover { border-color:#3a3e47; }
-  .prof-item.active { border-color:var(--brand); background:color-mix(in srgb,var(--brand) 7%,var(--card)); box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 14%,transparent); }
-  .prof-title { gap:7px; font-size:13px; }
-  .profile-number { min-width:22px; height:22px; border-radius:6px; background:var(--card2); border:1px solid var(--line); color:var(--muted); }
-  .prof-avatar { cursor:pointer; }
-  /* --- premium profile-card polish: skeleton rows + compact actions --- */
-  .prof-skeleton { display:flex; align-items:center; gap:10px; padding:12px; margin-bottom:9px;
-    border:1px solid var(--line); border-radius:10px; background:var(--card); }
+  :is(a,button,input,select,textarea):focus-visible { outline:none; box-shadow:var(--ring); }
+  .ic { flex:none; vertical-align:-2px; }
+  .hidden { display:none !important; }
+  /* --- layout: row-reverse keeps the profile rail on the right (RTL) --- */
+  .layout { display:flex; flex-direction:row-reverse; min-height:100vh; }
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center;
+    padding:14px clamp(14px,2.5vw,36px) 72px; }
+  .card { width:100%; max-width:1180px; }
+  /* --- sticky glass header: monogram + version + theme toggle --- */
+  .head {
+    position:sticky; top:10px; z-index:40; margin-bottom:16px;
+    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 14px;
+    padding:12px 14px; border:1px solid var(--line); border-radius:14px;
+    background:color-mix(in srgb,var(--card) 86%,transparent);
+    backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    box-shadow:var(--shadow-1);
+  }
+  .product-lockup { grid-column:1; grid-row:1; display:flex; align-items:center; gap:12px; min-width:0; }
+  .logo { width:40px; height:40px; border-radius:12px; flex:none; display:grid; place-items:center;
+    background:linear-gradient(135deg,var(--brand),#7c5cf5); color:var(--on-brand);
+    font-size:19px; font-weight:800; box-shadow:var(--shadow-1); }
+  .eyebrow { font-size:11px; font-weight:600; color:var(--muted); }
+  h1 { font-size:16px; margin:0; }
+  .panel-title { font-size:17px; font-weight:750; letter-spacing:-.2px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .head-actions { grid-column:2; grid-row:1; display:flex; align-items:center; gap:8px;
+    flex-wrap:wrap; justify-content:flex-end; }
+  .home-btn,.theme-btn {
+    display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:6px 12px;
+    border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--txt);
+    text-decoration:none; font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+    box-shadow:var(--shadow-1); white-space:nowrap;
+    transition:border-color .15s,color .15s,background .15s;
+  }
+  .home-btn .ic,.theme-btn .ic { color:var(--muted); }
+  .home-btn:hover,.theme-btn:hover { border-color:var(--brand); color:var(--brand); background:var(--brand-soft); }
+  .home-btn:hover .ic,.theme-btn:hover .ic { color:var(--brand); }
+  .system-close-btn {
+    display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:6px 13px;
+    border:1px solid var(--danger-soft); border-radius:10px; background:var(--danger-soft);
+    color:var(--danger); font-size:12px; font-weight:650; font-family:inherit; cursor:pointer;
+    transition:.15s; white-space:nowrap;
+  }
+  .system-close-btn:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
+  .active-profile-banner {
+    grid-column:1; grid-row:2; display:block; min-width:0; padding:7px 12px;
+    border:1px solid var(--line); border-radius:10px; background:var(--card2);
+    color:var(--txt); font-size:12.5px; font-weight:650;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .active-profile-banner:before { content:""; display:inline-block; width:7px; height:7px;
+    border-radius:50%; background:var(--ok); margin-inline-end:8px; }
+  .irica-version { grid-column:2; grid-row:2; align-self:center; justify-self:end;
+    padding:3px 11px; border:1px solid var(--line); border-radius:999px;
+    color:var(--muted); font-size:11px; direction:ltr; white-space:nowrap; }
+  /* --- status rail: clickable summary tiles (also filters the list) --- */
+  .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin:0 0 14px; }
+  .stat {
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    min-height:74px; padding:12px 8px; border:1px solid var(--line); border-radius:12px;
+    background:var(--card); box-shadow:var(--shadow-1); cursor:pointer; user-select:none;
+    transition:border-color .15s,background .15s,box-shadow .15s;
+  }
+  .stat:hover { border-color:var(--line-strong); box-shadow:var(--shadow-2); }
+  .stat.active { border-color:var(--brand); background:color-mix(in srgb,var(--brand) 6%,var(--card));
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 14%,transparent); }
+  .stat .n { font-size:22px; font-weight:750; line-height:1.15; font-variant-numeric:tabular-nums; }
+  .stat .l { font-size:11px; color:var(--muted); }
+  .stat.s-total .n{color:var(--txt)} .stat.s-running .n{color:var(--busy)}
+  .stat.s-ready .n{color:var(--brand)} .stat.s-success .n{color:var(--ok)}
+  .stat.s-blocked .n{color:var(--danger)}
+  /* --- segmented tab bar --- */
+  .nav-tabs { display:flex; gap:4px; margin:0 0 16px; padding:4px;
+    border:1px solid var(--line); border-radius:12px; background:var(--card); }
+  .nav-tab {
+    flex:1; display:flex; align-items:center; justify-content:center; gap:7px; min-height:38px;
+    padding:8px 10px; border:0; border-radius:9px; background:transparent; color:var(--muted);
+    font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer;
+    transition:color .15s,background .15s;
+  }
+  .nav-tab .ic { color:var(--faint); }
+  .nav-tab:hover { color:var(--txt); background:var(--brand-soft); }
+  .nav-tab:hover .ic { color:var(--brand); }
+  .nav-tab.active { background:var(--brand); color:var(--on-brand);
+    box-shadow:0 2px 8px color-mix(in srgb,var(--brand) 30%,transparent); }
+  .nav-tab.active .ic { color:var(--on-brand); }
+  /* --- views as cards --- */
+  #view-form,#view-logs,#view-telegram { padding:20px; border:1px solid var(--line);
+    border-radius:14px; background:var(--card); box-shadow:var(--shadow-1); }
+  .profile-editor-empty { min-height:340px; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:8px; padding:40px; text-align:center; color:var(--muted); }
+  .profile-editor-empty .empty-icon { width:48px; height:48px; display:grid; place-items:center;
+    margin-bottom:4px; border:1px solid transparent; border-radius:13px;
+    background:var(--brand-soft); color:var(--brand); }
+  .profile-editor-empty strong { color:var(--txt); font-size:15px; font-weight:650; }
+  .profile-editor-empty p { max-width:420px; margin:0; font-size:12.5px; line-height:1.8; }
+  .section-title { margin:0 0 14px; padding:0; border:0; background:none;
+    color:var(--txt); font-size:15.5px; font-weight:700; }
+  .profile-tabs { display:flex; gap:4px; max-width:520px; margin:0 0 18px; padding:4px;
+    border-radius:10px; background:var(--card2); }
+  .profile-tab { flex:1; padding:8px 12px; border:0; border-radius:8px; background:transparent;
+    color:var(--muted); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer;
+    transition:.15s; }
+  .profile-tab:hover { color:var(--txt); }
+  .profile-tab.active { background:var(--card); color:var(--brand); box-shadow:var(--shadow-1); }
+  #view-base,#view-identity { display:block; max-width:920px; }
+  /* --- forms --- */
+  label { display:block; margin:12px 0 5px; font-size:12px; font-weight:600; color:var(--muted); }
+  input[type=text],input[type=password],textarea {
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--card2); color:var(--txt); font-family:inherit; font-size:13px; outline:none;
+    transition:border-color .15s,box-shadow .15s,background .15s;
+  }
+  input[type=text]:hover,input[type=password]:hover,textarea:hover { border-color:var(--line-strong); }
+  input[type=text]:focus,input[type=password]:focus,textarea:focus {
+    border-color:var(--brand); background:var(--card); }
+  textarea { min-height:96px; resize:vertical; }
+  input.ltr,textarea.ltr { direction:ltr; text-align:left; }
+  textarea.ltr { font-family:var(--mono); font-size:12.5px; }
+  .hint { font-size:11px; color:var(--muted); margin-top:5px; }
+  .sub { color:var(--muted); font-size:12.5px; margin:2px 0; }
+  .field-row { display:flex; gap:7px; align-items:stretch; }
+  .field-row > input[type=text] { flex:1 1 auto; min-width:0; }
+  .paste-btn { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    min-width:46px; padding:0 11px; border:1px solid var(--line); border-radius:10px;
+    background:var(--card); color:var(--muted); font-family:inherit; font-size:11.5px; cursor:pointer;
+    transition:.15s; }
+  .paste-btn:hover { color:var(--brand); border-color:var(--brand); background:var(--brand-soft); }
+  .paste-btn.ok { color:var(--ok); border-color:var(--ok); background:var(--ok-soft); }
+  .paste-btn.err { color:var(--danger); border-color:var(--danger); background:var(--danger-soft); }
+  .imei-row { display:flex; gap:7px; align-items:center; margin-bottom:8px; }
+  .imei-row input { flex:1; }
+  .icon-btn { width:40px; height:40px; flex:0 0 auto; display:inline-flex; align-items:center;
+    justify-content:center; border:1px solid var(--line); border-radius:10px; background:var(--card2);
+    color:var(--muted); font-size:17px; cursor:pointer; transition:.15s; }
+  .icon-btn:hover { color:var(--danger); border-color:var(--danger); background:var(--danger-soft); }
+  .add-btn { width:max-content; margin-top:4px; padding:8px 12px; border:1px dashed var(--line-strong);
+    border-radius:10px; background:transparent; color:var(--brand); font-family:inherit;
+    font-size:12.5px; cursor:pointer; transition:.15s; }
+  .add-btn:hover { border-color:var(--brand); background:var(--brand-soft); }
+  /* --- switches --- */
+  .switches { margin-top:16px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .switch { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:64px;
+    padding:11px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card2); }
+  .switch .t { font-size:12.5px; font-weight:600; }
+  .switch .d { font-size:10.5px; color:var(--muted); margin-top:2px; line-height:1.7; }
+  .toggle { position:relative; width:44px; height:24px; flex:0 0 auto; }
+  .toggle input { display:none; }
+  .track { position:absolute; inset:0; border-radius:999px; cursor:pointer;
+    background:color-mix(in srgb,var(--muted) 30%,transparent); transition:background .18s; }
+  .track:before { content:""; position:absolute; width:18px; height:18px; border-radius:50%;
+    background:var(--card); top:3px; inset-inline-start:3px; transition:inset-inline-start .18s;
+    box-shadow:0 1px 2px rgba(16,20,40,.25); }
+  .toggle input:checked +.track { background:var(--brand); }
+  .toggle input:checked +.track:before { inset-inline-start:23px; }
+  .toggle.danger input:checked +.track { background:var(--danger); }
+  .save { width:auto; min-width:190px; margin-top:20px; padding:11px 18px; border:0; border-radius:10px;
+    background:var(--brand); color:var(--on-brand); font-family:inherit; font-size:13px; font-weight:650;
+    cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    transition:background .15s; box-shadow:var(--shadow-1); }
+  .save:hover { background:var(--brand-hover); }
+  .save:disabled { opacity:.55; cursor:not-allowed; }
+  .toast { margin-top:12px; text-align:center; font-size:12.5px; color:var(--ok); opacity:0;
+    transition:opacity .3s; min-height:18px; }
+  .toast.show { opacity:1; }
+  /* --- profile rail (right side) --- */
+  .sidebar { width:400px; flex:0 0 auto; display:flex; flex-direction:column; gap:10px; overflow:hidden;
+    padding:16px 14px; background:var(--card); border-inline-start:1px solid var(--line); }
+  .side-sec-title { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin:0 2px; font-size:12px; font-weight:650; color:var(--muted); }
+  .side-sec-title > span:last-child { display:inline-flex; align-items:center; gap:8px; }
+  #profile-count { font-size:11px; color:var(--faint); }
+  .add-prof { width:100%; padding:11px 14px; border:0; border-radius:10px; background:var(--brand);
+    color:var(--on-brand); font-family:inherit; font-size:13px; font-weight:650; cursor:pointer;
+    transition:background .15s; box-shadow:var(--shadow-1); }
+  .add-prof:hover { background:var(--brand-hover); }
+  .profile-search-wrap { position:relative; }
+  .profile-search-icon { position:absolute; inset-inline-start:12px; top:50%; transform:translateY(-50%);
+    color:var(--faint); pointer-events:none; display:inline-flex; }
+  #profile-search { width:100%; min-height:40px; padding:9px 12px; padding-inline-start:36px;
+    padding-inline-end:32px; border:1px solid var(--line); border-radius:10px; background:var(--card2);
+    color:var(--txt); font-family:inherit; font-size:12.5px; outline:none;
+    transition:border-color .15s,box-shadow .15s; }
+  #profile-search:focus { border-color:var(--brand); box-shadow:var(--ring); }
+  .search-clear { position:absolute; inset-inline-end:4px; top:50%; transform:translateY(-50%);
+    width:28px; height:28px; border:0; border-radius:8px; background:transparent; color:var(--faint);
+    font-size:17px; cursor:pointer; display:none; }
+  .search-clear:hover { color:var(--danger); }
+  .search-clear.visible { display:block; }
+  .view-switch { display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden;
+    background:var(--card); }
+  .view-switch button { display:inline-flex; align-items:center; justify-content:center; width:30px;
+    height:26px; border:0; background:transparent; color:var(--faint); cursor:pointer; transition:.15s; }
+  .view-switch button+button { border-inline-start:1px solid var(--line); }
+  .view-switch button:hover { color:var(--txt); }
+  .view-switch button.active { background:var(--brand-soft); color:var(--brand); }
+  /* profile list frame (internal scroll) */
+  #prof-list { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; min-height:200px; padding:6px;
+    border:1px solid var(--line); border-radius:14px; background:var(--card2);
+    scroll-behavior:smooth; scrollbar-width:thin; }
+  #prof-list::-webkit-scrollbar { width:9px; }
+  #prof-list::-webkit-scrollbar-thumb { background:color-mix(in srgb,var(--brand) 30%,var(--line));
+    border-radius:9px; }
+  /* loading skeletons */
+  .prof-skeleton { display:flex; align-items:center; gap:10px; padding:12px; margin-bottom:8px;
+    border:1px solid var(--line); border-radius:12px; background:var(--card); }
   .prof-skeleton .sk-av, .prof-skeleton .sk-l1, .prof-skeleton .sk-l2 { border-radius:7px;
     background:linear-gradient(100deg,var(--card2) 40%,color-mix(in srgb,var(--brand) 8%,var(--card2)) 50%,var(--card2) 60%);
     background-size:220% 100%; animation:skpulse 1.3s linear infinite; }
@@ -2725,145 +2611,321 @@ PAGE_HEAD = """<!DOCTYPE html>
   .prof-skeleton .sk-l2 { height:9px; width:80%; }
   @keyframes skpulse { from{background-position:120% 0} to{background-position:-120% 0} }
   @media (prefers-reduced-motion: reduce){ .prof-skeleton .sk-av,.prof-skeleton .sk-l1,.prof-skeleton .sk-l2{animation:none} }
-  .prof-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  /* empty states */
+  .profiles-empty { padding:26px 14px; border:1px dashed var(--line-strong); border-radius:12px;
+    text-align:center; color:var(--muted); font-size:12.5px; }
+  .profiles-empty .pe-icon { display:inline-flex; margin-bottom:8px; color:var(--faint); }
+  .profiles-empty .pe-hint { font-size:11px; margin-top:5px; color:var(--faint); }
+  /* --- profile cards: stable anatomy (avatar / identity / status+run / footer) --- */
+  .prof-item { position:relative; background:var(--card); border:1px solid var(--line);
+    border-radius:12px; padding:12px; margin-bottom:8px; box-shadow:var(--shadow-1);
+    transition:border-color .15s,box-shadow .15s,transform .15s; }
+  .prof-item:hover { border-color:var(--line-strong); box-shadow:var(--shadow-2); transform:translateY(-1px); }
+  .prof-item:focus-within { border-color:var(--brand); }
+  .prof-item.active { border-color:var(--brand);
+    background:color-mix(in srgb,var(--brand) 5%,var(--card));
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 15%,transparent),var(--shadow-1); }
+  .prof-item.active::before { content:""; position:absolute; inset-inline-start:-1px; top:10px; bottom:10px;
+    width:3px; border-radius:3px; background:var(--brand); }
+  .prof-head { display:flex; align-items:center; gap:10px; min-width:0; }
+  .prof-avatar { flex:0 0 auto; width:38px; height:38px; border-radius:50%; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; color:#fff; font-size:13.5px; font-weight:700;
+    background:linear-gradient(135deg,hsl(var(--av,220) 60% 52%),hsl(calc(var(--av,220) + 42) 60% 42%));
+    user-select:none; }
+  .prof-item.active .prof-avatar { box-shadow:0 0 0 2px var(--card),0 0 0 4px color-mix(in srgb,var(--ok) 55%,transparent); }
+  .prof-id { flex:1 1 auto; min-width:0; }
+  .prof-title { font-size:13px; font-weight:700; display:flex; align-items:center; gap:6px; min-width:0; }
+  .prof-title-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .prof-title-text:hover { color:var(--brand); }
+  .profile-number { display:inline-flex; min-width:22px; height:22px; padding:0 5px; align-items:center;
+    justify-content:center; border-radius:7px; background:var(--card2); border:1px solid var(--line);
+    color:var(--muted); font-size:10.5px; font-weight:700; }
+  .prof-meta { font-size:11px; color:var(--muted); margin-top:3px; direction:ltr; text-align:right;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mdot { opacity:.55; }
+  .imei-chip { display:inline-block; font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:99px;
+    border:1px solid var(--line); background:var(--card2); color:var(--muted); }
+  .prof-side { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+  /* status badge (ready / busy / success / blocked / off) */
+  .p-badge { display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:650;
+    padding:3px 9px; border-radius:999px; border:1px solid transparent; white-space:nowrap; }
+  .p-badge .d { width:6px; height:6px; border-radius:50%; background:currentColor; flex:none; }
+  .p-badge.b-ready{color:var(--brand);background:var(--brand-soft)}
+  .p-badge.b-busy{color:var(--busy);background:var(--busy-soft)}
+  .p-badge.b-success{color:var(--ok);background:var(--ok-soft)}
+  .p-badge.b-blocked{color:var(--danger);background:var(--danger-soft)}
+  .p-badge.b-off{color:var(--muted);background:color-mix(in srgb,var(--muted) 10%,transparent)}
+  .b-busy .d{animation:pulse-dot 1s steps(2) infinite}
+  @keyframes pulse-dot{50%{opacity:.3}}
+  /* run / stop / blocked buttons */
+  .mini-btn { flex:1 1 60px; display:inline-flex; align-items:center; justify-content:center; gap:5px;
+    min-height:30px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card);
+    color:var(--muted); font-family:inherit; font-size:10.5px; font-weight:600; cursor:pointer; transition:.15s; }
+  .mini-btn:hover { color:var(--txt); border-color:var(--brand); }
+  .mini-btn.on { color:var(--ok); border-color:var(--ok); }
+  .mini-btn.start { color:#fff; border-color:transparent; background:var(--ok); }
+  .mini-btn.start:hover { background:color-mix(in srgb,var(--ok) 86%,#000); }
+  .mini-btn.stop { color:#fff; border-color:transparent; background:var(--danger); }
+  .mini-btn.stop:hover { background:color-mix(in srgb,var(--danger) 86%,#000); }
+  .mini-btn.del { color:var(--danger); border-color:var(--danger-soft); background:var(--danger-soft); }
+  .mini-btn.del:hover { color:#fff; border-color:transparent; background:var(--danger); }
+  .mini-btn.blocked { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 30%,var(--line));
+    background:var(--danger-soft); cursor:not-allowed; opacity:.8; }
+  .mini-btn.profile-run-primary { flex:0 0 auto; min-width:106px; min-height:32px; padding:7px 11px;
+    border-radius:9px; font-size:11.5px; font-weight:700; white-space:nowrap; }
+  /* inline status alerts on a card */
+  .prof-alert { display:flex; gap:8px; align-items:flex-start; margin-top:9px; padding:9px 11px;
+    border-radius:10px; font-size:11.5px; line-height:1.6; }
+  .prof-alert .ai { flex:0 0 auto; display:inline-flex; margin-top:1px; }
+  .prof-alert b { font-size:11.5px; }
+  .prof-alert .ad { margin-top:2px; opacity:.85; }
+  .prof-alert.danger { border:1px solid color-mix(in srgb,var(--danger) 30%,var(--line));
+    background:var(--danger-soft); color:var(--danger); }
+  .prof-alert.ok { border:1px solid color-mix(in srgb,var(--ok) 30%,var(--line));
+    background:var(--ok-soft); color:var(--ok); }
+  /* show/hide the running robot browser */
+  .prof-browser-row { margin-top:8px; }
+  .browser-btn { position:relative; width:100%; display:inline-flex; align-items:center;
+    justify-content:center; gap:6px; min-height:32px; padding:7px 10px; border-radius:9px;
+    cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; transition:.15s;
+    border:1px dashed color-mix(in srgb,var(--brand) 45%,var(--line));
+    background:var(--brand-soft); color:var(--brand); }
+  .browser-btn:hover { background:color-mix(in srgb,var(--brand) 16%,transparent); border-style:solid; }
+  .browser-btn.visible { border-style:solid; border-color:color-mix(in srgb,var(--busy) 45%,var(--line));
+    background:var(--busy-soft); color:var(--busy); }
+  .browser-btn[disabled] { opacity:.55; cursor:progress; }
+  /* artifact chips (receipt / payment / payment link) */
+  .prof-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px;
+    flex-wrap:wrap; }
+  .artifact-links { display:flex; flex-wrap:wrap; gap:5px; }
+  .artifact-links a { display:inline-flex; align-items:center; gap:4px; padding:3px 9px; border-radius:99px;
+    border:1px solid color-mix(in srgb,var(--ok) 30%,var(--line)); background:var(--ok-soft);
+    color:var(--ok); text-decoration:none; font-size:10.5px; font-weight:650; transition:.15s; }
+  .artifact-links a:hover { background:color-mix(in srgb,var(--ok) 18%,transparent); }
+  /* icon action row + progressive disclosure (more) */
+  .prof-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
   .ibtn { position:relative; width:34px; height:34px; flex:0 0 auto; display:inline-flex;
-    align-items:center; justify-content:center; font-size:15px; line-height:1; cursor:pointer;
-    border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--muted);
-    transition:.16s; }
-  .ibtn:hover { color:var(--txt); border-color:var(--brand); transform:translateY(-2px);
-    box-shadow:0 6px 16px rgba(16,24,40,.14); }
-  .ibtn.on { color:var(--ok); border-color:var(--ok); background:color-mix(in srgb,var(--ok) 12%,var(--input)); }
-  .ibtn.danger:hover { color:#fff; border-color:transparent; background:linear-gradient(135deg,#d92f45,#f05b6b); }
-  .ibtn.warn:hover { color:#20160a; border-color:transparent; background:var(--warn,#f6b94b); }
+    align-items:center; justify-content:center; cursor:pointer; border:1px solid var(--line);
+    border-radius:9px; background:var(--card); color:var(--faint); transition:.15s; }
+  .ibtn:hover { color:var(--txt); border-color:var(--brand); background:var(--brand-soft); }
+  .ibtn.on { color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,var(--line));
+    background:var(--ok-soft); }
+  .ibtn.danger:hover { color:var(--danger); border-color:var(--danger); background:var(--danger-soft); }
+  .ibtn.warn:hover { color:var(--busy); border-color:var(--busy); background:var(--busy-soft); }
   .ibtn::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); right:50%;
-    transform:translate(50%,4px); white-space:nowrap; font-size:11px; font-weight:700;
-    padding:5px 9px; border-radius:8px; background:#111827; color:#fff; opacity:0;
-    pointer-events:none; transition:.16s; z-index:40; box-shadow:0 8px 20px rgba(0,0,0,.28); }
+    transform:translate(50%,4px); white-space:nowrap; font-size:11px; font-weight:650;
+    padding:5px 9px; border-radius:8px; background:var(--txt); color:var(--bg); opacity:0;
+    pointer-events:none; transition:.15s; z-index:40; box-shadow:var(--shadow-2); }
   .ibtn::before { content:''; position:absolute; bottom:calc(100% + 2px); right:50%;
-    transform:translateX(50%); border:5px solid transparent; border-top-color:#111827;
-    opacity:0; pointer-events:none; transition:.16s; z-index:40; }
+    transform:translateX(50%); border:5px solid transparent; border-top-color:var(--txt);
+    opacity:0; pointer-events:none; transition:.15s; z-index:40; }
   .ibtn:hover::after,.ibtn:focus-visible::after { opacity:1; transform:translate(50%,0); }
   .ibtn:hover::before,.ibtn:focus-visible::before { opacity:1; }
-  .prof-foot { margin-top:9px; }
+  .more-btn { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px;
+    border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--faint);
+    cursor:pointer; font-size:15px; transition:.15s; }
+  .more-btn:hover { color:var(--txt); border-color:var(--brand); background:var(--brand-soft); }
   .prof-actions .ibtn:nth-child(n+4) { display:none; }
   .prof-item.expanded .prof-actions .ibtn:nth-child(n+4) { display:inline-flex; }
-  .more-btn { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px;
-    border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--muted);
-    cursor:pointer; font-size:14px; transition:.16s; }
-  .more-btn:hover { color:var(--txt); border-color:var(--brand); }
-  #prof-list { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; min-height:200px;
-    padding:4px; border:1px solid var(--line); border-radius:14px; background:var(--card2); }
-  .prof-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
-  .mini-btn { min-height:30px; border-radius:7px; font-size:10.5px; background:var(--card); }
-  .mini-btn.profile-run-primary { min-width:100px; padding:7px 10px; border-radius:7px; font-size:11.5px; }
-  .mini-btn.start { background:var(--ok); }
-  .mini-btn.stop,.mini-btn.del { background:var(--danger); }
-  .mini-btn.blocked { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 35%,var(--line)); background:color-mix(in srgb,var(--danger) 8%,var(--card)); }
-  .main { padding:32px clamp(24px,3vw,48px); }
-  .card { max-width:1180px; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
-  .head { display:grid; grid-template-columns:1fr auto; align-items:center; gap:18px; margin:0 0 24px; text-align:right; }
-  .head-actions { grid-column:2; grid-row:1; display:flex; align-items:center; gap:8px; }
-  .product-lockup { grid-column:1; grid-row:1; display:flex; align-items:center; gap:12px; }
-  .logo { width:42px; height:42px; border-radius:11px; color:#fff; background:var(--brand); box-shadow:none; }
-  .eyebrow { color:var(--muted); font-size:11px; font-weight:600; margin-bottom:1px; }
-  .panel-title { font-size:24px; font-weight:700; letter-spacing:-.45px; }
-  .home-btn,.theme-btn { position:static; min-height:38px; display:inline-flex; align-items:center; gap:6px; padding:8px 11px; border-radius:8px; font-size:12px; background:var(--card); box-shadow:0 1px 2px rgba(16,24,40,.03); }
-  .system-close-btn { min-height:38px; display:inline-flex; align-items:center; gap:6px; padding:8px 13px; border-radius:8px; font-size:12px; font-weight:bold;
-    border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line)); background:color-mix(in srgb,var(--danger) 8%,var(--card)); color:var(--danger); cursor:pointer; transition:.15s; }
-  .system-close-btn:hover { background:var(--danger); color:#fff; border-color:var(--danger); }
+  /* compact list mode */
+  #prof-list.compact .prof-item { padding:8px 10px; margin-bottom:6px; }
+  #prof-list.compact .prof-avatar { width:30px; height:30px; font-size:12px; }
+  #prof-list.compact .prof-actions,
+  #prof-list.compact .prof-foot { display:none; }
+  #prof-list.compact .mini-btn.profile-run-primary { min-width:84px; padding:5px 9px; font-size:11px; }
+  /* --- logs --- */
+  .log-item { background:var(--card2); border:1px solid var(--line); border-radius:12px;
+    padding:10px 12px; margin-bottom:8px; border-inline-start:3px solid var(--faint); }
+  .log-item.error { border-inline-start-color:var(--danger); }
+  .log-item.success { border-inline-start-color:var(--ok); }
+  .log-item.warn { border-inline-start-color:var(--busy); }
+  .log-item.info { border-inline-start-color:var(--info); }
+  .log-top { display:flex; justify-content:space-between; align-items:center; gap:8px;
+    font-size:11.5px; color:var(--muted); }
+  .log-step { display:inline-flex; align-items:center; gap:6px; min-width:0; }
+  .log-item.error .log-step .ic { color:var(--danger); }
+  .log-item.success .log-step .ic { color:var(--ok); }
+  .log-item.warn .log-step .ic { color:var(--busy); }
+  .log-item.info .log-step .ic { color:var(--info); }
+  .log-ts { direction:ltr; font-family:var(--mono); font-size:10.5px; color:var(--faint);
+    white-space:nowrap; }
+  .log-msg { font-size:12.5px; margin-top:5px; line-height:1.7; }
+  .log-serial { direction:ltr; text-align:right; font-size:11.5px; color:var(--brand); margin-top:5px;
+    font-family:var(--mono); letter-spacing:.5px; }
+  .log-empty { color:var(--muted); text-align:center; padding:32px; font-size:12.5px; }
+  /* --- inquiries --- */
+  .settings-section,.inquiry-card { background:var(--card2); border:1px solid var(--line);
+    border-radius:14px; padding:16px; margin:14px 0; }
+  .settings-section h3,.inquiry-card h3 { margin:0 0 8px; font-size:14px; font-weight:700; }
+  .inquiry-picker { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin:14px 0; }
+  .inquiry-picker button { min-height:38px; border:1px solid var(--line); background:var(--card);
+    color:var(--muted); border-radius:9px; cursor:pointer; font-family:inherit; font-size:12px;
+    font-weight:600; transition:.15s; }
+  .inquiry-picker button:hover { border-color:var(--brand); color:var(--brand); }
+  .inquiry-picker button.active { background:var(--brand); color:var(--on-brand); border-color:transparent; }
   .inquiry-actions { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; }
   .inquiry-actions .save { flex:1; min-width:170px; margin-top:0; }
-  .inquiry-stop { flex:0 0 auto; min-width:150px; margin-top:0; padding:11px 18px; border-radius:8px; border:0; font-size:13px; font-weight:bold;
-    background:var(--danger); color:#fff; cursor:pointer; font-family:inherit; }
+  .inquiry-stop { flex:0 0 auto; min-width:150px; margin-top:0; padding:11px 18px; border:0;
+    border-radius:10px; background:var(--danger); color:#fff; font-size:12.5px; font-weight:650;
+    cursor:pointer; font-family:inherit; display:inline-flex; align-items:center; justify-content:center;
+    gap:7px; transition:.15s; }
+  .inquiry-stop:hover { background:color-mix(in srgb,var(--danger) 86%,#000); }
   .inquiry-stop:disabled { opacity:.45; cursor:not-allowed; }
-  .active-profile-banner { grid-column:1/-1; min-width:0; width:100%; padding:11px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--txt); font-size:13px; font-weight:600; box-shadow:none; text-align:right; }
-  .active-profile-banner:before { content:""; display:inline-block; width:7px; height:7px; margin-left:8px; border-radius:50%; background:var(--ok); }
-  .stats { gap:8px; margin:0 0 14px; }
-  .stat { min-height:78px; display:flex; align-items:center; justify-content:center; gap:3px; padding:12px 8px; border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(16,24,40,.025); }
-  .stat:hover { transform:none; border-color:#c9cdd5; }
-  .stat.active { border-color:var(--brand); background:color-mix(in srgb,var(--brand) 6%,var(--card)); box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 12%,transparent); }
-  .stat .n { font-size:22px; font-weight:700; }
-  .stat .l { font-size:11px; }
-  .nav-tabs { gap:4px; margin:0 0 18px; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--card); }
-  .nav-tab { position:relative; min-height:38px; display:flex; align-items:center; justify-content:center; padding:8px 10px; border:0; border-radius:7px; background:transparent; font-size:12.5px; font-weight:600; }
-  .nav-tab:hover { color:var(--txt); background:color-mix(in srgb,var(--brand) 10%,transparent); }
-  /* tab-e ENTEKHAB-SHODE: rang-e brand-e por +noar-e paeen -> ja-ye fe'li roshan ast */
-  .nav-tab.active {
-    color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2));
-    box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent);
-  }
-  .nav-tab.active:hover { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); filter:brightness(1.05); }
-  .nav-tab.active::after {
-    content:""; position:absolute; inset-inline:22%; bottom:-5px; height:3px;
-    border-radius:3px; background:var(--brand);
-  }
-  #view-form,#view-logs,#view-telegram { padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow); }
-  .profile-editor-empty { min-height:360px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:40px; text-align:center; color:var(--muted); }
-  .profile-editor-empty .empty-icon { width:46px; height:46px; display:grid; place-items:center; margin-bottom:4px; border:1px solid var(--line); border-radius:12px; background:var(--card2); color:var(--brand); font-size:22px; }
-  .profile-editor-empty strong { color:var(--txt); font-size:16px; font-weight:650; }
-  .profile-editor-empty p { max-width:420px; margin:0; font-size:12.5px; line-height:1.8; }
-  .profile-overview { display:grid; gap:18px; }
-  .profile-overview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--card2); }
-  .profile-overview-title { margin:0; font-size:20px; }
-  .profile-overview-meta { margin-top:5px; color:var(--muted); font-size:12px; }
-  .profile-overview-edit { border:1px solid var(--brand); background:transparent; color:var(--brand); border-radius:8px; padding:9px 13px; cursor:pointer; font:700 12px inherit; white-space:nowrap; }
-  .readonly-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-  .readonly-field { min-height:76px; padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card2); }
-  .readonly-field.wide { grid-column:1/-1; }
-  .readonly-label { display:block; color:var(--muted); font-size:10.5px; margin-bottom:7px; }
-  .readonly-value { display:block; color:var(--txt); font-size:14px; font-weight:700; line-height:1.7; word-break:break-word; }
-  .readonly-value.ltr { direction:ltr; text-align:right; font-family:Consolas,monospace; letter-spacing:0; }
-  .readonly-imeis { display:flex; flex-wrap:wrap; gap:7px; }
-  .readonly-imei { direction:ltr; padding:7px 10px; border:1px solid var(--line); border-radius:7px; background:var(--input); color:var(--txt); font:700 12px Consolas,monospace; }
-  .readonly-flags { display:flex; flex-wrap:wrap; gap:7px; margin-top:2px; }
-  .readonly-flag { padding:6px 9px; border-radius:7px; border:1px solid var(--line); color:var(--muted); font-size:11px; }
-  .section-title { margin:0 0 14px; padding:0; border:0; background:none; color:var(--txt); font-size:17px; }
-  .profile-tabs { max-width:520px; gap:4px; margin:0 0 22px; padding:4px; border-radius:9px; background:var(--card2); }
-  .profile-tab { padding:8px 12px; border:0; border-radius:7px; background:transparent; font-size:12px; font-weight:600; }
-  .profile-tab.active { color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); box-shadow:0 2px 8px color-mix(in srgb,var(--brand) 30%,transparent); }
-  #view-base,#view-identity { display:block; max-width:920px; }
-  #view-base > .section-title,#view-base > .profile-tabs,#view-base > #imeis,#view-base > .add-btn,#view-base > .switches,#view-identity > .section-title { width:100%; }
-  label { margin:10px 0 5px; font-size:12px; font-weight:600; }
-  input[type=text],textarea { padding:10px 12px; border-radius:8px; font-size:13px; background:var(--input); }
-  input[type=text]:focus,textarea:focus { box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 15%,transparent); }
-  .imei-row { margin-bottom:7px; }
-  .field-row { gap:7px; }
-  .paste-btn { min-width:44px; padding:0 10px; border-radius:8px; font-size:11.5px; }
-  .paste-btn .paste-ico { font-size:13px; }
-  .paste-btn .paste-label { font-size:11px; }
-  .icon-btn { width:40px; height:40px; border-radius:8px; font-size:18px; }
-  .add-btn { width:max-content; padding:8px 12px; border-radius:8px; }
-  .switches { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-  .switch { min-height:70px; padding:11px 12px; border-radius:9px; background:var(--card2); }
-  .switch .t { font-size:12.5px; font-weight:600; }
-  .switch .d { font-size:10.5px; }
-  .save { width:auto; min-width:190px; margin:20px 0 0; padding:11px 18px; border-radius:8px; background:var(--brand); font-size:13px; }
-  .save:hover { filter:none; opacity:.9; }
-  .log-item,.settings-section,.inquiry-card,.exitban-result-card { border-radius:9px; background:var(--card2); }
-  .api-health-toast { border-radius:10px; box-shadow:0 18px 50px rgba(16,24,40,.16); }
-  .p-badge { font-size:10px; padding:3px 8px; font-weight:600; }
-  .release-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px; padding:12px 14px;
-    border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line)); border-radius:10px;
-    background:color-mix(in srgb,var(--danger) 6%,var(--card)); }
-  .release-btn { background:var(--danger); color:#fff; border:0; border-radius:9px; padding:10px 16px;
-    font-weight:700; cursor:pointer; }
-  .release-btn:hover { filter:brightness(1.07); }
+  .device-results { display:grid; gap:10px; margin:12px 0 16px; }
+  .device-result { border:1px solid var(--line); border-inline-start:3px solid var(--faint);
+    background:var(--card); border-radius:10px; padding:12px; }
+  .device-result.good { border-inline-start-color:var(--ok); }
+  .device-result.bad { border-inline-start-color:var(--danger); }
+  .device-result.running { border-inline-start-color:var(--busy); }
+  .device-result-head { display:flex; align-items:center; gap:8px; justify-content:space-between;
+    flex-wrap:wrap; }
+  .device-result-head .serial { direction:ltr; font-family:var(--mono); font-size:12px; font-weight:700; }
+  .device-result-profile { color:var(--muted); font-size:11px; margin-top:5px; }
+  .device-result-text { color:var(--muted); font-size:12px; line-height:1.8; white-space:pre-line;
+    word-break:break-word; margin-top:7px; }
+  .device-result-time { font-size:10.5px; color:var(--faint); direction:ltr; margin-top:6px;
+    font-family:var(--mono); }
+  .exitban-result-card { border-radius:12px; padding:14px 16px; margin:12px 0;
+    border:1px solid var(--line); background:var(--card); }
+  .exitban-result-card.not_checked { border-color:var(--line); background:var(--card2); color:var(--muted); }
+  .exitban-result-card.clear { border-color:color-mix(in srgb,var(--ok) 35%,var(--line));
+    background:var(--ok-soft); color:var(--ok); }
+  .exitban-result-card.blocked { border-color:color-mix(in srgb,var(--danger) 35%,var(--line));
+    background:var(--danger-soft); color:var(--danger); }
+  .exitban-result-head { display:flex; justify-content:space-between; gap:12px; align-items:center;
+    font-weight:700; }
+  .exitban-result-text { margin-top:10px; line-height:1.8; font-size:13px; }
+  .exitban-result-time { margin-top:8px; font-size:10.5px; opacity:.75; direction:ltr; text-align:right;
+    font-family:var(--mono); }
+  .soon { display:inline-flex; align-items:center; color:var(--busy); background:var(--busy-soft);
+    border-radius:999px; padding:4px 11px; font-size:11px; font-weight:600; }
+  /* blocked-profile release panel */
+  .release-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px;
+    padding:12px 14px; border:1px solid color-mix(in srgb,var(--danger) 30%,var(--line));
+    border-radius:12px; background:var(--danger-soft); }
+  .release-btn { display:inline-flex; align-items:center; gap:7px; border:0; background:var(--danger);
+    color:#fff; border-radius:10px; padding:10px 16px; font-family:inherit; font-size:12.5px;
+    font-weight:650; cursor:pointer; transition:.15s; }
+  .release-btn:hover { background:color-mix(in srgb,var(--danger) 86%,#000); }
   .release-hint { color:var(--muted); font-size:11.5px; line-height:1.7; }
-  .irica-version { display:inline-block; margin-top:6px; padding:2px 10px; border:1px solid var(--line);
-    border-radius:999px; color:var(--muted); font-size:10.5px; direction:ltr; }
+  /* --- system debug + logs viewer --- */
+  .system-debug-card { display:grid; gap:12px; }
+  .system-debug-row { display:flex; align-items:center; justify-content:space-between; gap:12px;
+    flex-wrap:wrap; }
+  .system-debug-help { color:var(--muted); font-size:11.5px; line-height:1.8; }
+  .system-log-list { display:grid; gap:7px; max-height:260px; overflow:auto; }
+  .system-log-item { display:flex; align-items:center; gap:8px; border:1px solid var(--line);
+    border-radius:9px; padding:8px 10px; background:var(--card); }
+  .system-log-name { direction:ltr; text-align:left; font-family:var(--mono); font-weight:700;
+    font-size:11px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .system-log-meta { color:var(--faint); font-size:10px; white-space:nowrap; direction:ltr;
+    font-family:var(--mono); }
+  .system-log-open { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--brand);
+    color:var(--brand); background:transparent; border-radius:8px; padding:5px 10px; cursor:pointer;
+    font-family:inherit; font-size:11px; font-weight:650; transition:.15s; }
+  .system-log-open:hover { background:var(--brand-soft); }
+  .system-log-viewer { min-height:230px; max-height:440px; overflow:auto; white-space:pre-wrap;
+    word-break:break-word; direction:ltr; text-align:left; padding:12px; border:1px solid var(--line);
+    border-radius:10px; background:#0b0f1c; color:#cdd9f0; font-family:var(--mono); font-size:11px;
+    line-height:1.7; }
+  /* telegram token state (never displayed) */
+  .token-badge { display:inline-flex; align-items:center; gap:6px; margin:0 0 8px; padding:5px 11px;
+    border-radius:999px; font-size:11.5px; font-weight:650; border:1px solid transparent; }
+  .token-badge.ok { color:var(--ok); background:var(--ok-soft); }
+  .token-badge.warn { color:var(--busy); background:var(--busy-soft); }
+  #tg_token { -webkit-text-security:disc; user-select:none; }
+  /* --- read-only profile overview --- */
+  .profile-overview { display:grid; gap:16px; }
+  .profile-overview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
+    padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card2); }
+  .profile-overview-title { margin:0; font-size:17px; font-weight:750; }
+  .profile-overview-meta { margin-top:4px; color:var(--muted); font-size:12px; }
+  .profile-overview-edit { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--brand);
+    background:transparent; color:var(--brand); border-radius:10px; padding:9px 13px; cursor:pointer;
+    font-family:inherit; font-size:12px; font-weight:650; white-space:nowrap; transition:.15s; }
+  .profile-overview-edit:hover { background:var(--brand-soft); }
+  .readonly-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .readonly-field { min-height:72px; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
+    background:var(--card2); }
+  .readonly-field.wide { grid-column:1/-1; }
+  .readonly-label { display:block; color:var(--muted); font-size:10.5px; margin-bottom:6px; }
+  .readonly-value { display:block; color:var(--txt); font-size:13.5px; font-weight:650; line-height:1.7;
+    word-break:break-word; }
+  .readonly-value.ltr { direction:ltr; text-align:right; font-family:var(--mono); letter-spacing:0; }
+  .readonly-imeis { display:flex; flex-wrap:wrap; gap:7px; }
+  .readonly-imei { direction:ltr; padding:6px 10px; border:1px solid var(--line); border-radius:8px;
+    background:var(--card); color:var(--txt); font-family:var(--mono); font-size:12px; font-weight:700; }
+  .readonly-flags { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+  .readonly-flag { padding:5px 10px; border-radius:8px; border:1px solid var(--line); color:var(--muted);
+    background:var(--card); font-size:11px; }
+  /* --- floating log notifications (top-left) --- */
+  .lognotif-wrap { position:fixed; top:14px; left:14px; z-index:70; display:flex;
+    flex-direction:column; gap:8px; width:min(360px,86vw); pointer-events:none; }
+  .lognotif { pointer-events:auto; background:var(--card); border:1px solid var(--line);
+    border-inline-start:4px solid var(--brand); border-radius:12px; padding:10px 30px 10px 12px;
+    box-shadow:var(--shadow-2); position:relative; opacity:0; transform:translateX(-14px);
+    transition:.25s; }
+  .lognotif.show { opacity:1; transform:translateX(0); }
+  .lognotif.s-success,.lognotif.s-healthy { border-inline-start-color:var(--ok); }
+  .lognotif.s-error,.lognotif.s-problem { border-inline-start-color:var(--danger); }
+  .lognotif.s-warn,.lognotif.s-retry,.lognotif.s-advanced { border-inline-start-color:var(--busy); }
+  .lognotif .t { font-size:12.5px; font-weight:700; display:flex; gap:6px; align-items:center; min-width:0; }
+  .lognotif .m { font-size:11.5px; color:var(--muted); margin-top:4px; line-height:1.6;
+    max-height:54px; overflow:hidden; }
+  .lognotif .x { position:absolute; top:4px; inset-inline-end:5px; border:0; background:transparent;
+    color:var(--faint); font-size:15px; cursor:pointer; padding:2px 6px; border-radius:6px; }
+  .lognotif .x:hover { color:var(--danger); }
+  .lognotif .sn { font-size:10.5px; color:var(--info); direction:ltr; margin-top:3px;
+    font-family:var(--mono); }
+  .notif-toggle { position:fixed; top:14px; left:14px; z-index:69; display:inline-flex;
+    align-items:center; gap:7px; font-size:11.5px; font-weight:600; padding:6px 12px;
+    border-radius:999px; border:1px solid var(--line); cursor:pointer; background:var(--card);
+    color:var(--muted); font-family:inherit; box-shadow:var(--shadow-1); }
+  .notif-toggle:hover { color:var(--txt); border-color:var(--line-strong); }
+  /* --- telegram API health toast --- */
+  .api-health-toast { position:fixed; top:16px; left:50%; transform:translate(-50%,-18px);
+    z-index:2147483000; min-width:min(520px,calc(100vw - 28px)); max-width:720px;
+    border:1px solid var(--line); border-inline-start:5px solid var(--busy); border-radius:12px;
+    padding:12px 44px 12px 16px; background:var(--card); color:var(--txt); box-shadow:var(--shadow-2);
+    opacity:0; pointer-events:none; transition:.22s; font-size:13px; line-height:1.7; }
+  .api-health-toast.show { opacity:1; transform:translate(-50%,0); pointer-events:auto; }
+  .api-health-toast.ok { border-inline-start-color:var(--ok); }
+  .api-health-toast.fail { border-inline-start-color:var(--danger); }
+  .api-health-toast .api-meta { display:none; color:var(--muted); font-size:11px; direction:ltr;
+    text-align:left; font-family:var(--mono); }
+  .api-health-toast:hover .api-meta { display:block; }
+  .api-health-toast button { position:absolute; top:6px; inset-inline-end:8px; border:0;
+    background:transparent; color:var(--faint); font-size:20px; cursor:pointer; }
+  /* --- responsive --- */
   @media(max-width:1100px){
-    .sidebar{width:360px}.main{padding:24px}.switches{grid-template-columns:1fr}
+    .sidebar{width:350px;padding:14px 12px}
+    .main{padding:12px 16px 64px}
+    .switches{grid-template-columns:1fr}
   }
   @media(max-width:900px){
-    .layout{display:block}.sidebar{width:auto;max-height:none;border-inline-start:0;border-bottom:1px solid var(--line);overflow:visible}
-    #prof-list{max-height:60vh}
-    .main{padding:20px 16px}.head{grid-template-columns:1fr}.product-lockup{grid-column:1}.head-actions{grid-column:1;grid-row:2;justify-content:flex-start}
-    .active-profile-banner{grid-row:3}.stats{grid-template-columns:repeat(3,1fr)}
+    .layout{display:block}
+    .sidebar{width:auto;max-height:none;border-inline-start:0;border-block-start:1px solid var(--line)}
+    #prof-list{max-height:56vh}
+    .head{grid-template-columns:minmax(0,1fr);top:8px}
+    .head-actions{grid-column:1;grid-row:auto;justify-content:flex-start}
+    .active-profile-banner{grid-column:1;grid-row:auto}
+    .irica-version{grid-column:1;grid-row:auto;justify-self:start}
+    .stats{grid-template-columns:repeat(3,1fr)}
   }
   @media(max-width:640px){
-    .panel-title{font-size:20px}.stats{grid-template-columns:repeat(2,1fr)}.stats .stat:first-child{grid-column:1/-1}
-    #view-form,#view-logs,#view-telegram{padding:16px}.nav-tabs{overflow-x:auto;flex-wrap:nowrap}.nav-tab{min-width:120px}
-    #view-base,#view-identity{grid-template-columns:1fr}.readonly-grid{grid-template-columns:1fr}.readonly-field.wide{grid-column:auto}.profile-overview-head{flex-direction:column}.switches{grid-template-columns:1fr}.home-btn span{display:none}
+    .panel-title{font-size:15.5px}
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .stats .stat:first-child{grid-column:1/-1}
+    #view-form,#view-logs,#view-telegram{padding:14px}
+    .nav-tabs{overflow-x:auto;flex-wrap:nowrap}
+    .nav-tab{min-width:118px}
+    .readonly-grid{grid-template-columns:1fr}
+    .readonly-field.wide{grid-column:auto}
+    .profile-overview-head{flex-direction:column}
+    .inquiry-picker{grid-template-columns:1fr}
+    .device-result-head{align-items:flex-start;flex-direction:column}
+    .switches{grid-template-columns:1fr}
+    .home-btn span{display:none}
   }
 </style>
 </head>
@@ -2877,20 +2939,18 @@ PAGE_HEAD = """<!DOCTYPE html>
   <div class="main">
     <div class="card">
       <header class="head">
-        <div class="head-actions">
-          <a href="/" class="home-btn" title="بازگشت به انتخاب سامانه" aria-label="بازگشت به انتخاب سامانه">⌂ <span>سامانه‌ها</span></a>
-          <a href="/crm" class="home-btn" title="مدیریت مشتریان و پرونده‌ها" aria-label="مدیریت مشتریان و پرونده‌ها">👥 <span>CRM</span></a>
-          <button type="button" id="theme-toggle" class="theme-btn" onclick="toggleTheme()">حالت تاریک</button>
-          <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
-        </div>
         <div class="product-lockup">
-          <div class="logo" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19h16M6 16V8m4 8V8m4 8V8m4 8V8M4 8h16L12 3 4 8Z"/></svg>
-          </div>
+          <div class="logo" aria-hidden="true">R</div>
           <div>
             <div class="eyebrow">مرکز عملیات گمرک</div>
             <h1 class="panel-title">داشبورد مدیریت پرونده‌ها</h1>
           </div>
+        </div>
+        <div class="head-actions">
+          <a href="/" class="home-btn" title="بازگشت به انتخاب سامانه" aria-label="بازگشت به انتخاب سامانه"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span>سامانه‌ها</span></a>
+          <a href="/crm" class="home-btn" title="مدیریت مشتریان و پرونده‌ها" aria-label="مدیریت مشتریان و پرونده‌ها"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>CRM</span></a>
+          <button type="button" id="theme-toggle" class="theme-btn" onclick="toggleTheme()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><span>حالت تاریک</span></button>
+          <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/></svg><span>بستن سامانه</span></button>
         </div>
         <div class="active-profile-banner" id="subtitle">پروفایل فعال: در حال بارگذاری...</div>
         <div class="irica-version">نسخه __VERSION__</div>
@@ -2903,9 +2963,9 @@ PAGE_HEAD = """<!DOCTYPE html>
         <div class="stat s-blocked" data-filter="blocked" title="فیلتر مسدود"><div class="n" id="st-blocked">۰</div><div class="l">مسدود</div></div>
       </div>
       <div class="nav-tabs" id="main-tabs" role="tablist">
-        <div class="nav-tab active" id="tab-form" onclick="viewProfile(activeId)">پروفایل انتخاب‌شده</div>
-        <div class="nav-tab" id="tab-logs" onclick="showView('logs')">📋 لاگ‌ها</div>
-        <div class="nav-tab" id="tab-telegram" onclick="showView('telegram')">⚙️ تنظیمات کلی</div>
+        <div class="nav-tab active" id="tab-form" onclick="viewProfile(activeId)"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>پروفایل انتخاب‌شده</div>
+        <div class="nav-tab" id="tab-logs" onclick="showView('logs')"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>لاگ‌ها</div>
+        <div class="nav-tab" id="tab-telegram" onclick="showView('telegram')"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>تنظیمات کلی</div>
       </div>
       <div id="view-form"></div>
       <div id="view-logs" class="hidden"></div>
@@ -2913,10 +2973,10 @@ PAGE_HEAD = """<!DOCTYPE html>
     </div>
   </div>
   <div class="sidebar">
-    <div class="side-sec-title"><span>پروفایل‌ها</span><span style="display:inline-flex;align-items:center;gap:8px"><span id="profile-count"></span><span class="view-switch" role="group" aria-label="حالت نمایش لیست"><button type="button" id="vw-comfortable" aria-pressed="true" title="نمایش کارت کامل" onclick="setProfView('comfortable')">☰</button><button type="button" id="vw-compact" aria-pressed="false" title="نمایش فشرده" onclick="setProfView('compact')">≡</button></span></span></div>
+    <div class="side-sec-title"><span>پروفایل‌ها</span><span style="display:inline-flex;align-items:center;gap:8px"><span id="profile-count"></span><span class="view-switch" role="group" aria-label="حالت نمایش لیست"><button type="button" id="vw-comfortable" aria-pressed="true" title="نمایش کارت کامل" onclick="setProfView('comfortable')"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><button type="button" id="vw-compact" aria-pressed="false" title="نمایش فشرده" onclick="setProfView('compact')"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h10"/></svg></button></span></span></div>
     <button class="add-prof" onclick="newProfile()">+ پروفایل جدید</button>
     <div class="profile-search-wrap">
-      <span class="profile-search-icon">🔎</span>
+      <span class="profile-search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg></span>
       <input id="profile-search" type="search" autocomplete="off" placeholder="جستجو: نام، کد ملی، موبایل یا سریال" oninput="filterProfiles(this.value)">
       <button type="button" id="profile-search-clear" class="search-clear" aria-label="پاک کردن جستجو" onclick="clearProfileSearch()">×</button>
     </div>
@@ -2936,6 +2996,41 @@ var activeId = STORE.active_id;
 var logMode='profile';
 var statusFilter='all';
 var FA_DIGITS='۰۱۲۳۴۵۶۷۸۹';
+/* IRICA icon language: inline stroke SVG only (no emoji anywhere on the page). */
+var ICON={
+  moon:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+  sun:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  user:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>',
+  search:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
+  power:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/></svg>',
+  pin:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.1-7-11a7 7 0 0 1 14 0c0 4.9-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+  pencil:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>',
+  copy:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A2.5 2.5 0 0 1 2 12.5v-8A2.5 2.5 0 0 1 4.5 2h8A2.5 2.5 0 0 1 15 4.5V5"/></svg>',
+  trash:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>',
+  play:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5v14l12-7L7 5z"/></svg>',
+  stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
+  ban:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7l12.6 12.6"/></svg>',
+  eye:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.8 0 3.4.5 4.7 1.3M22 12s-3.6 7-10 7c-1.8 0-3.4-.5-4.7-1.3"/><path d="m3 3 18 18"/></svg>',
+  receipt:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.3-1.6-2.3 1.6-2.4-1.6-2.3 1.6L5 21V3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
+  card:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>',
+  link:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7.1.4l2.1-2.1a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 10a5 5 0 0 0-7.1-.4l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/></svg>',
+  check:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
+  checkCircle:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/></svg>',
+  xCircle:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
+  alert:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
+  info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  dot:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/></svg>',
+  minusCircle:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>',
+  clipboard:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+  save:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>',
+  unlock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/></svg>',
+  lock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  bell:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+  bellOff:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.5.6 4.3 1.4 5.6"/><path d="M17 17H3s3-2 3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="m3 3 18 18"/></svg>',
+  code:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 6-5-6-5"/><path d="M12 19h8"/></svg>',
+  pointer:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>'
+};
 function toFa(n){return String(n).replace(/\d/g,function(d){return FA_DIGITS[d];});}
 function statusOf(p){
   if(p.run_status==='busy')             return {key:'running',cls:'b-busy',   label:'در حال اجرا'};
@@ -2957,7 +3052,8 @@ function toggleTheme(){
 }
 function updateThemeButton(){
   var btn=document.getElementById('theme-toggle'); if(!btn)return;
-  btn.textContent=document.documentElement.getAttribute('data-theme')==='dark'?'☀️ حالت روشن':'🌙 حالت تاریک';
+  var dark=document.documentElement.getAttribute('data-theme')==='dark';
+  btn.innerHTML=(dark?ICON.sun:ICON.moon)+'<span>'+(dark?'حالت روشن':'حالت تاریک')+'</span>';
 }
 setInterval(function(){fetch('/state').then(function(r){return r.json();}).then(function(s){if(s&&s.error){return;}STORE=s;renderProfiles();}).catch(function(){});},3000);
 
@@ -2965,9 +3061,9 @@ function getProf(id){ return STORE.profiles.find(function(p){return p.id===id;})
 
 function profileRunButton(p,extraClass){
   var cls='mini-btn '+(extraClass||'');
-  if(p.registration_status==='blocked') return '<button class="'+cls+' blocked" disabled>⛔ غیرقابل ورود</button>';
-  if(p.run_status==='busy') return '<button class="'+cls+' stop" onclick="stopProfile(\''+p.id+'\','+p.runner_pid+')">⏹ توقف ربات</button>';
-  if(p.registration_status!=='success') return '<button class="'+cls+' start" onclick="startProfile(\''+p.id+'\')">▶ شروع به کار</button>';
+  if(p.registration_status==='blocked') return '<button class="'+cls+' blocked" disabled>'+ICON.ban+' غیرقابل ورود</button>';
+  if(p.run_status==='busy') return '<button class="'+cls+' stop" onclick="stopProfile(\''+p.id+'\','+p.runner_pid+')">'+ICON.stop+' توقف ربات</button>';
+  if(p.registration_status!=='success') return '<button class="'+cls+' start" onclick="startProfile(\''+p.id+'\')">'+ICON.play+' شروع به کار</button>';
   return '';
 }
 
@@ -2979,7 +3075,7 @@ function profileBrowserButton(p){
   return '<button type="button" class="browser-btn'+(visible?' visible':'')+'" '+
     'data-tip="'+(visible?'مرورگر روی صفحه است — کلیک: مخفی کردن برای صرفه‌جویی منابع':'مرورگر مخفی است — کلیک: نمایش برای مدیریت زنده')+'" '+
     'onclick="setBrowserVisible(\''+p.id+'\','+(!visible)+')">'+
-    (visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>';
+    (visible?ICON.eyeOff+' مخفی کردن مرورگر':ICON.eye+' نمایش مرورگر')+'</button>';
 }
 
 function setBrowserVisible(id,visible){
@@ -3040,8 +3136,8 @@ function renderProfiles(){
   });
   var count=document.getElementById('profile-count'); if(count)count.textContent=(profiles.length!==all.length)?(toFa(profiles.length)+' از '+toFa(all.length)):(toFa(all.length)+' مورد');
   if(!profiles.length){
-    el.innerHTML=(all.length?'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">🔍</div>پروفایلی با این مشخصات پیدا نشد.<div class="pe-hint">عبارت جستجو یا فیلتر وضعیت را تغییر دهید.</div></div>'
-                           :'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">👤</div>هنوز پروفایلی ثبت نشده است.<div class="pe-hint">با دکمه «+پروفایل جدید» اولین پروفایل را بسازید.</div></div>');
+    el.innerHTML=(all.length?'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">'+ICON.search+'</div>پروفایلی با این مشخصات پیدا نشد.<div class="pe-hint">عبارت جستجو یا فیلتر وضعیت را تغییر دهید.</div></div>'
+                           :'<div class="profiles-empty"><div class="pe-icon" aria-hidden="true">'+ICON.user+'</div>هنوز پروفایلی ثبت نشده است.<div class="pe-hint">با دکمه «+پروفایل جدید» اولین پروفایل را بسازید.</div></div>');
     return;
   }
   profiles.forEach(function(p){
@@ -3053,12 +3149,12 @@ function renderProfiles(){
     d.className='prof-item'+(isActive?' active':'');
     d.setAttribute('data-profile-id',p.id);
     // stable anatomy: avatar+identity+side(status,run) -> alerts -> footer(artifacts) -> actions
-    var artifacts=(p.receipt_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=receipt">🧾 رسید</a>':'')+
-      (p.payment_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=payment">💳 پرداخت</a>':'')+
-      (p.payment_link?'<a target="_blank" href="'+escHtml(p.payment_link)+'">🔗 لینک پرداخت</a>':'');
+    var artifacts=(p.receipt_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=receipt">'+ICON.receipt+' رسید</a>':'')+
+      (p.payment_screenshot?'<a target="_blank" href="/artifact?id='+encodeURIComponent(p.id)+'&kind=payment">'+ICON.card+' پرداخت</a>':'')+
+      (p.payment_link?'<a target="_blank" href="'+escHtml(p.payment_link)+'">'+ICON.link+' لینک پرداخت</a>':'');
     var alerts=
-      (p.registration_status==='blocked'?'<div class="prof-alert danger"><span class="ai">⛔</span><div><b>غیرقابل ورود — تلاش متوقف شد</b><div class="ad">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div></div></div>':'')+
-      (p.registration_status==='success'?'<div class="prof-alert ok"><span class="ai">✓</span><div><b>موفق — مرحله پرداخت</b></div></div>':'');
+      (p.registration_status==='blocked'?'<div class="prof-alert danger"><span class="ai">'+ICON.ban+'</span><div><b>غیرقابل ورود — تلاش متوقف شد</b><div class="ad">'+escHtml(p.runtime_error||'خطای غیرقابل ورود ثبت شده است')+'</div></div></div>':'')+
+      (p.registration_status==='success'?'<div class="prof-alert ok"><span class="ai">'+ICON.check+'</span><div><b>موفق — مرحله پرداخت</b></div></div>':'');
     var browserRow=(p.run_status==='busy'?'<div class="prof-browser-row">'+profileBrowserButton(p)+'</div>':'');
     d.innerHTML=
       '<div class="prof-head">'+
@@ -3075,13 +3171,13 @@ function renderProfiles(){
       (artifacts?'<div class="prof-foot"><div class="artifact-links">'+artifacts+'</div></div>':'')+
       '<div class="prof-actions">'+
         '<button class="ibtn'+(p.enabled?' on':'')+'" data-tip="'+(p.enabled?'فعال است — کلیک: غیرفعال کردن':'غیرفعال است — کلیک: فعال کردن')+'" '+
-          'onclick="toggleProfile(\''+p.id+'\','+(!p.enabled)+')">'+(p.enabled?'🟢':'⚪')+'</button>'+
+          'onclick="toggleProfile(\''+p.id+'\','+(!p.enabled)+')">'+ICON.power+'</button>'+
         '<button class="ibtn'+(isActive?' on':'')+'" data-tip="'+(isActive?'پروفایل فعال جاری':'انتخاب به‌عنوان پروفایل فعال')+'" '+
-          'onclick="activateProfile(\''+p.id+'\')">'+(isActive?'📌':'🎯')+'</button>'+
-        '<button class="ibtn" data-tip="مشاهده اطلاعات پروفایل" onclick="viewProfile(\''+p.id+'\')">◉</button>'+
-        '<button class="ibtn" data-tip="ویرایش اطلاعات پروفایل" onclick="editProfile(\''+p.id+'\')">✏️</button>'+
-        '<button class="ibtn" data-tip="کپی گرفتن از این پروفایل" onclick="cloneProfile(\''+p.id+'\')">📋</button>'+
-        '<button class="ibtn danger" data-tip="حذف کامل این پروفایل" onclick="deleteProfile(\''+p.id+'\')">🗑</button>'+
+          'onclick="activateProfile(\''+p.id+'\')">'+ICON.pin+'</button>'+
+        '<button class="ibtn" data-tip="مشاهده اطلاعات پروفایل" onclick="viewProfile(\''+p.id+'\')">'+ICON.user+'</button>'+
+        '<button class="ibtn" data-tip="ویرایش اطلاعات پروفایل" onclick="editProfile(\''+p.id+'\')">'+ICON.pencil+'</button>'+
+        '<button class="ibtn" data-tip="کپی گرفتن از این پروفایل" onclick="cloneProfile(\''+p.id+'\')">'+ICON.copy+'</button>'+
+        '<button class="ibtn danger" data-tip="حذف کامل این پروفایل" onclick="deleteProfile(\''+p.id+'\')">'+ICON.trash+'</button>'+
         '<button type="button" class="more-btn" data-tip="اکشن‌های بیشتر" aria-expanded="false" onclick="toggleCardMore(this)">⋯</button>'+
       '</div>';
     el.appendChild(d);
@@ -3131,7 +3227,7 @@ function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&l
 function withPaste(inputHtml){
   return '<div class="field-row">'+inputHtml+
     '<button type="button" class="paste-btn" title="پیست از کلیپ‌بورد" aria-label="پیست کردن در این کادر" onclick="pasteInto(this)">'+
-    '<span class="paste-ico" aria-hidden="true">📋</span><span class="paste-label">پیست</span></button></div>';
+    '<span class="paste-ico" aria-hidden="true">'+ICON.clipboard+'</span><span class="paste-label">پیست</span></button></div>';
 }
 
 /* Text-e clipboard ra tamiz mikonad: raqam-haye farsi/arabi -> ASCII,
@@ -3183,7 +3279,7 @@ function pasteInto(btn){
 function buildExitbanResult(p){
   var status=p.exitban_status||'not_checked';
   var titles={not_checked:'هنوز استعلامی انجام نشده است',clear:'ممنوع‌الخروج نیست',blocked:'ممنوع‌الخروج است'};
-  var icons={not_checked:'○',clear:'✓',blocked:'!'};
+  var icons={not_checked:ICON.minusCircle,clear:ICON.checkCircle,blocked:ICON.alert};
   var text=p.exitban_result||'پس از انجام استعلام، نتیجه رسمی در این کادر نمایش داده می‌شود.';
   return '<div id="exitban-result-card" class="exitban-result-card '+status+'">'+
     '<div class="exitban-result-head"><span>'+icons[status]+' '+titles[status]+'</span></div>'+
@@ -3193,7 +3289,7 @@ function buildExitbanResult(p){
 
 function renderProfileEditorEmpty(){
   var el=document.getElementById('view-form'); if(!el)return;
-  el.innerHTML='<div class="profile-editor-empty"><div class="empty-icon" aria-hidden="true">✎</div><strong>پروفایلی برای ویرایش انتخاب نشده</strong><p>برای ویرایش، یک پروفایل را از منوی سمت راست انتخاب کنید.</p></div>';
+  el.innerHTML='<div class="profile-editor-empty"><div class="empty-icon" aria-hidden="true">'+ICON.pencil+'</div><strong>پروفایلی برای ویرایش انتخاب نشده</strong><p>برای ویرایش، یک پروفایل را از منوی سمت راست انتخاب کنید.</p></div>';
   var subtitle=document.getElementById('subtitle');
   if(subtitle)subtitle.textContent='برای شروع، یک پروفایل را انتخاب کنید';
 }
@@ -3204,7 +3300,7 @@ function readonlyField(label,value,cls,wide){
 function buildProfileOverview(p){
   var imeis=(p.imeis||[]).map(function(v){return '<span class="readonly-imei">'+escHtml(v)+'</span>';}).join('')||'<span class="readonly-value">سریالی ثبت نشده است</span>';
   return '<div class="profile-overview">'+
-    '<div class="profile-overview-head"><div><h2 class="profile-overview-title">'+escHtml(p.title||p.national||'بدون عنوان')+'</h2><div class="profile-overview-meta">نمایش اطلاعات ثبت‌شده این پروفایل</div></div><button type="button" class="profile-overview-edit" onclick="editProfile(\''+p.id+'\')">✏️ ویرایش اطلاعات</button></div>'+
+    '<div class="profile-overview-head"><div><h2 class="profile-overview-title">'+escHtml(p.title||p.national||'بدون عنوان')+'</h2><div class="profile-overview-meta">نمایش اطلاعات ثبت‌شده این پروفایل</div></div><button type="button" class="profile-overview-edit" onclick="editProfile(\''+p.id+'\')">'+ICON.pencil+' ویرایش اطلاعات</button></div>'+
     '<div class="profile-tabs">'+
       '<button type="button" aria-label="تب اطلاعات پایه" class="profile-tab active" onclick="showProfileSection(\'base\')">اطلاعات پایه</button>'+
       '<button type="button" aria-label="تب اطلاعات هویتی" class="profile-tab" onclick="showProfileSection(\'identity\')">اطلاعات هویتی</button>'+
@@ -3255,9 +3351,9 @@ function buildForm(p){
     '<div class="switches">'+
       '<div class="switch"><div><div class="t">زدن تیک «قبول دارم»</div><div class="d">اگر خاموش باشد تیک زده نمی‌شود</div></div>'+
         '<label class="toggle"><input type="checkbox" id="confirm_on"'+(p.no_confirm_check?'':' checked')+'><span class="track"></span></label></div>'+
-      '<div class="switch"><div><div class="t">🐞 حالت دیباگ</div><div class="d">قبل از هر مرحله مکث می‌کند</div></div>'+
+      '<div class="switch"><div><div class="t">'+ICON.code+' حالت دیباگ</div><div class="d">قبل از هر مرحله مکث می‌کند</div></div>'+
         '<label class="toggle"><input type="checkbox" id="debug_on"'+(p.debugging?' checked':'')+'><span class="track"></span></label></div>'+
-      '<div class="switch"><div><div class="t">✋ مدیریت دستی</div><div class="d">صفحه اول باز می‌شود؛ خودت تا کد ۴رقمی برو، تیک بزن، دکمه بالای صفحه را بزن → brute-force</div></div>'+
+      '<div class="switch"><div><div class="t">'+ICON.pointer+' مدیریت دستی</div><div class="d">صفحه اول باز می‌شود؛ خودت تا کد ۴رقمی برو، تیک بزن، دکمه بالای صفحه را بزن → brute-force</div></div>'+
         '<label class="toggle"><input type="checkbox" id="manual_on"'+(p.manual_manage?' checked':'')+'><span class="track"></span></label></div>'+
     '</div>'+
     '</div>'+
@@ -3277,8 +3373,8 @@ function buildForm(p){
       '<div class="inquiry-card"><h3>استعلام ممنوع‌الخروجی</h3>'+buildExitbanResult(p)+'<button type="button" class="save" onclick="runExitbanInquiry(activeId)">استعلام آنلاین خروج از کشور</button><div id="exitban-status" class="hint"></div></div>'+
       '<div class="inquiry-card"><h3>استعلام اقساط و وام پرداخت‌نشده</h3><span class="soon">به‌زودی</span></div>'+
     '</div>'+
-    (p.registration_status==='blocked'?'<div class="release-row"><button type="button" class="release-btn" onclick="releaseBlockedProfile(activeId)">🔓 آزادسازی و شروع مجدد</button><span class="release-hint">پروفایل آزاد می‌شود و بعد از ذخیرهٔ ویرایش می‌توانید دوباره ربات را اجرا کنید</span></div>':'')+
-    '<button type="submit" class="save">💾 ذخیره پروفایل</button>'+
+    (p.registration_status==='blocked'?'<div class="release-row"><button type="button" class="release-btn" onclick="releaseBlockedProfile(activeId)">'+ICON.unlock+' آزادسازی و شروع مجدد</button><span class="release-hint">پروفایل آزاد می‌شود و بعد از ذخیرهٔ ویرایش می‌توانید دوباره ربات را اجرا کنید</span></div>':'')+
+    '<button type="submit" class="save">'+ICON.save+' ذخیره پروفایل</button>'+
     '<div class="toast" id="toast"></div>'+
   '</form>';
 }
@@ -3304,7 +3400,7 @@ function addImei(val){
   var wrap=document.getElementById('imeis');
   var row=document.createElement('div'); row.className='imei-row';
   row.innerHTML='<input type="text" class="ltr" placeholder="۱۵ رقم" value="'+escHtml(val||'')+'">'+
-    '<button type="button" class="paste-btn" title="پیست از کلیپ‌بورد" aria-label="پیست کردن در این کادر" onclick="pasteInto(this)"><span class="paste-ico" aria-hidden="true">📋</span><span class="paste-label">پیست</span></button>'+
+    '<button type="button" class="paste-btn" title="پیست از کلیپ‌بورد" aria-label="پیست کردن در این کادر" onclick="pasteInto(this)"><span class="paste-ico" aria-hidden="true">'+ICON.clipboard+'</span><span class="paste-label">پیست</span></button>'+
     '<button type="button" class="icon-btn" title="حذف">×</button>';
   row.querySelector('.icon-btn').onclick=function(){row.remove();};
   wrap.appendChild(row);
@@ -3458,8 +3554,8 @@ function renderLogs(){
   if(!list.length){listEl.innerHTML='<div class="log-empty">هنوز لاگی ثبت نشده</div>';return;}
   list.forEach(function(log){
     var d=document.createElement('div'); d.className='log-item '+(log.status||'');
-    var icon={'error':'❌','success':'✅','warn':'⚠️','info':'ℹ️'}[log.status]||'•';
-    d.innerHTML='<div class="log-top"><span>'+icon+' '+escHtml(log.step||'')+'</span><span>'+escHtml(log.ts||'')+'</span></div><div class="log-msg">'+escHtml(log.message||'')+'</div>'+(log.title?'<div class="hint">👤 '+escHtml(log.title)+'</div>':'');
+    var icon={'error':ICON.xCircle,'success':ICON.checkCircle,'warn':ICON.alert,'info':ICON.info}[log.status]||ICON.dot;
+    d.innerHTML='<div class="log-top"><span class="log-step">'+icon+' '+escHtml(log.step||'')+'</span><span class="log-ts">'+escHtml(log.ts||'')+'</span></div><div class="log-msg">'+escHtml(log.message||'')+'</div>'+(log.title?'<div class="hint">'+ICON.user+' '+escHtml(log.title)+'</div>':'');
     listEl.appendChild(d);
   });
 }
@@ -3480,13 +3576,13 @@ setInterval(refreshLogs,10000);
 var NOTIF_ON=localStorage.getItem('irica-lognotif')!=='0';
 var NOTIF_SEEN={};
 var NOTIF_READY=false;
-var NOTIF_ICON={success:'✅',error:'❌',warn:'⚠️',info:'ℹ️'};
+var NOTIF_ICON={success:ICON.checkCircle,error:ICON.xCircle,warn:ICON.alert,info:ICON.info};
 
 function logKey(l){return (l.ts||'')+'|'+(l.step||'')+'|'+(l.message||'').slice(0,60);}
 
 function updateNotifToggle(){
   var b=document.getElementById('notif-toggle'); if(!b)return;
-  b.textContent=NOTIF_ON?'🔔 اعلان لاگ: روشن':'🔕 اعلان لاگ: خاموش';
+  b.innerHTML=(NOTIF_ON?ICON.bell:ICON.bellOff)+'<span>'+(NOTIF_ON?'اعلان لاگ: روشن':'اعلان لاگ: خاموش')+'</span>';
   b.style.top=(NOTIF_ON?'auto':'14px');
   b.style.bottom=(NOTIF_ON?'14px':'auto');
 }
@@ -3514,10 +3610,10 @@ function pushLogNotif(l){
   var d=document.createElement('div');
   d.className='lognotif s-'+st;
   d.innerHTML='<button class="x" aria-label="بستن" onclick="this.parentNode.remove()">×</button>'+
-    '<div class="t">'+(NOTIF_ICON[st]||'•')+' <span>'+escHtml(l.step||'رویداد جدید')+'</span>'+
+    '<div class="t">'+(NOTIF_ICON[st]||ICON.dot)+' <span>'+escHtml(l.step||'رویداد جدید')+'</span>'+
     '<span style="margin-inline-start:auto;font-size:10.5px;color:var(--muted);direction:ltr">'+escHtml(l.ts||'')+'</span></div>'+
     (l.imei?'<div class="sn">سریال: '+escHtml(l.imei)+'</div>':'')+
-    (l.title?'<div class="sn">👤 '+escHtml(l.title)+'</div>':'')+
+    (l.title?'<div class="sn">'+ICON.user+' '+escHtml(l.title)+'</div>':'')+
     '<div class="m">'+escHtml(l.message||'')+'</div>';
   wrap.appendChild(d);
   requestAnimationFrame(function(){d.classList.add('show');});
@@ -3552,7 +3648,7 @@ function buildServiceResults(p,service){
     if (row.serial2) {
         serialDisplay += ' / ' + escHtml(row.serial2);
     }
-    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-profile">👤 پروفایل: '+escHtml(p.title||p.national||'بدون عنوان')+'</div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
+    return '<div class="device-result '+profileResultClass(st)+'"><div class="device-result-head"><span class="serial">'+serialDisplay+'</span><strong>'+(PROFILE_RESULT_FA[st]||escHtml(st))+'</strong></div><div class="device-result-profile">'+ICON.user+' پروفایل: '+escHtml(p.title||p.national||'بدون عنوان')+'</div><div class="device-result-text">'+escHtml(row.result||'بدون توضیح')+'</div>'+(row.checked_at?'<div class="device-result-time">'+escHtml(row.checked_at)+'</div>':'')+'</div>';
   }).join('');
   if(error)html+='<div class="device-result bad"><strong>خطای اجرا — '+profileInquiryLabel(p,service)+'</strong><div class="device-result-text">'+escHtml(error)+'</div></div>';
   return html;
@@ -3561,7 +3657,7 @@ function buildDeviceInquiryPanel(p){
   var service=PROFILE_INQUIRY_SERVICE;
   var results=service==='all'?buildServiceResults(p,'gomrok')+buildServiceResults(p,'hamta'):buildServiceResults(p,service);
   var running=p.device_inquiry_pid&&((p.gomrok_inquiry_status==='running')||(p.hamta_inquiry_status==='running'));
-  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها'+(p?' — '+profileInquiryLabel(p,service):'')+'</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><div class="inquiry-actions"><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><button type="button" class="inquiry-stop" id="profile-inquiry-stop" '+(running?'':'disabled')+' onclick="stopProfileDeviceInquiry(activeId)">⛔ توقف استعلام</button></div><div id="profile-inquiry-status" class="hint"></div></div>';
+  return '<div class="inquiry-card" id="device-inquiry-card"><h3>استعلام وضعیت دستگاه‌ها'+(p?' — '+profileInquiryLabel(p,service):'')+'</h3><p class="hint">سریال‌های ذخیره‌شده در همین پروفایل بررسی می‌شوند.</p><div class="inquiry-picker" role="group" aria-label="نوع استعلام دستگاه"><button type="button" class="'+(service==='hamta'?'active':'')+'" onclick="selectProfileInquiry(\'hamta\')">استعلام همتا</button><button type="button" class="'+(service==='gomrok'?'active':'')+'" onclick="selectProfileInquiry(\'gomrok\')">استعلام گمرک</button><button type="button" class="'+(service==='all'?'active':'')+'" onclick="selectProfileInquiry(\'all\')">استعلام گمرک و همتا</button></div><div class="device-results">'+results+'</div><div class="inquiry-actions"><button type="button" class="save" id="profile-inquiry-start" '+(running?'disabled':'')+' onclick="runProfileDeviceInquiry(activeId)">'+(running?'در حال استعلام…':PROFILE_INQUIRY_FA[service])+'</button><button type="button" class="inquiry-stop" id="profile-inquiry-stop" '+(running?'':'disabled')+' onclick="stopProfileDeviceInquiry(activeId)">'+ICON.stop+' توقف استعلام</button></div><div id="profile-inquiry-status" class="hint"></div></div>';
 }
 function selectProfileInquiry(service){
   PROFILE_INQUIRY_SERVICE=service;
@@ -3657,7 +3753,7 @@ function showApiHealth(h){
   var box=document.getElementById('api-health-toast');
   if(!box||!h)return;
   box.classList.remove('ok','fail'); box.classList.add(h.ok?'ok':'fail','show');
-  document.getElementById('api-health-message').textContent=(h.ok?'✓ ':'⚠ ')+(h.message||'نتیجه تست نامشخص است');
+  document.getElementById('api-health-message').innerHTML=(h.ok?ICON.check:ICON.alert)+' '+escHtml(h.message||'نتیجه تست نامشخص است');
   document.getElementById('api-health-meta').textContent=(h.api_base||'')+(h.ts?' • '+h.ts:'');
   clearTimeout(window.__apiToastTimer);
   window.__apiToastTimer=setTimeout(function(){
@@ -3690,15 +3786,15 @@ function toggleSystemDebug(enabled){
 }
 function renderTelegram(){
   var tokenState = TELEGRAM.token_set
-    ? '<span class="token-badge ok">🔒 توکن ذخیره شده و محافظت‌شده است</span>'
-    : '<span class="token-badge warn">⚠ توکنی ثبت نشده است</span>';
+    ? '<span class="token-badge ok">'+ICON.lock+' توکن ذخیره شده و محافظت‌شده است</span>'
+    : '<span class="token-badge warn">'+ICON.alert+' توکنی ثبت نشده است</span>';
   document.getElementById('view-telegram').innerHTML='<div class="settings-section"><h3>تنظیمات کلی</h3><p class="hint">تنظیمات عمومی پنل و ربات در این بخش قرار می‌گیرد.</p></div>'+
     '<div class="settings-section system-debug-card"><div class="system-debug-row"><div><h3>Debug log سیستمی</h3><div class="system-debug-help">با فعال‌سازی، هر اجرای ربات یک فایل مستقل و تاریخ‌دار در پوشه logs/system داخل پوشه‌ی داده می‌سازد.</div></div><label class="toggle"><input id="system-debug-toggle" type="checkbox" '+(SYSTEM_DEBUG.enabled?'checked':'')+' onchange="toggleSystemDebug(this.checked)"><span class="track"></span></label></div><div class="system-debug-row"><strong>لاگ‌های موجود</strong><button type="button" class="system-log-open" onclick="loadSystemLogs()">به‌روزرسانی فهرست</button></div><div id="system-log-list" class="system-log-list"></div><pre id="system-log-viewer" class="system-log-viewer">یک فایل لاگ را برای مشاهده انتخاب کنید.</pre></div>'+
     '<label>API Base</label><input id="tg_api" type="text" class="ltr" value="'+escHtml(TELEGRAM.api_base||'https://api.telegram.org')+'">'+
     '<label>توکن ربات</label>'+tokenState+
     '<input id="tg_token" type="password" class="ltr" autocomplete="off" placeholder="'+(TELEGRAM.token_set?'برای تغییر، توکن جدید را وارد کنید (خالی = بدون تغییر)':'توکن ربات را وارد کنید')+'">'+
     '<label>Chat IDها (هر کدام یک خط)</label><textarea id="tg_ids" class="ltr">'+escHtml((TELEGRAM.chat_ids||[]).join('\n'))+'</textarea>'+
-    '<button class="save" onclick="saveTelegram()">💾 ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>'+
+    '<button class="save" onclick="saveTelegram()">'+ICON.save+' ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>'+
     '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>';
   renderSystemLogs();
   loadSystemLogs();
@@ -3763,36 +3859,72 @@ def render_page():
 HOME_PAGE = """<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>انتخاب سامانه گمرک</title><style>
+/* IRICA design system — light entry skin (system picker, no theme toggle). */
+@font-face{
+  font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+  font-weight:100 900;font-style:normal;font-display:swap;
+}
+@font-face{
+  font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-weight:700;font-style:normal;font-display:swap;
+}
+:root{
+  --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+  --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;
+  --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);
+  --on-brand:#ffffff;--ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+  --danger:#d93752;--danger-soft:rgba(217,55,82,.10);--warn:#b9770e;
+  --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+  --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+  --ring:0 0 0 3px rgba(68,96,227,.30);
+}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:28px 16px;
-  background:radial-gradient(1100px 560px at 82% -12%,#25386b 0,transparent 60%),radial-gradient(820px 480px at 6% 4%,#31245c 0,transparent 55%),#131830;
-  color:#eef2ff;font-family:Tahoma,"Segoe UI",sans-serif}
-.wrap{width:min(960px,94vw)}
+html{color-scheme:light}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px 16px;
+  background:radial-gradient(1000px 520px at 85% -12%,rgba(79,107,239,.12),transparent 60%),
+             radial-gradient(760px 440px at 6% 6%,rgba(124,92,245,.08),transparent 55%),
+             var(--bg);
+  color:var(--txt);font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;
+  font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{width:min(980px,94vw)}
 .top{text-align:center;margin-bottom:26px}
-h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
+.mono{width:56px;height:56px;border-radius:14px;margin:0 auto 14px;
+  background:linear-gradient(135deg,var(--brand),#7c5cf5);color:var(--on-brand);
+  display:grid;place-items:center;font-size:24px;font-weight:800;box-shadow:var(--shadow-1)}
+h1{font-size:30px;font-weight:800;margin:0 0 6px}.sub{color:var(--muted);margin:0}
+.irica-version{margin-top:12px;font-size:11.5px;color:var(--muted);border:1px solid var(--line);
+  background:var(--card);border-radius:999px;padding:3px 12px;display:inline-block}
 /* live stats strip */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 auto 30px;max-width:640px}
-.stat{background:#1c2540;border:1px solid #28385a;border-radius:16px;padding:14px 10px;text-align:center}
-.stat .n{font-size:26px;font-weight:900;line-height:1.1}
-.stat .l{font-size:11.5px;color:#98a8ca;margin-top:3px}
-.stat.total .n{color:#6f83ff}.stat.running .n{color:#f2b34a}.stat.success .n{color:#1fb883}.stat.blocked .n{color:#ef5b6b}
-.sites{display:grid;grid-template-columns:repeat(2,1fr);gap:22px}
-.site{position:relative;overflow:hidden;display:block;min-height:250px;padding:28px;border:1px solid #38445f;border-radius:24px;color:inherit;text-decoration:none;background:linear-gradient(145deg,#202a44,#1a2338);box-shadow:0 24px 70px #0007;transition:.2s}
-.site:hover{transform:translateY(-6px);border-color:#788cff;box-shadow:0 30px 80px #0009}
-.site[data-site="2"]{background:linear-gradient(145deg,#12382f,#10251f);border-color:#276453}
-.site[data-site="2"]:hover{border-color:#3fd39a}
-.num{display:grid;place-items:center;width:56px;height:56px;border-radius:18px;background:#6477ee;font-size:24px;font-weight:900}
-.site[data-site="2"] .num{background:#18a873}
-.site h2{font-size:26px;margin:38px 0 10px}.site p{color:#aeb8d4;line-height:1.9;margin:0 0 14px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 auto 28px;max-width:640px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 10px;text-align:center;box-shadow:var(--shadow-1)}
+.stat .n{font-size:24px;font-weight:800;line-height:1.2}
+.stat .l{font-size:11.5px;color:var(--muted);margin-top:3px}
+.stat.total .n{color:var(--brand)}.stat.running .n{color:var(--warn)}.stat.success .n{color:var(--ok)}.stat.blocked .n{color:var(--danger)}
+.sites{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.site{display:flex;flex-direction:column;padding:24px;border:1px solid var(--line);border-radius:18px;
+  color:inherit;text-decoration:none;background:var(--card);box-shadow:var(--shadow-1);
+  transition:transform .18s,border-color .18s,box-shadow .18s}
+.site:hover{transform:translateY(-5px);border-color:var(--brand);box-shadow:var(--shadow-2)}
+.site:focus-visible{outline:none;box-shadow:var(--ring),var(--shadow-2)}
+.tile{display:grid;place-items:center;width:48px;height:48px;border-radius:13px;flex:none;
+  background:var(--brand-soft);color:var(--brand);margin-bottom:16px}
+.site h2{font-size:17.5px;font-weight:750;margin:0 0 8px}.site p{color:var(--muted);font-size:13px;line-height:1.9;margin:0 0 14px;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:7px}
-.tag{font-size:11px;color:#c3ccea;background:#ffffff12;border:1px solid #ffffff1a;border-radius:999px;padding:4px 10px}
-.go{position:absolute;left:26px;bottom:24px;font-size:26px;transition:.2s}.site:hover .go{transform:translateX(-6px)}
-.foot{margin-top:26px;text-align:center;color:#6c7c9e;font-size:12px}
-.foot b{color:#9ca8c7;font-weight:700}
-.irica-version{margin-top:10px;font-size:11.5px;color:#6c7c9e;border:1px solid #ffffff1a;border-radius:999px;padding:3px 12px;display:inline-block}
-@media(max-width:700px){.sites{grid-template-columns:1fr}.site{min-height:200px}.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:27px}}
+.tag{font-size:11px;color:var(--muted);background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+.go{display:flex;align-items:center;gap:6px;margin-top:14px;padding-top:14px;
+  border-top:1px solid var(--line);font-size:12.5px;font-weight:600;color:var(--brand)}
+.go svg{transition:transform .18s}.site:hover .go svg{transform:translateX(-4px)}
+.foot{margin-top:26px;text-align:center;color:var(--muted);font-size:12px}
+.foot b{color:var(--txt);font-weight:700}
+@media(max-width:880px){.sites{grid-template-columns:1fr}.site p{flex:none}}
+@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:25px}}
 </style></head><body><main class="wrap">
-<div class="top"><h1>سامانه مدیریت گمرک</h1><p class="sub">سامانه موردنظر را انتخاب کنید</p><div class="irica-version">نسخه __VERSION__</div></div>
+<div class="top">
+  <div class="mono">R</div>
+  <h1>سامانه مدیریت گمرک</h1>
+  <p class="sub">سامانه موردنظر را انتخاب کنید</p>
+  <div class="irica-version">نسخه __VERSION__</div>
+</div>
 <section class="stats" id="stats" aria-label="خلاصه وضعیت">
   <div class="stat total"><div class="n" id="s-total">—</div><div class="l">کل پروفایل‌ها</div></div>
   <div class="stat running"><div class="n" id="s-running">—</div><div class="l">در حال اجرا</div></div>
@@ -3800,9 +3932,27 @@ h1{font-size:34px;margin:0 0 8px}.sub{color:#9ca8c7;margin:0}
   <div class="stat blocked"><div class="n" id="s-blocked">—</div><div class="l">مسدود</div></div>
 </section>
 <div class="sites">
-<a class="site" data-site="crm" href="/crm"><span class="num">۱</span><h2>پنل یکپارچه رجیستری</h2><p>چرخهٔ کامل دستگاه: استعلام، اتصال مسافر، تحویل، پرداخت و ثبت‌نام — با دفتر حساب مشتری و گزارش‌ها.</p><div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div><span class="go">←</span></a>
-<a class="site" data-site="2" href="/site-2"><span class="num">۲</span><h2>استعلام سلامت دستگاه</h2><p>استعلام وضعیت دستگاه از سایت گمرک (فقط صفحه اول) با یک پروفایل شخص و لیست دستگاه‌ها.</p><div class="tags"><span class="tag">استعلام سلامت</span><span class="tag">افزودن عمده</span><span class="tag">ترتیب تصادفی</span></div><span class="go">←</span></a>
-<a class="site" data-site="1" href="/site-1"><span class="num">۳</span><h2>پنل قدیمی رجیستری</h2><p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p><div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div><span class="go">←</span></a>
+<a class="site" data-site="crm" href="/crm">
+  <span class="tile"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></span>
+  <h2>پنل یکپارچه رجیستری</h2>
+  <p>چرخهٔ کامل دستگاه: استعلام، اتصال مسافر، تحویل، پرداخت و ثبت‌نام؛ با دفتر حساب مشتری و گزارش‌ها.</p>
+  <div class="tags"><span class="tag">CRM</span><span class="tag">پرونده</span><span class="tag">گزارش</span></div>
+  <span class="go">ورود به سامانه<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></span>
+</a>
+<a class="site" data-site="2" href="/site-2">
+  <span class="tile"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+  <h2>استعلام سلامت دستگاه</h2>
+  <p>استعلام وضعیت دستگاه از سایت گمرک (فقط صفحه اول) با یک پروفایل شخص و لیست دستگاه‌ها.</p>
+  <div class="tags"><span class="tag">استعلام سلامت</span><span class="tag">افزودن عمده</span><span class="tag">ترتیب تصادفی</span></div>
+  <span class="go">ورود به سامانه<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></span>
+</a>
+<a class="site" data-site="1" href="/site-1">
+  <span class="tile"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="m12 2 8 5H4l8-5Z"/></svg></span>
+  <h2>پنل قدیمی رجیستری</h2>
+  <p>پنل کامل: ویرایش پروفایل، لاگ‌ها، استعلامات و تنظیمات.</p>
+  <div class="tags"><span class="tag">ویرایش کامل</span><span class="tag">لاگ‌ها</span><span class="tag">استعلام خروج</span></div>
+  <span class="go">ورود به سامانه<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></span>
+</a>
 </div>
 <div class="foot">پنل روی <b>__PANEL_URL__</b> در حال اجراست · به‌روزرسانی خودکار هر ۵ ثانیه</div>
 </main>
@@ -3839,58 +3989,79 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
 <title>IRICA — سرویس رجیستری</title>
 <link rel="icon" href="/favicon.ico">
 <style>
-  /* v1.3.5 (operator request): default skin is LIGHT, matching every other
-     page; the old hardcoded dark palette is gone. */
+  /* IRICA design system — light entry skin (launch card, no theme toggle).
+     v1.3.5 (operator request) kept: light by default, like every other page. */
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+    font-weight:100 900;font-style:normal;font-display:swap;
+  }
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
   :root{
-    --bg:#f4f5f8; --card:#ffffff; --card2:#eef0f4; --line:#d9dde5;
-    --fg:#1a1d24; --muted:#5d6470; --brand:#4f6bef; --brand2:#7c5cf5;
-    --ok:#0c7d4f; --danger:#d93752; --warn:#b9770e;
+    --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;
+    --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);
+    --on-brand:#ffffff;--ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+    --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
+    --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+    --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+    --ring:0 0 0 3px rgba(68,96,227,.30);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
+  html{color-scheme:light}
   body{
-    font-family:"Segoe UI",Tahoma,sans-serif; background:var(--bg); color:var(--fg);
-    min-height:100vh; display:flex; align-items:center; justify-content:center;
-    padding:24px; transition:background .3s;
+    font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif; background:
+      radial-gradient(900px 480px at 85% -10%,rgba(79,107,239,.13),transparent 60%),
+      radial-gradient(720px 420px at 6% 8%,rgba(124,92,245,.09),transparent 55%),
+      var(--bg);
+    color:var(--txt); min-height:100vh; display:flex; align-items:center;
+    justify-content:center; padding:24px; font-size:14px; line-height:1.7;
+    -webkit-font-smoothing:antialiased;
   }
   .card{
     width:100%; max-width:430px; background:var(--card); border:1px solid var(--line);
-    border-radius:18px; padding:28px 26px;
-    box-shadow:0 14px 40px rgba(16,20,40,.10),0 2px 8px rgba(16,20,40,.06);
+    border-radius:18px; padding:30px 26px; box-shadow:var(--shadow-2);
   }
   .logo{width:56px; height:56px; border-radius:14px; margin:0 auto 14px;
-    background:linear-gradient(135deg,var(--brand),var(--brand2));
+    background:linear-gradient(135deg,var(--brand),#7c5cf5);
     display:flex; align-items:center; justify-content:center;
-    color:#fff; font-size:26px; font-weight:800;}
-  h1{font-size:17px; text-align:center; margin-bottom:4px;}
+    color:var(--on-brand); font-size:24px; font-weight:800; box-shadow:var(--shadow-1);}
+  h1{font-size:17px; font-weight:750; text-align:center; margin-bottom:4px;}
   .status{
     display:flex; align-items:center; justify-content:center; gap:8px;
-    font-size:13.5px; font-weight:700; margin:10px 0 20px; padding:9px 12px;
-    border-radius:10px; background:color-mix(in srgb,var(--ok) 12%,transparent);
-    color:var(--ok); border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);
+    font-size:13px; font-weight:700; margin:12px 0 18px; padding:9px 12px;
+    border-radius:10px; background:var(--ok-soft); color:var(--ok);
+    border:1px solid rgba(15,157,99,.25);
   }
-  .status.off{background:color-mix(in srgb,var(--danger) 12%,transparent);
-    color:var(--danger); border-color:color-mix(in srgb,var(--danger) 35%,transparent);}
+  .status.off{background:var(--danger-soft); color:var(--danger);
+    border-color:rgba(217,55,82,.25);}
   .dot{width:9px; height:9px; border-radius:50%; background:var(--ok);
-    box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent);
-    animation:pulse 2s infinite;}
+    box-shadow:0 0 0 3px rgba(15,157,99,.18); animation:pulse 2s infinite;}
   .status.off .dot{background:var(--danger); animation:none;
-    box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 25%,transparent);}
+    box-shadow:0 0 0 3px rgba(217,55,82,.18);}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
-  .stats{display:flex; gap:8px; margin-bottom:20px;}
+  .stats{display:flex; gap:8px; margin-bottom:18px;}
   .stat{flex:1; text-align:center; background:var(--card2); border:1px solid var(--line);
     border-radius:12px; padding:10px 6px;}
-  .stat b{display:block; font-size:19px;}
+  .stat b{display:block; font-size:19px; font-weight:800;}
   .stat span{font-size:10.5px; color:var(--muted);}
   .btn{width:100%; display:flex; align-items:center; justify-content:center; gap:9px;
-    border:none; border-radius:12px; padding:13px; font-size:14.5px; font-weight:800;
-    cursor:pointer; margin-bottom:10px; color:#fff; transition:.15s;
+    border:none; border-radius:12px; padding:12px; font-size:14px; font-weight:700;
+    cursor:pointer; margin-bottom:10px; color:var(--on-brand); transition:.15s;
     font-family:inherit;}
-  .btn:hover{filter:brightness(1.12); transform:translateY(-1px);}
+  .btn svg{flex:none;}
+  .btn:hover{filter:brightness(1.08); transform:translateY(-1px);}
   .btn:disabled{opacity:.55; cursor:wait; transform:none;}
-  .b-open{background:linear-gradient(135deg,var(--brand),var(--brand2));}
-  .b-estelam{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
-  .b-open2{background:var(--card2); color:var(--fg); border:1px solid var(--line);}
-  .b-stop{background:color-mix(in srgb,var(--danger) 88%,black);}
+  .btn:focus-visible{outline:none; box-shadow:var(--ring);}
+  .b-open{background:linear-gradient(135deg,var(--brand),#7c5cf5);}
+  .b-estelam,.b-open2{background:var(--card); color:var(--txt); border:1px solid var(--line-strong);}
+  .b-estelam:hover,.b-open2:hover{filter:none; border-color:var(--brand);
+    background:var(--brand-soft); color:var(--brand);}
+  .b-stop{background:var(--danger-soft); color:var(--danger);
+    border:1px solid rgba(217,55,82,.25);}
+  .b-stop:hover{filter:none; background:rgba(217,55,82,.16);}
   .foot{margin-top:14px; display:flex; align-items:center; justify-content:space-between;
     font-size:11px; color:var(--muted); direction:ltr;}
   .badge{padding:2px 9px; border-radius:99px; border:1px solid var(--line);
@@ -3901,7 +4072,7 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <div class="logo">I</div>
+  <div class="logo">R</div>
   <h1>سرویس رجیستری IRICA</h1>
   <div class="status" id="status"><span class="dot"></span><span id="status-text">در حال بررسی…</span></div>
   <div class="stats">
@@ -3911,12 +4082,17 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
     <div class="stat"><b id="s-blocked">—</b><span>مسدود</span></div>
   </div>
   <button class="btn b-open" id="btn-crm" onclick="location.href='/crm'">
-    🗂️ پنل یکپارچه رجیستری</button>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+    پنل یکپارچه رجیستری</button>
   <button class="btn b-estelam" id="btn-estelam" onclick="location.href='/site-2'">
-    🔍 پنل استعلام‌ها</button>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    پنل استعلام‌ها</button>
   <button class="btn b-open2" id="btn-open" onclick="location.href='/site-1'">
-    🏦 پنل قدیمی رجیستری</button>
-  <button class="btn b-stop" id="btn-stop">⏻ بستن سرویس</button>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="m12 2 8 5H4l8-5Z"/></svg>
+    پنل قدیمی رجیستری</button>
+  <button class="btn b-stop" id="btn-stop">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
+    بستن سرویس</button>
   <div class="off-msg" id="off-msg">سرویس خاموش شد.<br>این صفحه را ببندید؛ برای اجرای دوباره، میان‌بر دسکتاپ را اجرا کنید.</div>
   <div class="foot">
     <span>127.0.0.1:8750</span>
@@ -3945,14 +4121,14 @@ fetch('/site-1').then(function(r){return r.text()}).then(function(t){
   document.getElementById('status-text').textContent='سرویس در دسترس نیست';
 });
 document.getElementById('btn-stop').onclick=function(){
-  var b=this; b.disabled=true; b.textContent='در حال بستن…';
+  var b=this; var orig=b.innerHTML; b.disabled=true; b.textContent='در حال بستن…';
   fetch('/shutdown',{method:'POST'}).then(function(r){return r.json()}).then(function(){
     b.textContent='سرویس بسته شد ✓'; b.style.filter='grayscale(.4)';
     document.getElementById('status').classList.add('off');
     document.getElementById('status-text').textContent='سرویس خاموش شد';
     document.getElementById('off-msg').style.display='block';
   }).catch(function(){
-    b.disabled=false; b.textContent='⏻ بستن سرویس';
+    b.disabled=false; b.innerHTML=orig;
   });
 };
 </script>
@@ -3983,32 +4159,62 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
 <title>استعلام سلامت دستگاه</title>
 <link rel="icon" href="data:,">
 <style>
-  /* THEME: pishfarz = ROSHAN (light). data-theme="dark" -> tire. */
+  /* Bundled Vazirmatn — offline, no external fetch. Light theme is the
+     default; html[data-theme="dark"] swaps every token below. */
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+    font-weight:100 900;font-style:normal;font-display:swap;
+  }
+  @font-face{
+    font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
+
   :root{
-    --bg:#eef1f9;--card:#ffffff;--card2:#f4f6fc;--line:#d9deef;--txt:#1b2036;
-    --muted:#5c6484;--brand:#4f6bef;--brand2:#8250e6;--ok:#12a05f;--danger:#e0455a;--warn:#c97a10;
-    --logbg:#f7f9ff;--scroll:#cdd4ec;--sn:#4257a8;--shadow:rgba(20,30,70,.14);
-    --pill-neutral-bg:#e6eaf7;--pill-neutral-fg:#5c6484;
-    --pill-ok-bg:#dbf3e6;--pill-ok-fg:#0f7d4a;
-    --pill-danger-bg:#fbe0e5;--pill-danger-fg:#c22a3f;
-    --pill-warn-bg:#fcefd6;--pill-warn-fg:#9a5c08;
+    --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;--faint:#687291;
+    --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);--on-brand:#ffffff;
+    --ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+    --busy:#b9770e;--busy-soft:rgba(185,119,14,.13);
+    --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
+    --info:#2f6fd6;
+    --pill-neutral-bg:rgba(27,32,54,.06);--pill-neutral-fg:#5c6484;
+    --pill-ok-bg:rgba(15,157,99,.13);--pill-ok-fg:#0b7a4d;
+    --pill-danger-bg:rgba(217,55,82,.12);--pill-danger-fg:#b72740;
+    --pill-warn-bg:rgba(185,119,14,.14);--pill-warn-fg:#92590a;
+    --logbg:#f8f9fe;--scroll:rgba(27,32,54,.20);--sn:#4257a8;
+    --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+    --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+    --ring:0 0 0 3px rgba(68,96,227,.30);
   }
   html[data-theme="dark"]{
-    --bg:#171a26;--card:#1f2333;--card2:#262b3f;--line:#363d57;--txt:#eef1fb;
-    --muted:#aeb6d0;--brand:#7d95ff;--brand2:#a878ff;--ok:#3ad28b;--danger:#ff6678;--warn:#f6b94b;
-    --logbg:#1b2033;--scroll:#3a4260;--sn:#8ea2d8;--shadow:rgba(0,0,0,.32);
-    --pill-neutral-bg:#243050;--pill-neutral-fg:#a9b7e0;
-    --pill-ok-bg:#12321f;--pill-ok-fg:#3ad28b;
-    --pill-danger-bg:#3a1620;--pill-danger-fg:#ff6678;
-    --pill-warn-bg:#3a2f12;--pill-warn-fg:#f6b94b;
+    --bg:#101322;--card:#181c2e;--card2:#1f2438;--line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.14);--txt:#eef1fb;--muted:#aeb6d0;--faint:#848cad;
+    --brand:#7d95ff;--brand-hover:#93a7ff;--brand-soft:rgba(125,149,255,.12);--on-brand:#0e1330;
+    --ok:#3ad28b;--ok-soft:rgba(58,210,139,.13);
+    --busy:#f6b94b;--busy-soft:rgba(246,185,75,.13);
+    --danger:#ff6678;--danger-soft:rgba(255,102,120,.13);
+    --info:#9db9ff;
+    --pill-neutral-bg:rgba(255,255,255,.07);--pill-neutral-fg:#a9b7e0;
+    --pill-ok-bg:rgba(58,210,139,.14);--pill-ok-fg:#3ad28b;
+    --pill-danger-bg:rgba(255,102,120,.14);--pill-danger-fg:#ff6678;
+    --pill-warn-bg:rgba(246,185,75,.14);--pill-warn-fg:#f6b94b;
+    --logbg:#141828;--scroll:rgba(255,255,255,.16);--sn:#8ea2d8;
+    --shadow-1:0 1px 2px rgba(0,0,0,.35),0 1px 6px rgba(0,0,0,.25);
+    --shadow-2:0 6px 18px rgba(0,0,0,.45),0 2px 5px rgba(0,0,0,.30);
+    --ring:0 0 0 3px rgba(125,149,255,.30);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font-family:Tahoma,"Segoe UI",sans-serif;padding:22px 14px 60px}
-  /* arz-e kadr-e asli: 50% bishtar az ghabl (1080 -> 1620) va INTERACTIVE:
-     karbar ba dastgire-ha (kenar-e kadr) arz ra avaz mikonad va dar localStorage
-     zakhire mishavad. --wrapw ba JS set mishavad. */
-  .wrap{width:min(var(--wrapw,1620px),98vw);margin:0 auto;position:relative}
-  /* dastgire-haye taghyir-e arz (chap va rast) */
+  html{color-scheme:light}
+  html[data-theme="dark"]{color-scheme:dark}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;
+    font-size:14px;line-height:1.6;padding:0 14px 70px;-webkit-font-smoothing:antialiased}
+  :is(a,button,input,select,textarea):focus-visible{outline:none;box-shadow:var(--ring)}
+  .ic{flex:none;vertical-align:-2px}
+  /* main frame width: interactive (drag grips at the edges + presets),
+     persisted in localStorage; --wrapw is set by JS. */
+  .wrap{width:min(var(--wrapw,1620px),100%);margin:0 auto;position:relative}
   .wgrip{position:absolute;top:0;bottom:0;width:12px;cursor:ew-resize;z-index:5;
           display:flex;align-items:center;justify-content:center}
   .wgrip.l{inset-inline-start:-14px}
@@ -4017,73 +4223,140 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
                  transition:background .15s,height .15s}
   .wgrip:hover::before,.wgrip.drag::before{background:var(--brand);height:96px}
   body.wresize{cursor:ew-resize;user-select:none}
-  /* nav-e arz: dokme-haye amade +reset */
-  .wbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .wbar .wlab{color:var(--muted);font-size:12px}
-  .wbar .wbtn{background:var(--card2);border:1px solid var(--line);color:var(--muted);
-              border-radius:9px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit}
-  .wbar .wbtn:hover{color:var(--txt);border-color:var(--brand)}
-  .wbar .wbtn.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
-  /* layout: kadr-e etela'at-e shakhs SAMT-e RAST (sticky), baghiye chap */
-  .cols{display:grid;grid-template-columns:340px minmax(0,1fr);gap:18px;align-items:start}
-  @media(max-width:900px){.cols{grid-template-columns:1fr}}
-  .side{position:sticky;top:14px}
+  /* sticky topbar: brand monogram + live run pill + navigation + frame tools */
+  .topbar{position:sticky;top:0;z-index:40;border-bottom:1px solid var(--line);
+    background:color-mix(in srgb,var(--bg) 88%,transparent);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  .tb-in{width:min(var(--wrapw,1620px),100%);margin:0 auto;display:flex;align-items:center;
+    gap:10px;flex-wrap:wrap;padding:10px 0}
+  .brand{display:flex;align-items:center;gap:11px;min-width:0}
+  .brand .mono{width:38px;height:38px;border-radius:11px;flex:none;background:var(--brand);
+    color:var(--on-brand);display:grid;place-items:center;font-size:16px;font-weight:800}
+  .brand h1{font-size:16.5px;font-weight:750;margin:0;letter-spacing:-.2px;white-space:nowrap}
+  .brand .sub{font-size:11px;color:var(--muted);margin-top:1px;font-weight:400}
+  @media(max-width:600px){.brand h1{white-space:normal;font-size:15px}
+    .brand .sub{display:none}}
+  .irica-version{font-size:11px;color:var(--muted);border:1px solid var(--line);
+    border-radius:999px;padding:3px 11px;direction:ltr;align-self:center;white-space:nowrap}
+  /* live robot-status pill in the topbar (mirrors #run-state) */
+  .runpill{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;
+    background:var(--pill-neutral-bg);color:var(--muted);font-size:12px;font-weight:650;
+    border:1px solid var(--line);white-space:nowrap}
+  .runpill .rp-dot{width:8px;height:8px;border-radius:99px;background:var(--faint);flex:none}
+  .runpill.on{background:var(--busy-soft);color:var(--busy);border-color:transparent}
+  .runpill.on .rp-dot{background:var(--busy);animation:pulse 1.6s infinite}
+  .tb-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-inline-start:auto}
+  .tb-sep{width:1px;height:24px;align-self:center;background:var(--line);margin-inline-end:2px}
+  .navlink{display:inline-flex;align-items:center;gap:8px;padding:7px 13px;
+    border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--txt);
+    text-decoration:none;font-size:12.5px;font-weight:500;box-shadow:var(--shadow-1);
+    transition:border-color .15s,color .15s,background .15s;white-space:nowrap}
+  .navlink .ic{color:var(--muted)}
+  .navlink:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+  .navlink:hover .ic{color:var(--brand)}
+  .system-close-btn{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:10px;
+    font-size:12.5px;font-weight:650;border:1px solid var(--danger-soft);
+    background:var(--danger-soft);color:var(--danger);cursor:pointer;font-family:inherit;
+    transition:.15s;align-self:center;white-space:nowrap}
+  .system-close-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
+  /* frame width presets + theme toggle */
+  .wbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .wbar .wlab{color:var(--muted);font-size:11.5px}
+  .wbar .wbtn,.tbtn{background:var(--card);border:1px solid var(--line);color:var(--muted);
+    border-radius:9px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit;
+    display:inline-flex;align-items:center;gap:6px;min-height:28px;
+    transition:color .15s,border-color .15s,background .15s}
+  .wbar .wbtn:hover,.tbtn:hover{color:var(--txt);border-color:var(--line-strong);background:var(--card2)}
+  .wbar .wbtn.on{background:var(--brand);border-color:transparent;color:var(--on-brand);font-weight:650}
+  /* layout: person card sidebar (start side, sticky) + main column */
+  .cols{display:grid;grid-template-columns:330px minmax(0,1fr);gap:16px;align-items:start;
+    padding-top:18px}
+  .side{position:sticky;top:82px}
   .side .grid{grid-template-columns:1fr}
   .side .card{margin-bottom:0}
-  .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap}
-  h1{font-size:24px;margin:0}
-  a.back{color:var(--muted);text-decoration:none;font-size:13px;border:1px solid var(--line);
-         padding:7px 12px;border-radius:10px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:18px}
-  .irica-version{font-size:11.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 12px;direction:ltr;align-self:center}
-  .system-close-btn{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:10px;font-size:12.5px;font-weight:700;
-    border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line));background:color-mix(in srgb,var(--danger) 8%,var(--card));
-    color:var(--danger);cursor:pointer;font-family:inherit;transition:.15s;align-self:center}
-  .system-close-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
-  .card h2{margin:0 0 4px;font-size:17px}
+  @media(max-width:900px){
+    .cols{grid-template-columns:minmax(0,1fr)}
+    .wgrip{display:none}
+    .side{position:static}
+  }
+  /* cards */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;
+    margin-bottom:16px;box-shadow:var(--shadow-1)}
+  .card h2{display:flex;align-items:center;gap:10px;margin:0 0 4px;font-size:15px;font-weight:650}
+  .card h2 .hicon{width:28px;height:28px;border-radius:9px;background:var(--brand-soft);
+    color:var(--brand);display:grid;place-items:center;flex:none}
   .hint{color:var(--muted);font-size:12.5px;margin:0 0 14px}
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
   @media(max-width:760px){.grid{grid-template-columns:1fr}}
-  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px}
-  input{width:100%;padding:10px 12px;border-radius:11px;border:1px solid var(--line);
-        background:var(--card2);color:var(--txt);font-family:inherit;font-size:14px;direction:ltr;text-align:left}
-  input:focus{outline:2px solid var(--brand);outline-offset:1px}
-  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
-  button{border:0;border-radius:11px;padding:10px 16px;font-family:inherit;font-size:13.5px;
-         font-weight:700;cursor:pointer;color:#fff;background:var(--brand)}
-  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
-  button.ok{background:var(--ok)}
-  button.warn{background:var(--warn);color:#20160a}
-  button.danger{background:var(--danger)}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;font-weight:500}
+  input{width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);
+        background:var(--card);color:var(--txt);font-family:inherit;font-size:13.5px;
+        direction:ltr;text-align:left;transition:border-color .15s,box-shadow .15s}
+  input::placeholder{color:var(--faint)}
+  input:focus{outline:none;border-color:var(--brand);box-shadow:var(--ring)}
+  /* buttons: bordered base, brand-filled primary, soft danger, quiet ghost */
+  button{border:1px solid transparent;border-radius:10px;padding:8px 15px;font-family:inherit;
+         font-size:13px;font-weight:650;cursor:pointer;color:var(--on-brand);background:var(--brand);
+         display:inline-flex;align-items:center;gap:7px;min-height:34px;line-height:1.5;
+         transition:background .15s,border-color .15s,color .15s}
+  button:hover{background:var(--brand-hover)}
+  button.ghost{background:var(--card);border-color:var(--line-strong);color:var(--txt)}
+  button.ghost:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+  button.ok{background:var(--ok);color:#fff}
+  button.ok:hover{filter:brightness(1.08);background:var(--ok)}
+  button.warn{background:var(--busy-soft);color:var(--busy)}
+  button.warn:hover{background:var(--busy-soft);filter:brightness(.97)}
+  button.danger{background:var(--danger-soft);color:var(--danger)}
+  button.danger:hover{background:var(--danger);color:#fff}
   button:disabled{opacity:.5;cursor:not-allowed}
-  .errbox{margin-top:12px;border-inline-start:3px solid var(--danger);background:var(--pill-danger-bg);
-          border-radius:10px;padding:10px 12px;font-size:13px;display:none}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .errbox{margin-top:12px;border-inline-start:3px solid var(--danger);background:var(--danger-soft);
+          border-radius:10px;padding:10px 12px;font-size:12.5px;display:none}
   .errbox.show{display:block}
   .errbox ul{margin:0;padding-inline-start:18px}
+  /* device table */
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:right}
-  th{color:var(--muted);font-weight:600;font-size:12px}
-  td.mono{direction:ltr;text-align:left;font-family:Consolas,monospace}
-  /* natije-ye HAMTA chand-khati va tolani ast: bayad shekaste shavad, na sarriz */
-  td{vertical-align:top}
+  th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:start;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:11.5px;white-space:nowrap}
+  tbody tr:hover td{background:var(--card2)}
+  tbody tr:last-child td{border-bottom:none}
+  td.mono{direction:ltr;text-align:left;font-family:Consolas,ui-monospace,monospace}
+  /* the HAMTA result is long and multi-line: it must wrap, not overflow */
   td.res{white-space:pre-line;line-height:1.6;word-break:break-word;max-width:0}
+  #dev-list{overflow-x:auto}
   #dev-list table{table-layout:fixed}
   #dev-list col.c-idx{width:44px}
-  #dev-list col.c-sn{width:190px}
-  #dev-list col.c-st{width:230px}
-  #dev-list col.c-act{width:210px}
-  #dev-list td.c-num{text-align:center;color:var(--muted);font-weight:700}
-  .dev-name{font-weight:700;font-size:13px;margin-bottom:4px;word-break:break-word}
-  /* grid-e vaziat: (همتا/گمرک) x (label, badge, zaman-e estelam) — bedun-e table
-     tudartu ta selector-e radif-e jadval-e asli kharab nashavad */
-  .stgrid{display:grid;grid-template-columns:auto auto 1fr;gap:4px 8px;align-items:center}
+  #dev-list col.c-sn{width:200px}
+  #dev-list col.c-st{width:225px}
+  #dev-list col.c-act{width:225px}
+  #dev-list td.c-num{text-align:center;color:var(--faint);font-weight:650}
+  .dev-name{font-weight:650;font-size:13px;margin-bottom:4px;word-break:break-word}
+  /* mobile: the device table stacks into per-device blocks; every selector
+     the JS and live checks rely on (#dev-list tbody tr, td.res, …) is kept */
+  @media(max-width:760px){
+    #dev-list thead{display:none}
+    #dev-list table,#dev-list tbody,#dev-list tr,#dev-list td{display:block;width:auto}
+    #dev-list table{table-layout:auto}
+    #dev-list tr{border-bottom:1px solid var(--line);padding:10px 0}
+    #dev-list tr:last-child{border-bottom:none}
+    #dev-list td{border-bottom:none;padding:5px 0}
+    #dev-list td.c-num{display:none}
+    #dev-list td.res{max-width:none}
+  }
+  /* status grid: (hamta/gomrok) x (label, badge, inquiry time) — no nested
+     tables so the main table's row selectors stay intact */
+  .stgrid{display:grid;grid-template-columns:auto auto 1fr;gap:5px 8px;align-items:center}
   .stgrid .slab{color:var(--muted);font-size:10.5px;white-space:nowrap}
-  .stgrid .when{color:var(--muted);font-size:11px;direction:ltr;text-align:left;white-space:nowrap}
-  /* sariyal-e aval/dovom zir-e ham dar YEK sotoon (faza-ye kamtar) */
-  .mono.sn1,.mono.sn2{direction:ltr;text-align:left;font-family:Consolas,monospace;line-height:1.5}
+  .stgrid .when{color:var(--faint);font-size:11px;direction:ltr;text-align:left;white-space:nowrap;
+    font-family:Consolas,ui-monospace,monospace}
+  /* serials one and two stacked in a single column (less width) */
+  .mono.sn1,.mono.sn2{direction:ltr;text-align:left;font-family:Consolas,ui-monospace,monospace;line-height:1.5}
   .mono.sn2{color:var(--muted);font-size:12px;margin-top:2px}
   .mono.sn2::before{content:"↳ ";color:var(--line)}
-  .badge{display:inline-block;padding:3px 9px;border-radius:99px;font-size:11.5px;font-weight:700}
+  /* status badges + runtime chips: soft pills with a leading status dot */
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:2.5px 9px;border-radius:999px;
+    font-size:11px;font-weight:650;white-space:nowrap}
+  .badge::before{content:"";width:5px;height:5px;border-radius:99px;background:currentColor;flex:none}
   .b-pending{background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
   .b-running{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
   .b-healthy{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
@@ -4094,38 +4367,37 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .b-registered{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .b-blocked{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
   .b-unknown{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
-  .empty{color:var(--muted);text-align:center;padding:20px;font-size:13px}
-  /* --- entekhab-e no'-e estelam (hamta / gomrok / hame) --- */
-  .svc-pick{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-  .svc-pick label{margin:0;font-size:12.5px;color:var(--muted)}
-  .svc-btns{display:flex;gap:8px;flex-wrap:wrap;background:var(--card2);
-            border:1px solid var(--line);border-radius:13px;padding:5px}
+  .empty{color:var(--muted);text-align:center;padding:26px 18px;font-size:13px;
+    border:1px dashed var(--line-strong);border-radius:12px}
+  /* service picker: segmented control (the page's signature element) */
+  .svc-pick{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .svc-pick label{margin:0;font-size:12.5px;color:var(--muted);font-weight:500}
+  .svc-btns{display:inline-flex;gap:4px;background:var(--card2);
+            border:1px solid var(--line);border-radius:12px;padding:4px}
   .svc-btns .svc{background:transparent;border:1px solid transparent;color:var(--muted);
-                 border-radius:10px;padding:7px 13px;font-size:12.5px;font-weight:700;
-                 cursor:pointer;font-family:inherit}
-  .svc-btns .svc:hover{color:var(--txt);background:color-mix(in srgb,var(--brand) 10%,transparent)}
-  /* gozine-ye ENTEKHAB-SHODE: rang-e brand-e por +noar-e paeen (mesl-e tab-haye digar) */
-  .svc-btns .svc.on{position:relative;background:linear-gradient(135deg,var(--brand),var(--brand2));
-                    border-color:transparent;color:#fff;
-                    box-shadow:0 2px 10px color-mix(in srgb,var(--brand) 32%,transparent)}
-  .svc-btns .svc.on:hover{color:#fff;filter:brightness(1.05)}
-  .svc-btns .svc.on::after{content:"";position:absolute;inset-inline:22%;bottom:-5px;height:3px;
-                           border-radius:3px;background:var(--brand)}
-  /* sotoon-e vaziat: badge-e hamta va gomrok zir-e ham ba label-e kuchak */
+                 border-radius:9px;padding:7px 14px;font-size:12.5px;font-weight:650;
+                 cursor:pointer;font-family:inherit;min-height:32px;
+                 transition:color .15s,background .15s,box-shadow .15s}
+  .svc-btns .svc:hover{color:var(--txt)}
+  .svc-btns .svc.on{background:var(--brand);border-color:transparent;color:var(--on-brand);
+                    box-shadow:var(--shadow-1)}
+  /* status column: hamta and gomrok badges stacked with a small label */
   .stack{display:flex;align-items:center;gap:6px;margin-bottom:4px}
   .stack:last-child{margin-bottom:0}
   .slab{color:var(--muted);font-size:10.5px;min-width:26px}
   .res2{color:var(--muted);font-size:12px;margin-top:3px}
-  /* --- modiriat-e ejra --- */
+  /* run console strip */
   .runbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--card2);
-          border:1px solid var(--line);border-radius:14px;padding:12px 14px}
-  .dot{width:10px;height:10px;border-radius:99px;background:var(--muted);flex:0 0 auto}
-  .dot.on{background:var(--ok);box-shadow:0 0 0 4px rgba(58,210,139,.16);animation:pulse 1.6s infinite}
-  @keyframes pulse{50%{box-shadow:0 0 0 9px rgba(58,210,139,0)}}
-  .runbar .st{font-size:13.5px;font-weight:700}
-  .runbar .meta{font-size:11.5px;color:var(--muted);direction:ltr}
+          border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .dot{width:10px;height:10px;border-radius:99px;background:var(--faint);flex:0 0 auto}
+  .dot.on{background:var(--busy);box-shadow:0 0 0 4px color-mix(in srgb,var(--busy) 18%,transparent);
+          animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{box-shadow:0 0 0 9px transparent}}
+  .runbar .st{font-size:13.5px;font-weight:650}
+  .runbar .meta{font-size:11.5px;color:var(--faint);direction:ltr;
+    font-family:Consolas,ui-monospace,monospace}
   .chips{display:flex;gap:7px;flex-wrap:wrap;margin-inline-start:auto}
-  .chip{font-size:11.5px;padding:3px 9px;border-radius:99px;
+  .chip{font-size:11.5px;padding:3px 10px;border-radius:999px;font-weight:600;
         background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
   .chip.healthy{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.problem,.chip.error{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
@@ -4135,89 +4407,105 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .chip.registered{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.blocked{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
   .chip.unknown{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
-  /* --- log-e interactive dar kadr-e sabet --- */
+  /* interactive log console */
   .logtools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
-  .logtools input[type=search]{flex:1 1 180px;min-width:140px;direction:rtl;text-align:right}
   .filters{display:flex;gap:6px;flex-wrap:wrap}
-  .f{font-size:11.5px;padding:5px 10px;border-radius:99px;border:1px solid var(--line);
-     background:transparent;color:var(--muted);cursor:pointer}
-  .f.on{background:var(--brand);border-color:var(--brand);color:#fff}
+  .f{font-size:11.5px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);
+     background:transparent;color:var(--muted);cursor:pointer;min-height:28px;
+     transition:color .15s,border-color .15s,background .15s}
+  .f:hover{color:var(--txt);border-color:var(--line-strong);background:var(--card2)}
+  .f.on{background:var(--brand);border-color:transparent;color:var(--on-brand);font-weight:650}
+  .srch{position:relative;flex:1 1 190px;min-width:150px;display:inline-flex;align-items:center}
+  .srch .ic{position:absolute;inset-inline-start:11px;color:var(--faint);pointer-events:none}
+  .srch input[type=search]{width:100%;padding:8px 12px;padding-inline-start:32px;
+    direction:rtl;text-align:right}
   .logbox{height:340px;overflow-y:auto;overflow-x:hidden;border:1px solid var(--line);
-          border-radius:14px;background:var(--logbg);padding:8px}
+          border-radius:12px;background:var(--logbg);padding:8px}
   .logbox::-webkit-scrollbar{width:9px}
   .logbox::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:9px}
-  .li{border:1px solid var(--line);border-inline-start-width:3px;border-radius:11px;
-      padding:9px 11px;margin-bottom:7px;background:var(--card);cursor:pointer;transition:.15s}
-  .li:hover{background:var(--card2);transform:translateY(-1px)}
+  .li{border:1px solid var(--line);border-inline-start-width:3px;border-radius:10px;
+      padding:9px 11px;margin-bottom:7px;background:var(--card);cursor:pointer;
+      transition:background .15s,transform .15s,box-shadow .15s}
+  .li:hover{background:var(--card2);transform:translateY(-1px);box-shadow:var(--shadow-1)}
   .li.s-healthy{border-inline-start-color:var(--ok)}
   .li.s-problem,.li.s-error{border-inline-start-color:var(--danger)}
-  .li.s-retry,.li.s-advanced,.li.s-warn,.li.s-running{border-inline-start-color:var(--warn)}
+  .li.s-retry,.li.s-advanced,.li.s-warn,.li.s-running{border-inline-start-color:var(--busy)}
   .li.s-info{border-inline-start-color:var(--brand)}
   .li .h{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px}
-  .li .h b{font-size:12.5px}
-  .li .ts{color:var(--muted);font-size:11px;direction:ltr}
-  .li .sn{color:var(--sn);font-size:11.5px;direction:ltr;margin-top:3px;font-family:Consolas,monospace}
-  .li .msg{font-size:12.5px;margin-top:5px;line-height:1.55;max-height:36px;overflow:hidden}
+  .li .h b{font-size:12.5px;font-weight:650}
+  .li .h b .ic{color:currentColor}
+  .li .ts{color:var(--faint);font-size:11px;direction:ltr;font-family:Consolas,ui-monospace,monospace}
+  .li .sn{color:var(--sn);font-size:11.5px;direction:ltr;margin-top:3px;
+    font-family:Consolas,ui-monospace,monospace}
+  .li .msg{font-size:12.5px;margin-top:5px;line-height:1.6;max-height:36px;overflow:hidden}
   .li.open .msg{max-height:none}
-  .li .more{font-size:11px;color:var(--muted);margin-top:4px}
+  .li .more{font-size:11px;color:var(--faint);margin-top:4px}
   .logempty{color:var(--muted);text-align:center;padding:26px;font-size:13px}
-  /* --- notification-e log-e zende (bala-chap) --- */
-  .lognotif-wrap{position:fixed;top:14px;left:14px;z-index:70;display:flex;flex-direction:column;
-    gap:8px;width:min(360px,86vw);pointer-events:none}
+  /* live log notifications (top corner) */
+  .lognotif-wrap{position:fixed;top:14px;inset-inline-end:14px;z-index:70;display:flex;
+    flex-direction:column;gap:8px;width:min(360px,86vw);pointer-events:none}
   .lognotif{pointer-events:auto;background:var(--card);border:1px solid var(--line);
-    border-inline-start:4px solid var(--brand);border-radius:12px;padding:10px 32px 10px 12px;
-    box-shadow:0 16px 40px var(--shadow);position:relative;opacity:0;
+    border-inline-start:4px solid var(--brand);border-radius:12px;padding:10px 12px;
+    padding-inline-end:34px;
+    box-shadow:var(--shadow-2);position:relative;opacity:0;
     transform:translateX(-14px);transition:.26s}
   .lognotif.show{opacity:1;transform:translateX(0)}
   .lognotif.s-healthy{border-inline-start-color:var(--ok)}
   .lognotif.s-problem,.lognotif.s-error{border-inline-start-color:var(--danger)}
-  .lognotif.s-retry,.lognotif.s-advanced,.lognotif.s-warn,.lognotif.s-running{border-inline-start-color:var(--warn)}
-  .lognotif .t{font-size:12.5px;font-weight:800;display:flex;gap:6px;align-items:center}
+  .lognotif.s-retry,.lognotif.s-advanced,.lognotif.s-warn,.lognotif.s-running{border-inline-start-color:var(--busy)}
+  .lognotif .t{font-size:12.5px;font-weight:700;display:flex;gap:6px;align-items:center}
   .lognotif .m{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6;
     max-height:54px;overflow:hidden}
-  .lognotif .sn{font-size:10.5px;color:var(--sn);direction:ltr;margin-top:3px;font-family:Consolas,monospace}
-  .lognotif .x{position:absolute;top:5px;left:7px;border:0;background:transparent;
-    color:var(--muted);font-size:15px;cursor:pointer;padding:1px 5px}
-  .notif-toggle{position:fixed;bottom:14px;left:14px;z-index:69;font-size:11.5px;padding:6px 10px;
-    border-radius:99px;border:1px solid var(--line);cursor:pointer;background:var(--card);
-    color:var(--muted);font-family:inherit}
-  .bulkbar{background:var(--card2);border:1px dashed var(--line);border-radius:14px;padding:14px;margin-top:14px;display:none}
+  .lognotif .sn{font-size:10.5px;color:var(--sn);direction:ltr;margin-top:3px;
+    font-family:Consolas,ui-monospace,monospace}
+  .lognotif .x{position:absolute;top:6px;inset-inline-end:8px;border:0;background:transparent;
+    color:var(--muted);font-size:15px;cursor:pointer;padding:1px 5px;min-height:0}
+  .lognotif .x:hover{color:var(--txt);background:transparent}
+  .notif-toggle{position:fixed;bottom:14px;inset-inline-end:14px;z-index:69;font-size:11.5px;
+    padding:6px 11px;border-radius:999px;border:1px solid var(--line);cursor:pointer;
+    background:var(--card);color:var(--muted);font-family:inherit;box-shadow:var(--shadow-1);
+    display:inline-flex;align-items:center;gap:7px;min-height:0}
+  .notif-toggle:hover{color:var(--txt);border-color:var(--line-strong);background:var(--card2)}
+  .bulkbar{background:var(--card2);border:1px solid var(--line);border-radius:12px;
+    padding:14px;margin-top:14px;display:none}
   .bulkbar.show{display:block}
-  .bulkbar .n{font-size:12.5px;color:var(--warn);margin-bottom:10px}
+  .bulkbar .n{font-size:12.5px;color:var(--busy);margin-bottom:10px;font-weight:600}
   .toast{position:fixed;top:16px;left:50%;transform:translate(-50%,-18px);z-index:60;
          min-width:min(420px,92vw);background:var(--card);border:1px solid var(--line);
-         border-inline-start-width:4px;border-radius:12px;padding:12px 40px 12px 14px;
-         box-shadow:0 20px 50px var(--shadow);opacity:0;pointer-events:none;transition:.28s}
+         border-inline-start-width:4px;border-radius:12px;padding:12px 14px;
+         padding-inline-end:38px;
+         box-shadow:var(--shadow-2);opacity:0;pointer-events:none;transition:.28s}
   .toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
   .toast.ok{border-inline-start-color:var(--ok)}
   .toast.fail{border-inline-start-color:var(--danger)}
   .toast .t{font-size:13.5px;font-weight:700}
-  .toast .m{font-size:11.5px;color:var(--muted);display:none;direction:ltr;text-align:left;margin-top:5px}
+  .toast .m{font-size:11.5px;color:var(--muted);display:none;direction:ltr;text-align:left;margin-top:5px;
+    font-family:Consolas,ui-monospace,monospace}
   .toast:hover .m{display:block}
-  .toast button{position:absolute;top:6px;left:8px;background:transparent;border:0;color:var(--muted);font-size:16px;padding:2px 6px}
-  /* --- theme switch (roshan / tire) --- */
-  .tbtn{background:var(--card2);border:1px solid var(--line);color:var(--muted);
-        border-radius:9px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit}
-  .tbtn:hover{color:var(--txt);border-color:var(--brand)}
-  /* --- sotoon-e natije: kholase +modal-e motn-e kamel --- */
+  .toast button{position:absolute;top:6px;inset-inline-end:8px;background:transparent;border:0;
+    color:var(--muted);font-size:16px;padding:2px 6px;min-height:0}
+  .toast button:hover{background:transparent;color:var(--txt)}
+  /* result column: short excerpt + full-text modal */
   .res-short{white-space:pre-line;line-height:1.6;word-break:break-word}
-  .res-more{margin-top:6px;background:transparent;border:1px solid var(--line);
-            color:var(--brand);border-radius:9px;padding:4px 10px;font-size:11.5px;
-            font-weight:700;cursor:pointer;font-family:inherit}
-  .res-more:hover{border-color:var(--brand);background:var(--card2)}
+  .res-more{margin-top:6px;background:transparent;border:1px solid var(--line-strong);
+            color:var(--brand);border-radius:8px;padding:3px 10px;font-size:11.5px;
+            font-weight:650;cursor:pointer;font-family:inherit;min-height:26px}
+  .res-more:hover{border-color:var(--brand);background:var(--brand-soft)}
   .modal{position:fixed;inset:0;z-index:90;display:none;align-items:center;justify-content:center;
          background:rgba(8,12,26,.55);padding:20px}
   .modal.show{display:flex}
   .modal .box{background:var(--card);border:1px solid var(--line);border-radius:16px;
               width:min(760px,94vw);max-height:86vh;display:flex;flex-direction:column;
-              box-shadow:0 24px 60px var(--shadow)}
+              box-shadow:var(--shadow-2)}
   .modal .hd{display:flex;align-items:center;justify-content:space-between;gap:10px;
              padding:14px 16px;border-bottom:1px solid var(--line)}
   .modal .hd h3{margin:0;font-size:15px}
-  .modal .hd .sn{font-size:11.5px;color:var(--muted);direction:ltr;font-family:Consolas,monospace}
+  .modal .hd .sn{font-size:11.5px;color:var(--muted);direction:ltr;
+    font-family:Consolas,ui-monospace,monospace}
   .modal .bd{padding:16px;overflow:auto;white-space:pre-line;line-height:1.75;font-size:13.5px}
   .modal .ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-start}
-  .modal .x{background:transparent;border:0;color:var(--muted);font-size:20px;cursor:pointer;padding:0 6px}
+  .modal .x{background:transparent;border:0;color:var(--muted);font-size:20px;cursor:pointer;padding:0 6px;min-height:0}
+  .modal .x:hover{color:var(--txt);background:transparent}
 </style>
 </head>
 <body>
@@ -4238,59 +4526,71 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="bd" id="res-modal-body"></div>
     <div class="ft">
-      <button type="button" class="ghost" onclick="copyResModal()">📋 کپی متن</button>
+      <button type="button" class="ghost" onclick="copyResModal()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>کپی متن</span></button>
       <button type="button" onclick="closeResModal()">بستن</button>
     </div>
   </div>
 </div>
-<div class="wrap">
-  <div class="top">
-    <h1>استعلام سلامت دستگاه</h1>
+<header class="topbar">
+  <div class="tb-in">
+    <div class="brand">
+      <div class="mono" aria-hidden="true">R</div>
+      <div>
+        <h1>استعلام سلامت دستگاه</h1>
+        <div class="sub">استعلام همتا و گمرک، یکجا</div>
+      </div>
+    </div>
     <div class="irica-version">نسخه __VERSION__</div>
-    <div class="wbar">
-      <span class="wlab">عرض کادر:</span>
-      <button type="button" class="wbtn" data-w="1080" onclick="setWrapW(1080)">معمولی</button>
-      <button type="button" class="wbtn" data-w="1620" onclick="setWrapW(1620)">عریض</button>
-      <button type="button" class="wbtn" data-w="max" onclick="setWrapW('max')">تمام‌عرض</button>
-      <button type="button" class="tbtn" id="theme-btn" onclick="toggleTheme()">🌙 حالت تاریک</button>
-      <a class="back" href="/">← انتخاب سامانه</a>
-      <a class="back" href="/crm">👥 مدیریت پرونده‌ها</a>
-      <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود">⏻ بستن سامانه</button>
+    <div class="runpill" id="top-run-pill"><span class="rp-dot"></span><span class="rp-t">در حال بارگذاری…</span></div>
+    <div class="tb-tools">
+      <div class="wbar">
+        <span class="wlab">عرض کادر:</span>
+        <button type="button" class="wbtn" data-w="1080" onclick="setWrapW(1080)">معمولی</button>
+        <button type="button" class="wbtn" data-w="1620" onclick="setWrapW(1620)">عریض</button>
+        <button type="button" class="wbtn" data-w="max" onclick="setWrapW('max')">تمام‌عرض</button>
+        <button type="button" class="tbtn" id="theme-btn" onclick="toggleTheme()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><span>حالت تاریک</span></button>
+      </div>
+      <span class="tb-sep" aria-hidden="true"></span>
+      <a class="navlink" href="/"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>انتخاب سامانه</a>
+      <a class="navlink" href="/crm"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>مدیریت پرونده‌ها</a>
+      <button type="button" class="system-close-btn" onclick="closeWholeSystem()" title="همهٔ ربات‌ها متوقف و پنل خاموش می‌شود"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg><span>بستن سامانه</span></button>
     </div>
   </div>
+</header>
+<div class="wrap">
   <div class="wgrip r" id="wgrip-r" title="کشیدن برای تغییر عرض"></div>
   <div class="wgrip l" id="wgrip-l" title="کشیدن برای تغییر عرض"></div>
 
   <div class="cols">
   <aside class="side">
   <div class="card">
-    <h2>اطلاعات شخص</h2>
+    <h2><span class="hicon"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>اطلاعات شخص</h2>
     <p class="hint">یک پروفایل ثابت؛ برای همه استعلام‌ها استفاده می‌شود.</p>
     <div class="grid">
-      <div><label>کد ملی (۱۰ رقم)</label><input id="p-national" inputmode="numeric" maxlength="10" placeholder="0012345678"></div>
-      <div><label>تاریخ تولد (۱۳۷۵/۰۴/۲۹)</label><input id="p-birth" maxlength="10" placeholder="1375/04/29"></div>
-      <div><label>شماره موبایل (۰۹...)</label><input id="p-mobile" inputmode="numeric" maxlength="11" placeholder="09121234567"></div>
+      <div><label for="p-national">کد ملی (۱۰ رقم)</label><input id="p-national" inputmode="numeric" maxlength="10" placeholder="0012345678"></div>
+      <div><label for="p-birth">تاریخ تولد (۱۳۷۵/۰۴/۲۹)</label><input id="p-birth" maxlength="10" placeholder="1375/04/29"></div>
+      <div><label for="p-mobile">شماره موبایل (۰۹...)</label><input id="p-mobile" inputmode="numeric" maxlength="11" placeholder="09121234567"></div>
     </div>
-    <div class="row"><button onclick="savePerson()">💾 ذخیره اطلاعات شخص</button></div>
+    <div class="row"><button onclick="savePerson()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg><span>ذخیره اطلاعات شخص</span></button></div>
     <div class="errbox" id="p-err"></div>
   </div>
   </aside>
 
   <div class="colmain">
   <div class="card">
-    <h2>اطلاعات دستگاه</h2>
+    <h2><span class="hicon"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></span>اطلاعات دستگاه</h2>
     <p class="hint">نام دستگاه +سریال ۱۵ رقمی. سریال دوم اختیاری است (دو سیم‌کارت).</p>
     <div class="row">
-      <button onclick="startSingle()">➕ افزودن دستگاه</button>
-      <button class="ghost" onclick="startBulk()">📦 افزودن عمده</button>
+      <button onclick="startSingle()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>افزودن دستگاه</span></button>
+      <button class="ghost" onclick="startBulk()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span>افزودن عمده</span></button>
     </div>
 
     <div class="bulkbar" id="dev-form">
       <div class="n" id="dev-form-note"></div>
       <div class="grid">
-        <div><label>نام دستگاه</label><input id="d-name" maxlength="40" placeholder="آیفون ۱۷ محمد" style="direction:rtl;text-align:right"></div>
-        <div><label>سریال اول</label><input id="d-s1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></div>
-        <div><label>سریال دوم (اختیاری)</label><input id="d-s2" inputmode="numeric" maxlength="15" placeholder=""></div>
+        <div><label for="d-name">نام دستگاه</label><input id="d-name" maxlength="40" placeholder="آیفون ۱۷ محمد" style="direction:rtl;text-align:right"></div>
+        <div><label for="d-s1">سریال اول</label><input id="d-s1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></div>
+        <div><label for="d-s2">سریال دوم (اختیاری)</label><input id="d-s2" inputmode="numeric" maxlength="15" placeholder=""></div>
       </div>
       <div class="row" id="dev-form-actions"></div>
       <div class="errbox" id="d-err"></div>
@@ -4298,7 +4598,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h2>مدیریت اجرای استعلام</h2>
+    <h2><span class="hicon"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>مدیریت اجرای استعلام</h2>
     <p class="hint">کنترل مرورگر و پروسه استعلام در حال اجرا.</p>
     <div class="svc-pick">
       <label>نوع استعلام:</label>
@@ -4315,28 +4615,28 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
       <span class="chips" id="run-chips"></span>
     </div>
     <div class="row">
-      <button class="ok" id="btn-start-all" onclick="startAll()">🚀 شروع استعلام (در انتظارها)</button>
-      <button class="danger" onclick="stopRun()">⛔ توقف و بستن مرورگر</button>
-      <button class="warn" onclick="restartRun()">🔄 راه‌اندازی مجدد</button>
-      <button class="ghost" onclick="retryFailed()">↻ تلاش مجدد ناموفق‌ها</button>
-      <button class="ghost" onclick="refreshAll()">⟳ به‌روزرسانی وضعیت</button>
+      <button class="ok" id="btn-start-all" onclick="startAll()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>شروع استعلام (در انتظارها)</span></button>
+      <button class="danger" onclick="stopRun()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg><span>توقف و بستن مرورگر</span></button>
+      <button class="warn" onclick="restartRun()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg><span>راه‌اندازی مجدد</span></button>
+      <button class="ghost" onclick="retryFailed()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span>تلاش مجدد ناموفق‌ها</span></button>
+      <button class="ghost" onclick="refreshAll()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>به‌روزرسانی وضعیت</span></button>
     </div>
     <div class="errbox" id="run-err"></div>
   </div>
 
   <div class="card">
-    <h2>دستگاه‌ها</h2>
+    <h2><span class="hicon"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>دستگاه‌ها</h2>
     <p class="hint">نتیجه «سالم» یعنی پیام «شناسه ... در گمرک ورودی یافت نشد» گرفته شده است.</p>
     <div id="dev-list"></div>
   </div>
 
   <div class="card">
-    <h2>لاگ اجراهای اخیر</h2>
+    <h2><span class="hicon"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>لاگ اجراهای اخیر</h2>
     <p class="hint">روی هر لاگ کلیک کنید تا جزئیات کامل باز شود.</p>
     <div class="logtools">
       <div class="filters" id="log-filters"></div>
-      <input type="search" id="log-q" placeholder="جستجو در پیام یا سریال…" oninput="renderLogs()">
-      <button class="ghost" onclick="clearLogs()">🗑 پاک کردن لاگ</button>
+      <div class="srch"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="log-q" placeholder="جستجو در پیام یا سریال…" aria-label="جستجو در پیام یا سریال" oninput="renderLogs()"></div>
+      <button class="ghost" onclick="clearLogs()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>پاک کردن لاگ</span></button>
     </div>
     <div class="logbox" id="log-box"></div>
   </div>
@@ -4357,6 +4657,27 @@ var HAMTA_FA={pending:'در انتظار',running:'در حال استعلام',g
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function digits(s){return String(s||'').replace(/[^0-9]/g,'');}
+
+/* Inline SVG icon set — display only, no emoji anywhere on the page. */
+function icsvg(p){return '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none"'+
+  ' stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'+
+  ' aria-hidden="true">'+p+'</svg>';}
+var IC={
+  sun:icsvg('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'),
+  moon:icsvg('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
+  bell:icsvg('<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>'),
+  bellOff:icsvg('<path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/>'),
+  play:icsvg('<polygon points="5 3 19 12 5 21 5 3"/>'),
+  save:icsvg('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>'),
+  check:icsvg('<polyline points="20 6 9 17 4 12"/>'),
+  eye:icsvg('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'),
+  okc:icsvg('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
+  oct:icsvg('<polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
+  tri:icsvg('<path d="M10.29 3.86L.86 18a2 2 0 0 0 1.71 3h16.86a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+  rot:icsvg('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>'),
+  xc:icsvg('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'),
+  info:icsvg('<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>')
+};
 
 function showToast(ok,title,meta){
   var t=document.getElementById('toast');
@@ -4459,7 +4780,7 @@ function resCell(d,svc,prefix){
   if(flat.length<=RES_LIMIT) return '<span class="res-short">'+esc(prefix+flat)+'</span>';
   var head=esc(prefix+flat.slice(0,RES_LIMIT))+'…';
   return '<div class="res-short">'+head+'</div>'+
-    '<button class="res-more" onclick="showResModal(\''+esc(d.id)+'\',\''+svc+'\')">مشاهده کامل</button>';
+    '<button class="res-more" onclick="showResModal(\''+esc(d.id)+'\',\''+svc+'\')">'+IC.eye+' مشاهده کامل</button>';
 }
 function showResModal(id,svc){
   var d=(STATE.devices||[]).filter(function(x){return String(x.id)===String(id);})[0];
@@ -4493,7 +4814,7 @@ function renderRuntime(rt){
   var running=!!rt.running;
   dot.className='dot'+(running?' on':'');
   st.textContent=running?('در حال اجرا'+(rt.service_fa?(' — '+rt.service_fa):'')):'متوقف';
-  st.style.color=running?'var(--warn)':'var(--muted)';
+  st.style.color=running?'var(--busy)':'var(--muted)';
   meta.textContent=running?('pid '+rt.pid+(rt.started?(' · '+rt.started):'')):
     (rt.started?('آخرین اجرا: '+rt.started):'');
   // chips ba servis-e entekhab-shode hamahang mishavad
@@ -4503,6 +4824,11 @@ function renderRuntime(rt){
   chips.innerHTML=Object.keys(c).map(function(k){
     return '<span class="chip '+esc(k)+'">'+esc(fa[k]||k)+': '+toFa(c[k])+'</span>';
   }).join('');
+  // topbar live pill mirrors the run state
+  var tp=document.getElementById('top-run-pill');
+  if(tp){tp.classList.toggle('on',running);
+    var tpt=tp.querySelector('.rp-t');
+    if(tpt)tpt.textContent=running?'در حال اجرا':'متوقف';}
 }
 
 function toFa(n){var FA='۰۱۲۳۴۵۶۷۸۹';return String(n).replace(/[0-9]/g,function(d){return FA[d];});}
@@ -4568,8 +4894,8 @@ function startSingle(){
   document.getElementById('dev-form-note').textContent='افزودن یک دستگاه';
   clearDevForm();
   showErrors('d-err',[]);
-  devFormActions('<button onclick="saveDevice(false)">💾 ذخیره</button>'+
-    '<button class="ok" onclick="saveDevice(true)">💾 ذخیره و استعلام</button>'+
+  devFormActions('<button onclick="saveDevice(false)">'+IC.save+'<span>ذخیره</span></button>'+
+    '<button class="ok" onclick="saveDevice(true)">'+IC.save+'<span>ذخیره و استعلام</span></button>'+
     '<button class="ghost" onclick="closeDevForm()">انصراف</button>');
   document.getElementById('d-name').focus();
 }
@@ -4580,8 +4906,8 @@ function startBulk(){
   clearDevForm();
   showErrors('d-err',[]);
   bulkNote();
-  devFormActions('<button onclick="bulkNext()">💾 ذخیره و بعدی</button>'+
-    '<button class="ok" onclick="bulkFinish()">✅ پایان و برو به استعلام</button>'+
+  devFormActions('<button onclick="bulkNext()">'+IC.save+'<span>ذخیره و بعدی</span></button>'+
+    '<button class="ok" onclick="bulkFinish()">'+IC.check+'<span>پایان و برو به استعلام</span></button>'+
     '<button class="ghost" onclick="closeDevForm()">انصراف</button>');
   document.getElementById('d-name').focus();
 }
@@ -4670,9 +4996,9 @@ function pickSvc(s){
   });
   // dokme-ye shoro' dar tab-e «همه» sarih migoyad az kodam do samane estelam migirad
   var sb=document.getElementById('btn-start-all');
-  if(sb) sb.textContent = (s==='all')
-    ? '🚀 استعلام از گمرک و همتا (در انتظارها)'
-    : '🚀 شروع استعلام '+(SVC_FA[s]||'')+' (در انتظارها)';
+  if(sb) sb.innerHTML=IC.play+'<span>'+((s==='all')
+    ? 'استعلام از گمرک و همتا (در انتظارها)'
+    : 'شروع استعلام '+(SVC_FA[s]||'')+' (در انتظارها)')+'</span>';
   renderDevices();
   renderRuntime((STATE.runtime)||{});
 }
@@ -4688,7 +5014,7 @@ function applyTheme(t){
   var dark=(t==='dark');
   document.documentElement.setAttribute('data-theme', dark?'dark':'light');
   var b=document.getElementById('theme-btn');
-  if(b) b.textContent = dark ? '☀️ حالت روشن' : '🌙 حالت تاریک';
+  if(b) b.innerHTML=(dark?IC.sun:IC.moon)+'<span>'+(dark?'حالت روشن':'حالت تاریک')+'</span>';
 }
 function setTheme(t){applyTheme(t);try{localStorage.setItem(TKEY,t);}catch(e){}}
 function toggleTheme(){
@@ -4762,8 +5088,8 @@ function checkApiHealth(){
 var LOGS=[];
 var LOG_FILTER='all';
 var LOG_OPEN={};
-var LOG_ICON={healthy:'✅',problem:'⛔',advanced:'⚠️',retry:'🔁',running:'▶️',
-              error:'❌',warn:'⚠️',info:'ℹ️'};
+var LOG_ICON={healthy:IC.okc,problem:IC.oct,advanced:IC.tri,retry:IC.rot,running:IC.play,
+              error:IC.xc,warn:IC.tri,info:IC.info};
 var LOG_FA={healthy:'سالم',problem:'اشکال',advanced:'هشدار مهم',retry:'تلاش مجدد',
             running:'در حال اجرا',error:'خطا',warn:'هشدار',info:'اطلاع'};
 var LOG_TABS=[['all','همه'],['healthy','سالم'],['problem','اشکال'],
@@ -4823,7 +5149,7 @@ function logKey(l){return (l.ts||'')+'|'+(l.status||'')+'|'+(l.message||'').slic
 
 function updateNotifToggle(){
   var b=document.getElementById('notif-toggle'); if(!b)return;
-  b.textContent=NOTIF_ON?'🔔 اعلان لاگ: روشن':'🔕 اعلان لاگ: خاموش';
+  b.innerHTML=(NOTIF_ON?IC.bell:IC.bellOff)+'<span>اعلان لاگ: '+(NOTIF_ON?'روشن':'خاموش')+'</span>';
 }
 function toggleLogNotif(){
   NOTIF_ON=!NOTIF_ON;
@@ -4898,8 +5224,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
 
   :root{
     --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
-    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;--faint:#8a91ad;
-    --brand:#4f6bef;--brand-hover:#3d59d9;--brand-soft:rgba(79,107,239,.10);
+    --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;--faint:#687291;
+    --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);
     --on-brand:#ffffff;
     --ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
     --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
@@ -4910,11 +5236,11 @@ CRM_PAGE = r"""<!DOCTYPE html>
     --pill-warn-bg:rgba(185,119,14,.14);--pill-warn-fg:#92590a;
     --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
     --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
-    --ring:0 0 0 3px rgba(79,107,239,.28);
+    --ring:0 0 0 3px rgba(68,96,227,.30);
   }
   html[data-theme="dark"]{
     --bg:#101322;--card:#181c2e;--card2:#1f2438;--line:rgba(255,255,255,.08);
-    --line-strong:rgba(255,255,255,.14);--txt:#eef1fb;--muted:#aeb6d0;--faint:#7c84a3;
+    --line-strong:rgba(255,255,255,.14);--txt:#eef1fb;--muted:#aeb6d0;--faint:#848cad;
     --brand:#7d95ff;--brand-hover:#93a7ff;--brand-soft:rgba(125,149,255,.12);
     --on-brand:#0e1330;
     --ok:#3ad28b;--ok-soft:rgba(58,210,139,.13);
@@ -4932,7 +5258,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
   html{color-scheme:light}
   html[data-theme="dark"]{color-scheme:dark}
   body{margin:0;background:var(--bg);color:var(--txt);
-    font-family:Vazirmatn,"Segoe UI",Tahoma,"Segoe UI",sans-serif;
+    font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;
     font-size:14px;line-height:1.6;padding:24px 18px 70px;
     -webkit-font-smoothing:antialiased}
   .wrap{width:min(1240px,98vw);margin:0 auto}
@@ -4950,6 +5276,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .headacts{display:flex;gap:8px;align-items:center;padding-inline-start:14px;
     border-inline-start:1px solid var(--line);margin-inline-start:2px}
   :is(a,button,input,select,textarea,summary):focus-visible{outline:none;box-shadow:var(--ring)}
+  /* inline icons sit on the text baseline (flex boxes ignore this) */
+  svg.ic{vertical-align:-.18em}
   /* header */
   .head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
   .head h1{font-size:20px;font-weight:750;margin:0;flex:1;letter-spacing:-.3px;
@@ -4960,7 +5288,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .head h1 .sub{font-size:12px;color:var(--muted);margin-top:2px;font-weight:400;
     letter-spacing:0}
   .iconbtn{border:1px solid var(--line);background:var(--card);color:var(--txt);
-    border-radius:9px;padding:7px 12px;cursor:pointer;font-family:inherit;font-size:13px}
+    border-radius:9px;padding:7px 12px;cursor:pointer;font-family:inherit;font-size:13px;
+    transition:background .15s,border-color .15s}
   .iconbtn:hover{border-color:var(--line-strong);background:var(--card2)}
   /* buttons */
   .btn{border:1px solid var(--line);background:var(--card);color:var(--txt);border-radius:9px;
@@ -4975,6 +5304,10 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.ghost:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
   .btn.warn{color:var(--pill-warn-fg);border-color:var(--pill-warn-fg);background:var(--pill-warn-bg)}
   .btn.warn:hover{border-color:var(--pill-warn-fg);filter:brightness(.97)}
+  /* success buttons («ثبت دریافتی», «استعلام مجدد») previously fell back to
+     the neutral .btn — mirror .btn.warn so the tone family is complete */
+  .btn.ok{color:var(--pill-ok-fg);border-color:var(--pill-ok-fg);background:var(--pill-ok-bg)}
+  .btn.ok:hover{border-color:var(--pill-ok-fg);filter:brightness(.97)}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   /* KPI — "دفتر ثبت" ledger strip: one surface, hairline dividers, not 4
@@ -4991,24 +5324,34 @@ CRM_PAGE = r"""<!DOCTYPE html>
     background:transparent;transition:background .15s}
   .kpi:hover::after{background:var(--brand)}
   .kpi .n{display:block;font-size:27px;font-weight:800;line-height:1.25;
-    font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+    font-variant-numeric:tabular-nums;letter-spacing:-.3px;transition:transform .15s}
+  .kpi:active .n{transform:scale(.97)}
   .kpi .l{font-size:12px;color:var(--muted);font-weight:500}
   .kpi.attention .n{color:var(--warn)}
   .kpi.k-problem .n{color:var(--danger)}
   .kpi.k-ok .n{color:var(--ok)}
-  /* tabs */
-  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:0}
-  .tab{background:transparent;border:none;border-bottom:2px solid transparent;border-radius:8px 8px 0 0;
-    padding:9px 15px 7px;cursor:pointer;font-family:inherit;font-size:var(--crm-fs,13.5px);color:var(--muted);font-weight:500}
-  .tab:hover{color:var(--txt);background:var(--brand-soft)}
-  .tab.active{color:var(--brand);border-bottom-color:var(--brand);background:transparent}
-  .tab .cnt{font-size:11px;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
-    border-radius:999px;padding:1px 7px;margin-inline-start:5px;font-variant-numeric:tabular-nums}
+  /* tabs — active pill: soft brand fill + underline that covers the rail;
+     flex-end + the -1px margin make the 2px tab border overlap the 1px
+     container rule (the classic connected-underline tab bar) */
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;
+    border-bottom:1px solid var(--line)}
+  .tab{background:transparent;border:none;border-bottom:2px solid transparent;border-radius:9px 9px 0 0;
+    padding:10px 15px 8px;margin-bottom:-1px;cursor:pointer;font-family:inherit;
+    font-size:var(--crm-fs,13.5px);color:var(--muted);font-weight:500;min-height:40px;
+    transition:color .15s,background .15s,border-color .15s}
+  .tab:hover{color:var(--txt);background:var(--pill-neutral-bg)}
+  .tab.active{color:var(--brand);border-bottom-color:var(--brand);background:var(--brand-soft)}
+  .tab .cnt{font-size:11px;font-weight:600;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
+    border-radius:999px;padding:1px 7px;margin-inline-start:6px;font-variant-numeric:tabular-nums;
+    display:inline-block;min-width:20px;text-align:center}
+  .tab.active .cnt{background:var(--card);color:var(--brand)}
   /* two-column content + history aside */
   .crm-cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
   .crm-aside{display:flex;flex-direction:column;gap:12px;min-width:0}
   .crm-aside .history{max-height:420px;overflow:auto;position:sticky;top:12px}
-  .crm-aside .history h3{margin:0 0 8px;font-size:13px}
+  /* one header scale for the whole page: main cards use .card h3, the
+     compact aside captions (history + summary rail) share one smaller cut */
+  .crm-aside .history h3,.devrail h4{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--muted)}
   .crm-aside .history .kbd{margin-bottom:4px;line-height:1.7}
   @media (max-width:1100px){.crm-cols{grid-template-columns:1fr}.crm-aside .history{position:static;max-height:260px}}
   /* v1.3.4 (operator request): the KPI strip and the devices summary rail
@@ -5030,7 +5373,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
     box-shadow:var(--shadow-2);padding:8px;display:flex;flex-direction:column;gap:5px;max-width:220px}
   .qb-title{font-size:11px;color:var(--muted);font-weight:600;margin:0 2px 2px}
   .qb-btn{display:block;background:var(--card2);border:1px solid var(--line);border-radius:8px;
-    padding:6px 10px;font-size:12px;color:var(--txt);text-decoration:none;text-align:center}
+    padding:6px 10px;font-size:12px;color:var(--txt);text-decoration:none;text-align:center;
+    transition:background .15s,color .15s,border-color .15s}
   .qb-btn:hover{background:var(--brand-soft);color:var(--brand)}
   #quickWrap .muted{font-size:11px}
   /* cards & tables */
@@ -5040,10 +5384,15 @@ CRM_PAGE = r"""<!DOCTYPE html>
   /* v1.3.7: a base .row — toolbars outside .card (devices tab) rendered
      as an unstyled block with the hint text glued to the button. */
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .card h3{margin:0 0 10px;font-size:14px;font-weight:650}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:right;vertical-align:top}
-  th{color:var(--muted);font-weight:600;font-size:11.5px;white-space:nowrap;text-transform:none}
-  tbody tr:hover td{background:var(--card2)}
+  /* ledger table: soft header band + hairline row rules; the row hover is
+     the same brand tint the KPI strip and summary rail use */
+  th,td{border-bottom:1px solid var(--line);padding:10px 12px;text-align:right;vertical-align:top}
+  th{color:var(--muted);font-weight:650;font-size:11px;white-space:nowrap;background:var(--card2);
+    border-bottom:1px solid var(--line-strong)}
+  tbody td{transition:background .15s}
+  tbody tr:hover td{background:var(--brand-soft)}
   tr:last-child td{border-bottom:none}
   .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11.5px;white-space:nowrap;font-weight:500}
   .pill.n{background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
@@ -5054,12 +5403,13 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .kbd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
   .chip{display:inline-block;background:var(--pill-neutral-bg);color:var(--pill-neutral-fg);
     border-radius:7px;padding:2px 9px;font-size:11.5px}
+  .chip .ic{margin-inline-end:3px}
   /* device cards */
   .devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
   .devrail{display:flex;flex-direction:column;gap:12px;min-width:0}
   .devrail .card{padding:10px 12px;margin-bottom:0}
-  .devrail h4{margin:0 0 6px;font-size:12.5px;color:var(--muted);font-weight:600}
-  .sumrow{display:flex;align-items:center;gap:8px;padding:4px 2px;border-top:1px solid var(--line);cursor:pointer}
+  .sumrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;
+    border-top:1px solid var(--line);cursor:pointer;transition:background .15s}
   .sumrow:first-of-type{border-top:0}
   .sumrow:hover{background:var(--brand-soft)}
   .sumrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
@@ -5111,6 +5461,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
      summary rail flashes (tr cells pulse the background, devRow cards keep
      the old box-shadow pulse). */
   .tbl-wrap{overflow-x:auto}
+  /* full-bleed case-table card: no card padding, clipped corners, and a
+     soft inline-start edge fade that appears only while the table is
+     scrolled (toggled by the capture-phase scroll listener in the JS) */
+  .card.tblcard{position:relative;padding:0;overflow:hidden}
+  .card.tblcard::after{content:'';position:absolute;inset-block:0;inset-inline-start:0;width:26px;
+    background:linear-gradient(to left,var(--card),transparent);pointer-events:none;opacity:0;
+    transition:opacity .15s;z-index:1}
+  .card.tblcard.scrl::after{opacity:1}
   .casetbl td{white-space:nowrap}
   tr.flash>td{animation:rowflash 1.6s ease-out 1}
   @keyframes rowflash{0%,70%{background:var(--brand-soft)}100%{background:transparent}}
@@ -5172,6 +5530,9 @@ CRM_PAGE = r"""<!DOCTYPE html>
     padding:20px;width:min(600px,94vw);box-shadow:var(--shadow-2)}
   dialog::backdrop{background:rgba(8,10,25,.55)}
   dialog h3{margin:0 0 12px;font-size:16px;font-weight:650;padding-inline-end:34px}
+  /* long bodies (case detail) scroll inside #dlgBody so the dialog title and
+     the chrome x stay put; short dialogs are unaffected */
+  #dlgBody{max-height:calc(100dvh - 140px);overflow:auto}
   /* shared dialog chrome: one x-close outside #dlgBody (bodies keep their
      own dismiss buttons; native ESC/cancel path untouched) */
   .dlg-x{position:absolute;top:10px;inset-inline-end:10px;background:transparent;border:0;
@@ -5179,8 +5540,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .dlg-x:hover{color:var(--txt);background:var(--card2)}
   .err{color:var(--danger);font-size:12.5px;white-space:pre-line}
   /* states */
+  /* one empty-state pattern everywhere: icon tile + bold title + muted
+     description (+ optional action), rendered by emptyInnerHtml */
   .empty{padding:34px 16px;text-align:center;color:var(--muted)}
-  .empty b{display:block;font-size:14.5px;color:var(--txt);margin-bottom:4px;font-weight:600}
+  .empty .eic{display:inline-grid;place-items:center;width:46px;height:46px;border-radius:13px;
+    background:var(--pill-neutral-bg);color:var(--faint);margin-bottom:12px}
+  .empty .eic .ic{width:22px;height:22px}
+  .empty b{display:block;font-size:15px;color:var(--txt);margin-bottom:5px;font-weight:650}
+  .empty .esub{display:block;font-size:12.5px;line-height:1.9}
   .skel{height:84px;border-radius:14px;border:1px solid var(--line);
     background:linear-gradient(100deg,var(--card) 40%,var(--card2) 50%,var(--card) 60%);
     background-size:200% 100%;animation:sh 1.1s infinite linear;margin-bottom:10px}
@@ -5191,12 +5558,45 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .toast{background:var(--ok);color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;
     box-shadow:var(--shadow-2);animation:tin .18s ease-out}
   .toast.bad{background:var(--danger)}
+  /* dark theme brightens --ok/--danger, so white toast text loses contrast
+     (1.9:1 / 2.8:1) — flip to ink text there */
+  html[data-theme="dark"] .toast{color:#0c1226}
   @keyframes tin{from{opacity:0;transform:translateY(6px)}}
   @media (prefers-reduced-motion:reduce){.toast{animation:none}}
   /* log console */
-  #logBox{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;
+  /* .logbox: the periodic-tab log card uses the same console chrome as the
+     reports #logBox (it previously had no matching rule at all) */
+  #logBox,.logbox{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;
     background:var(--card2);padding:10px;font-size:11.5px;display:flex;flex-direction:column;gap:3px}
-  @media (max-width:640px){.devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(3){border-inline-start:none}}
+  /* v1.4.0 tab toolbar: search box + result pill + (devices only) stage
+     chips. Sticky over long lists; lives OUTSIDE the re-rendered #tabBody
+     so typing never loses focus. */
+  .tabbar{position:sticky;top:8px;z-index:5;background:var(--bg);padding:8px 0;
+    display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .tabbar .srch{position:relative;flex:1 1 260px;max-width:420px;min-width:200px}
+  .tabbar .srch .ic{position:absolute;inset-inline-start:11px;top:50%;
+    transform:translateY(-50%);color:var(--faint);pointer-events:none}
+  .tabbar .srch input{width:100%;padding-inline-start:32px;padding-inline-end:30px}
+  .tabbar .srch .clr{position:absolute;inset-inline-end:5px;top:50%;transform:translateY(-50%);
+    border:0;background:transparent;color:var(--muted);font-size:15px;line-height:1;
+    cursor:pointer;padding:4px 7px;border-radius:7px;display:none}
+  .tabbar .srch .clr:hover{color:var(--txt);background:var(--card2)}
+  .tabbar .srch.hasq .clr{display:block}
+  .tabbar .cntpill{font-variant-numeric:tabular-nums}
+  /* .pill sets display:inline-block, which would beat the UA's [hidden]
+     rule — keep the count pill actually hideable. */
+  .tabbar .cntpill[hidden]{display:none}
+  .tabchips{display:flex;gap:6px;flex-wrap:wrap;width:100%}
+  .chipbtn{border:1px solid var(--line);background:var(--card);color:var(--muted);
+    border-radius:999px;padding:3px 12px;font-family:inherit;font-size:12px;font-weight:500;
+    cursor:pointer;min-height:26px;transition:background .15s,border-color .15s,color .15s}
+  .chipbtn:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+  .chipbtn.active{background:var(--brand);border-color:transparent;color:var(--on-brand)}
+  /* one soft scrollbar for every scroll region on the page */
+  .sumbox,.crm-aside .history,#logBox,.logbox,.card.tblcard .tbl-wrap,#dlgBody{
+    scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+  @media (max-width:640px){body{padding:14px 10px 70px}
+    .devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(3){border-inline-start:none}}
 
 </style>
 </head>
@@ -5228,7 +5628,7 @@ var STATE = null, TAB = (new URLSearchParams(location.search).get('tab')||'devic
 var STAGE_ORDER = ['new','inquiry','problem','ready_owner','handed','to_payment','payment','payment_done','done'];
 // Numbered rail steps (8) — 'problem' is a parking state, not a step;
 // a problem device shows step 2 (its inquiry) as failed/red.
-var RAIL_STEPS = ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done','done'];;
+var RAIL_STEPS = ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done','done'];
 var STAGE_FA = {
   'new':'ثبت پرونده','inquiry':'استعلام ثبت‌نبودن','problem':'دارای اشکال',
   'ready_owner':'اتصال مسافر','handed':'تحویل به مسئول ثبت',
@@ -5256,6 +5656,25 @@ var TABS = [
   ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
   ['settings','تنظیمات']
 ];
+/* v1.4.0 per-tab search/filter state (session memory only — never sent to
+   the server): TAB_Q keeps the query per tab, TAB_STAGE_FILTER is the
+   devices stage filter, TAB_COUNT is the filtered row count the body
+   renderers report back for the result pill. */
+var TAB_Q={};
+var TAB_STAGE_FILTER='all';
+var TAB_COUNT=0;
+/* List tabs that get the search toolbar (settings/reports have no list). */
+var TAB_SEARCH={
+  devices:{ph:'جستجو در پرونده‌ها…',unit:'پرونده'},
+  customers:{ph:'جستجو در مشتری‌ها…',unit:'مشتری'},
+  owners:{ph:'جستجو در مسافرها…',unit:'مسافر'},
+  identities:{ph:'جستجو در استخر هویت…',unit:'مشخصات'},
+  periodic:{ph:'جستجو در استعلام دوره‌ای…',unit:'دستگاه'},
+  ledger:{ph:'جستجو در تراکنش‌ها…',unit:'تراکنش'},
+  done_tab:{ph:'جستجو در تکمیل شده‌ها…',unit:'پرونده'},
+  problem_tab:{ph:'جستجو در دارای اشکال…',unit:'پرونده'},
+  closed_tab:{ph:'جستجو در مختومه‌ها…',unit:'پرونده'}
+};
 
 /* ================= plumbing ================= */
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -5404,6 +5823,11 @@ var ICONS = {
   send:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>',
   alert:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
   userplus:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3.6-6.5 8-6.5"/><path d="M19 8v6M16 11h6"/></svg>',
+  /* empty-state tiles (irica-icons language, 24-grid / stroke 2): the inbox
+     tray marks a genuinely empty list, search-x an active search/filter with
+     no hit; CSS scales them up inside the .eic tile */
+  inbox:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+  searchx:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M8.5 8.5l5 5M13.5 8.5l-5 5"/></svg>',
 };
 /* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
    / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
@@ -5530,9 +5954,14 @@ function devRow(d, extra){
 function doneTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='done')
     .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+  ds=filterDevRows(ds);
+  TAB_COUNT=ds.length;
   var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
     +'پرونده‌های تکمیل‌شده — از جریان اصلی خارج شده‌اند؛ در صورت نیاز مشخصات را ویرایش کنید یا با احتیاط پرونده را به مرحلهٔ قبل برگردانید.</span></div>';
-  if(!ds.length)return note+emptyHtml('پروندهٔ تکمیل‌شده‌ای نیست','پرونده‌ها پس از تحویل کد فعال‌سازی به این‌جا می‌آیند.');
+  if(!ds.length){
+    if(searchActive())return note+searchEmptyCard();
+    return note+emptyHtml('پروندهٔ تکمیل‌شده‌ای نیست','پرونده‌ها پس از تحویل کد فعال‌سازی به این‌جا می‌آیند.');
+  }
   return note+ds.map(d=>devRow(d,
     '<span class="kbd">تاریخ تکمیل: '+esc(d.done_at||'—')+'</span>'
     +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
@@ -5555,9 +5984,14 @@ function doneRollback(id){
 function problemTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='problem')
     .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
+  ds=filterDevRows(ds);
+  TAB_COUNT=ds.length;
   var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
     +'پرونده‌های دارای اشکال — با «بازگشت به صف» دوباره وارد جریان می‌شوند یا مختومه می‌گردند.</span></div>';
-  if(!ds.length)return note+emptyHtml('پروندهٔ دارای اشکالی نیست','اگر استعلامی اشکال پیدا کند پروندهٔ آن این‌جا می‌آید.');
+  if(!ds.length){
+    if(searchActive())return note+searchEmptyCard();
+    return note+emptyHtml('پروندهٔ دارای اشکالی نیست','اگر استعلامی اشکال پیدا کند پروندهٔ آن این‌جا می‌آید.');
+  }
   return note+ds.map(d=>devRow(d,
     '<button class="btn mini primary" onclick="devRequeue(\''+d.id+'\')">بازگشت به صف</button>'
     +'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن پرونده</button>')).join('');
@@ -5565,9 +5999,14 @@ function problemTabHtml(){
 function closedTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='closed')
     .sort((a,b)=>String(b.closed_at||'').localeCompare(String(a.closed_at||'')));
+  ds=filterDevRows(ds,function(d){return d.closed_reason||'';});
+  TAB_COUNT=ds.length;
   var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
     +'پرونده‌های مختومه — بسته‌شده و غیرقابل ادامه.</span></div>';
-  if(!ds.length)return note+emptyHtml('پروندهٔ مختومه‌ای نیست','پرونده‌هایی که قابل ادامه نباشند پس از مختومه‌کردن این‌جا می‌آیند.');
+  if(!ds.length){
+    if(searchActive())return note+searchEmptyCard();
+    return note+emptyHtml('پروندهٔ مختومه‌ای نیست','پرونده‌هایی که قابل ادامه نباشند پس از مختومه‌کردن این‌جا می‌آیند.');
+  }
   return note+ds.map(d=>'<div class="card" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
     +'<b>'+esc(d.name)+'</b>'
     +'<span class="pill n">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
@@ -5674,6 +6113,164 @@ function railHtml(d){
   return '<div class="rail" role="group" aria-label="مراحل پرونده">'+steps+'</div>';
 }
 
+/* ================= per-tab search & filter (v1.4.0) ================= */
+/* Normalize one side of a search: lowercase, Persian/Arabic digits to
+   Latin, ZWNJ removed — so «۰۹۱۲» finds "0912" and «می‌شود» matches
+   «میشود». */
+function normSearch(s){
+  return String(s==null?'':s).toLowerCase()
+    .replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d))
+    .replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d))
+    .replace(/\u200c/g,'');
+}
+function tabSearchMatches(text,q){
+  q=String(q||'').trim();
+  if(!q)return true;
+  return normSearch(text).indexOf(normSearch(q))>=0;
+}
+function tabQ(){return String(TAB_Q[TAB]||'').trim();}
+function searchActive(){return !!tabQ()||(TAB==='devices'&&TAB_STAGE_FILTER!=='all');}
+/* Search haystack shared by every device-based list: id, name, serials,
+   passenger and customer names. */
+function devHay(d){
+  return [d.id,d.name,d.serial1,d.serial2,ownerName(d.owner_id),custName(d.customer_id)].join(' ');
+}
+/* devices tab: stage-chip filter + query over the active-case list. */
+function filterDevices(ds){
+  var q=tabQ();
+  return ds.filter(d=>
+    (TAB_STAGE_FILTER==='all'||(TAB_STAGE_FILTER==='need'?needsAction(d):d.stage===TAB_STAGE_FILTER))
+    &&tabSearchMatches(devHay(d),q));
+}
+/* done/problem/closed rows: query only (extraHay adds per-tab fields,
+   e.g. the closed reason). */
+function filterDevRows(ds,extraHay){
+  var q=tabQ();
+  if(!q)return ds;
+  return ds.filter(d=>tabSearchMatches(devHay(d)+' '+(extraHay?extraHay(d):''),q));
+}
+/* Friendly "no match" state — only shown while a search/filter is ACTIVE;
+   a genuinely empty list keeps its own message. */
+function searchEmptyHtml(){
+  var q=tabQ();
+  var title=q?'چیزی برای «'+esc(q)+'» پیدا نشد':'چیزی با این فیلتر پیدا نشد';
+  return '<div class="empty"><span class="eic">'+ICONS.searchx+'</span><b>'+title+'</b>'
+    +'<span class="esub">فیلتر یا عبارت جستجو را تغییر دهید.</span>'
+    +'<div style="margin-top:14px"><button class="btn ghost" onclick="searchResetAll()">پاک کردن جستجو</button></div></div>';
+}
+function searchEmptyCard(){return '<div class="card">'+searchEmptyHtml()+'</div>';}
+/* Clears the query AND the stage filter from the empty-state button; the
+   input lives in the toolbar (outside #tabBody), so it is reset directly. */
+function searchResetAll(){
+  TAB_Q[TAB]='';
+  TAB_STAGE_FILTER='all';
+  var inp=document.getElementById('tabQIn');
+  if(inp)inp.value='';
+  var box=document.getElementById('tabSrch');
+  if(box)box.classList.remove('hasq');
+  syncStageChips();
+  renderBody();
+  updateTabCount();
+}
+/* ---- toolbar rendering + focus-preserving updates ---- */
+function tabBarHtml(){
+  var cfg=TAB_SEARCH[TAB];
+  if(!cfg)return '';
+  var q=String(TAB_Q[TAB]||'');
+  return '<div class="tabbar" id="tabBar">'
+    +'<div class="srch'+(q.trim()?' hasq':'')+'" id="tabSrch">'
+    +ICONS.search
+    +'<input id="tabQIn" type="text" value="'+esc(q)+'" placeholder="'+esc(cfg.ph)+'"'
+    +' aria-label="'+esc(cfg.ph)+'" autocomplete="off" oninput="tabSearchInput(this.value)">'
+    +'<button type="button" class="clr" onclick="tabSearchClear()" aria-label="پاک کردن جستجو" title="پاک کردن جستجو">×</button>'
+    +'</div>'
+    +'<span class="pill n cntpill" id="tabCount" hidden></span>'
+    +(TAB==='devices'?'<div class="tabchips" id="stageChips">'+stageChipsHtml()+'</div>':'')
+    +'</div>';
+}
+/* Stage chips: «همه» + «نیازمند اقدام» + one per stage that actually has
+   an active case right now. */
+function stageChipsHtml(){
+  var active=(STATE&&STATE.devices||[]).filter(isActiveCase);
+  var stages=[];
+  ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done'].forEach(function(st){
+    if(active.some(d=>d.stage===st))stages.push(st);
+  });
+  var chips=[['all','همه'],['need','نیازمند اقدام']];
+  stages.forEach(function(st){chips.push([st,STAGE_FA[st]||st]);});
+  return chips.map(function(c){
+    return '<button type="button" class="chipbtn'+(TAB_STAGE_FILTER===c[0]?' active':'')+'" data-f="'+c[0]+'"'
+      +' onclick="tabStageSet(\''+c[0]+'\')">'+esc(c[1])+'</button>';
+  }).join('');
+}
+/* Chip clicks toggle the active class in place — the toolbar itself is
+   never re-rendered while the operator works in it. */
+function syncStageChips(){
+  var chips=document.querySelectorAll('#stageChips .chipbtn');
+  for(var i=0;i<chips.length;i++)
+    chips[i].classList.toggle('active',chips[i].getAttribute('data-f')===TAB_STAGE_FILTER);
+}
+function tabStageSet(f){
+  TAB_STAGE_FILTER=f;
+  syncStageChips();
+  renderBody();
+  updateTabCount();
+}
+function tabSearchInput(val){
+  TAB_Q[TAB]=String(val||'');
+  var box=document.getElementById('tabSrch');
+  if(box)box.classList.toggle('hasq',!!tabQ());
+  renderBody();
+  updateTabCount();
+}
+function tabSearchClear(){
+  TAB_Q[TAB]='';
+  var inp=document.getElementById('tabQIn');
+  if(inp)inp.value='';
+  var box=document.getElementById('tabSrch');
+  if(box)box.classList.remove('hasq');
+  renderBody();
+  updateTabCount();
+}
+function updateTabCount(){
+  var pill=document.getElementById('tabCount');
+  if(!pill)return;
+  if(!searchActive()){pill.hidden=true;return;}
+  pill.hidden=false;
+  pill.textContent=fa(TAB_COUNT)+' '+(TAB_SEARCH[TAB]||{}).unit;
+}
+/* Edge fade for the wide case table: while its .tbl-wrap is scrolled the
+   .tblcard frame shows the soft inline-start gradient (RTL scrollLeft is 0
+   at rest, negative once scrolled). One capture-phase listener covers every
+   re-render; presentation only, no state. */
+document.addEventListener('scroll',function(e){
+  var t=e.target;
+  if(!t||!t.classList||!t.classList.contains('tbl-wrap'))return;
+  var frame=t.parentElement;
+  if(frame&&frame.classList.contains('tblcard'))
+    frame.classList.toggle('scrl',t.scrollLeft!==0);
+},true);
+/* Shared per-tab body dispatch (renderView and renderBody both use it). */
+function bodyHtml(){
+  var body;
+  if(TAB==='devices')body=devicesHtml();
+  else if(TAB==='done_tab')body=doneTabHtml();
+  else if(TAB==='problem_tab')body=problemTabHtml();
+  else if(TAB==='closed_tab')body=closedTabHtml();
+  else if(TAB==='customers')body=customersHtml();
+  else if(TAB==='owners')body=ownersHtml();
+  else if(TAB==='identities')body=identitiesHtml();
+  else if(TAB==='periodic')body=periodicHtml();
+  else if(TAB==='ledger')body=ledgerHtml();
+  else if(TAB==='settings')body=settingsHtml();
+  else body=reportsHtml();
+  return body;
+}
+function renderBody(){
+  var el=document.getElementById('tabBody');
+  if(el)el.innerHTML=bodyHtml();
+}
+
 /* ================= KPI strip ================= */
 function kpisHtml(){
   var ds=(STATE.devices||[]);
@@ -5699,6 +6296,8 @@ function maskSerial(s){s=String(s||'');return s.length<=8?s:s.slice(0,4)+'…'+s
 function devicesHtml(){
   var ds=(STATE.devices||[]).filter(isActiveCase).sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
+  ds=filterDevices(ds);
+  TAB_COUNT=ds.length;
   var runCount=(STATE.estelam_runs||[]).length;
   var runningBanner=(STATE.estelam_running)
     ?'<div class="row" style="margin:0 0 12px;align-items:center">'
@@ -5708,29 +6307,41 @@ function devicesHtml(){
   // B4: an empty active grid must not claim the workspace has no cases at
   // all when only done/problem/closed ones exist — point at their tabs.
   var others=(STATE.devices||[]).length>0;
-  if(!ds.length) return runningBanner+'<div class="row" style="margin-bottom:12px">'
-    +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">'+(others
-      ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
-      :'اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.')+'</span></div>'
-    +emptyHtml(others?'پروندهٔ در جریانی نیست':'پرونده‌ای ثبت نشده',
-      others?'این‌جا فقط پرونده‌های فعال را نشان می‌دهد؛ بقیهٔ پرونده‌ها در سربرگ‌های «تکمیل شده‌ها»، «دارای اشکال» و «مختومه‌ها» هستند.'
-        :'هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
+  if(!ds.length){
+    // v1.4.0: an active search/stage filter with no hit shows its own
+    // card; the genuine empty states below stay untouched.
+    if(searchActive())return runningBanner+searchEmptyCard();
+    return runningBanner+'<div class="row" style="margin-bottom:12px">'
+      +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
+      +'<span class="muted">'+(others
+        ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
+        :'اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.')+'</span></div>'
+      +emptyHtml(others?'پروندهٔ در جریانی نیست':'پرونده‌ای ثبت نشده',
+        others?'این‌جا فقط پرونده‌های فعال را نشان می‌دهد؛ بقیهٔ پرونده‌ها در سربرگ‌های «تکمیل شده‌ها»، «دارای اشکال» و «مختومه‌ها» هستند.'
+          :'هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
+  }
   // B7: a clean case table — every per-case action moved into the
   // caseDetail modal (row click / «جزئیات»); rows keep the devcard-<id>
   // anchor the summary rail focuses, and the only list-area buttons are
   // «+ پروندهٔ جدید», the per-row «جزئیات» and the global stop-robot banner.
-  var rows=ds.map(function(d){
+  // v1.4.0 (operator request): row number first, then device / customer /
+  // passenger; the case id moved next to the dates. Row numbers count the
+  // FILTERED view, so they always start at ۱.
+  var rows=ds.map(function(d,i){
     var est=d.estelam||{};
+    var cust=custName(d.customer_id);
+    var owner=ownerName(d.owner_id);
     return '<tr id="devcard-'+d.id+'" style="cursor:pointer" onclick="caseDetail(\''+d.id+'\')">'
-      +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
-      +'<td>'+esc(ownerName(d.owner_id))+'</td>'
+      +'<td class="kbd">'+fa(i+1)+'</td>'
       +'<td><b>'+esc(d.name)+'</b></td>'
+      +'<td>'+(cust&&cust!=='—'?esc(cust):'<span class="muted">—</span>')+'</td>'
+      +'<td>'+(owner&&owner!=='—'?esc(owner):'<span class="muted">—</span>')+'</td>'
       +'<td class="kbd" dir="ltr">'+esc(maskSerial(d.serial1))+'</td>'
       +'<td><span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span></td>'
       +'<td><span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">'
         +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
         +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
+      +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
       +'<td class="kbd">'+esc(d.created||'—')+'</td>'
       +'<td class="kbd">'+esc(d.updated||'—')+'</td>'
       +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
@@ -5738,9 +6349,9 @@ function devicesHtml(){
   return runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
-    +'<div class="card tbl-wrap"><table class="casetbl">'
-    +'<thead><tr><th>شناسه پرونده</th><th>مسافر</th><th>دستگاه</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
-    +rows+'</tbody></table></div>';
+    +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
+    +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
+    +rows+'</tbody></table></div></div>';
 }
 /* Case detail modal (v1.5 B7): every per-case action that used to sit on
    the card opens here — next-step continue card, step tools, quiet row
@@ -5948,13 +6559,21 @@ function devicesRailHtml(){
     +'<div class="card"><h4>پرونده‌های اخیر</h4>'+sumCasesHtml()+'</div>'
     +'<div class="card"><h4>بیشترین بدهکاری</h4>'+sumDebtorsHtml()+'</div>';
 }
+function emptyInnerHtml(title,sub){
+  return '<div class="empty"><span class="eic">'+ICONS.inbox+'</span><b>'+esc(title)+'</b>'
+    +'<span class="esub">'+esc(sub)+'</span></div>';
+}
 function emptyHtml(title,sub){
-  return '<div class="card"><div class="empty"><b>'+esc(title)+'</b>'+esc(sub)+'</div></div>';
+  return '<div class="card">'+emptyInnerHtml(title,sub)+'</div>';
 }
 
 /* ================= customers ================= */
 function customersHtml(){
-  var rows=(STATE.customers||[]).map(c=>
+  var q=tabQ();
+  var cs=(STATE.customers||[]).filter(c=>tabSearchMatches(
+    [c.full_name,c.mobile,c.telegram_id,c.instagram_id,c.address,c.notes].join(' '),q));
+  TAB_COUNT=cs.length;
+  var rows=cs.map(c=>
     '<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(c.mobile||'—')+'</td>'
     +'<td class="kbd">'+esc(c.telegram_id||'—')+' / '+esc(c.instagram_id||'—')+'</td>'
     +'<td class="kbd">'+esc(c.address||'—')+'</td>'
@@ -5967,12 +6586,18 @@ function customersHtml(){
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
     +'<table><thead><tr><th>نام</th><th>موبایل</th><th>تلگرام / اینستا</th><th>آدرس</th><th>مانده</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="6"><div class="empty"><b>مشتری ثبت نشده است</b>مشتری‌ها را از تلگرام، اینستاگرام یا تماس تلفنی اضافه کنید.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="6">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('مشتری ثبت نشده است','مشتری‌ها را از تلگرام، اینستاگرام یا تماس تلفنی اضافه کنید.'))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= owners ================= */
 function ownersHtml(){
-  var rows=(STATE.owners||[]).map(o=>{
+  var q=tabQ();
+  var os=(STATE.owners||[]).filter(o=>{
+    var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
+    return tabSearchMatches([o.first_name,o.last_name,o.national,o.birth,o.mobile,o.card_no,o.passport,dev?dev.name:''].join(' '),q);
+  });
+  TAB_COUNT=os.length;
+  var rows=os.map(o=>{
     var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
     return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
     +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.birth)+'</td>'
@@ -5985,7 +6610,7 @@ function ownersHtml(){
     +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
     +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
     +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مسافری ثبت نشده است</b>مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="7">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('مسافری ثبت نشده است','مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.'))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= periodic gomrok inquiry tab ================= */
@@ -6081,7 +6706,7 @@ function paRender(){
       +(on?'<span class="pill ok">در لیست</span>':'<span class="pill n">خارج از لیست</span>')
       +'</label>';
   }).join('');
-  body.innerHTML=rows||'<div class="empty">پرونده‌ای برای افزودن نیست — فقط پرونده‌های «تحویل به مسئول سایت» و بعدی به استعلام دوره‌ای می‌روند.</div>';
+  body.innerHTML=rows||('<div class="empty"><span class="eic">'+ICONS.inbox+'</span><span class="esub">پرونده‌ای برای افزودن نیست — فقط پرونده‌های «تحویل به مسئول سایت» و بعدی به استعلام دوره‌ای می‌روند.</span></div>');
   var navHtml='';
   if(pages>1){
     for(var p=1;p<=pages;p++)
@@ -6159,13 +6784,15 @@ function periodicHistory(id){
     +(d&&d.last_inquiry_at?'<p class="muted">آخرین استعلام: '+esc(d.last_inquiry_at)+' · نتیجهٔ فعلی: '+
       (EST_FA[(d.estelam||{}).status]||'—')+'</p>':'')
     +'<table><thead><tr><th>زمان</th><th>وضعیت</th><th>پیام</th></tr></thead><tbody>'+
-    (rows||'<tr><td colspan="3"><div class="empty"><b>تاریخچه‌ای ثبت نشده است</b>هنوز استعلامی برای این دستگاه اجرا نشده.</div></td></tr>')+
+    (rows||'<tr><td colspan="3">'+emptyInnerHtml('تاریخچه‌ای ثبت نشده است','هنوز استعلامی برای این دستگاه اجرا نشده.')+'</td></tr>')+
     '</tbody></table>');
 }
 function periodicHtml(){
   var settings=(STATE.settings||{});
   var hours=settings.watch_interval_hours||2;
-  var all=periodicDevices();
+  var full=periodicDevices();
+  var all=filterDevRows(full);
+  TAB_COUNT=all.length;
   var rows=all.map(d=>{
     var est=d.estelam||{};
     var opt=d.periodic_opt_out;
@@ -6195,7 +6822,7 @@ function periodicHtml(){
     '<td><b>'+esc((STATE.devices||[]).find(d=>String(d.id)===String(l.device_id))?.name||l.device_id||'—')+'</b></td>'+
     '<td><span class="pill '+(EST_PILL[l.status]||'n')+'">'+(EST_FA[l.status]||esc(l.status||''))+'</span></td>'+
     '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
-  var activeCount=all.filter(d=>!d.periodic_opt_out).length;
+  var activeCount=full.filter(d=>!d.periodic_opt_out).length;
   return '<div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">'+
     '<label class="f" style="flex-direction:row;align-items:center;gap:6px">بازهٔ استعلام دوره‌ای (ساعت): '+
     '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
@@ -6204,13 +6831,13 @@ function periodicHtml(){
     '<button class="btn"'+gomrokGateAttrs()+' onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
     '<button class="btn warn" onclick="periodicResetSelected()">ریست تاریخچهٔ انتخاب‌شده‌ها</button>'+
     '<button class="btn" onclick="periodicAddModal()">+ افزودن پرونده</button>'+
-    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span>'+
+    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(full.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span>'+
     '<span class="muted">استعلام خودکار فقط برای مراحل «تحویل به مسئول ثبت» و «استعلام ثبت‌بودن» اجرا می‌شود؛ مراحل پرداخت فقط دستی‌اند.</span></div>'+
     '<table><thead><tr><th><input type="checkbox" id="periodicSelAll" onchange="periodicSelAll(this)"></th><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
-    '<tbody>'+(rows||'<tr><td colspan="8"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
+    '<tbody>'+(rows||'<tr><td colspan="8">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('دستگاهی در لیست نیست','با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.'))+'</td></tr>')+'</tbody></table></div>'+
     '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+
     '<table><thead><tr><th>زمان</th><th>دستگاه</th><th>وضعیت</th><th>پیام</th></tr></thead>'+
-    '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty">هنوز لاگی ثبت نشده است.</div></td></tr>')+'</tbody></table></div></div>';
+    '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty"><span class="eic">'+ICONS.inbox+'</span><span class="esub">هنوز لاگی ثبت نشده است.</span></div></td></tr>')+'</tbody></table></div></div>';
 }
 /* ================= settings tab ================= */
 var CRM_LINKS_KEY='irica-crm-links';
@@ -6318,7 +6945,11 @@ function dueIn(d,hours){
 
 /* ================= identity pool ================= */
 function identitiesHtml(){
-  var rows=(STATE.identities||[]).map(i=>
+  var q=tabQ();
+  var ids=(STATE.identities||[]).filter(i=>tabSearchMatches(
+    [i.label,i.national,i.birth,i.mobile].join(' '),q));
+  TAB_COUNT=ids.length;
+  var rows=ids.map(i=>
     '<tr><td><b>'+esc(i.label)+'</b></td><td class="kbd">'+esc(i.national)+'</td>'
     +'<td class="kbd">'+esc(i.birth)+'</td><td class="kbd">'+esc(i.mobile)+'</td>'
     +'<td><button class="btn mini" onclick="dlgIdent(\'edit\',\''+i.id+'\')">ویرایش</button> '
@@ -6327,24 +6958,32 @@ function identitiesHtml(){
     +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
     +'<span class="muted">برای هر استعلام — ورودی و نظارتی — یک مشخصات تصادفی معتبر از همین استخر انتخاب می‌شود.</span></div>'
     +'<table><thead><tr><th>عنوان</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>استخر هویت خالی است</b>بدون حداقل یک مشخصات معتبر، هیچ استعلامی — ورودی و نظارتی — اجرا نمی‌شود.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="5">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('استخر هویت خالی است','بدون حداقل یک مشخصات معتبر، هیچ استعلامی — ورودی و نظارتی — اجرا نمی‌شود.'))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= ledger ================= */
 function ledgerHtml(){
+  var q=tabQ();
   var rows='';
+  var count=0;
   (STATE.customers||[]).forEach(c=>{
     var txs=c.transactions||[];
     for(var idx=txs.length-1; idx>=0; idx--){            // newest first (as before)
       var t=txs[idx];
+      // v1.4.0: search covers the customer name, the note and the amount
+      // as a plain Latin-digit string (Persian digits normalize on both
+      // sides of the match). idx stays the true transaction index.
+      if(!tabSearchMatches([c.full_name,t.note,String(t.amount==null?'':t.amount)].join(' '),q))continue;
+      count++;
       rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(t.at)+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
       +'<td class="kbd">'+esc(t.note||'—')+'</td>'
       +'<td><button class="btn mini ghost" title="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+' جزئیات</button></td></tr>';
     }
   });
+  TAB_COUNT=count;
   return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>تراکنشی ثبت نشده است</b>از تب مشتریان روی «تراکنش» بزنید.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="5">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('تراکنشی ثبت نشده است','از تب مشتریان روی «تراکنش» بزنید.'))+'</td></tr>')+'</tbody></table></div>';
 }
 var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','base_fee_refund':'بازگشت هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','':'—'};
 function txDetailModal(cid, idx){
@@ -6377,7 +7016,7 @@ function reportsHtml(){
     +'<button class="btn" onclick="location.href=\'/crm-report?fmt=pdf\'">PDF</button>'
     +'<button class="btn primary" onclick="sendTelegram()">ارسال به تلگرام</button></div>'
     +'<p class="muted">گزارش شامل وضعیت تمام پرونده‌هاست؛ در تلگرام کد ملی‌ها ماسک می‌شوند و شمارهٔ کارت هرگز ارسال نمی‌شود.</p>'
-    +'<h3 style="font-size:14px;margin:14px 0 8px">لاگ رویدادها</h3>'
+    +'<h3>لاگ رویدادها</h3>'
     +'<div id="logBox"></div>'
     +'</div>';
 }
@@ -6765,27 +7404,33 @@ function renderLogs(){
 function renderView(){
   var el=document.getElementById('view');
   if(!STATE){ el.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';return; }
-  var body;
-  if(TAB==='devices')body=devicesHtml();
-  else if(TAB==='done_tab')body=doneTabHtml();
-  else if(TAB==='problem_tab')body=problemTabHtml();
-  else if(TAB==='closed_tab')body=closedTabHtml();
-  else if(TAB==='customers')body=customersHtml();
-  else if(TAB==='owners')body=ownersHtml();
-  else if(TAB==='identities')body=identitiesHtml();
-  else if(TAB==='periodic')body=periodicHtml();
-  else if(TAB==='ledger')body=ledgerHtml();
-  else if(TAB==='settings')body=settingsHtml();
-  else body=reportsHtml();
   /* v1.3.4 (operator request): the KPI strip and the devices summary rail
      render in the aside, above the «تاریخچه» card, so the case list owns
      the full main column — the old top strip and in-table side rail are
      gone. The rail stays devices-tab-only, as before. */
-  var aside='<div class="crm-aside">'+kpisHtml()
+  var aside='<div class="crm-aside" id="crmAside">'+kpisHtml()
     +(TAB==='devices'?'<div class="devrail">'+devicesRailHtml()+'</div>':'')
     +historyHtml()+'</div>';
-  el.innerHTML='<div class="crm-cols"><div class="crm-main">'+body+'</div>'+aside+'</div>';
+  /* v1.4.0: the tab toolbar (search box, result pill, stage chips) is built
+     with the shell and then left alone — refreshes and typing re-render
+     only #tabBody and the aside, so the input never loses focus. A tab
+     switch (or a missing shell) rebuilds everything. #tabShell wraps BOTH
+     the toolbar and #tabBody so it is the sticky containing block of the
+     toolbar (a wrapper around the bar alone would give it zero travel). */
+  var shell=document.getElementById('tabShell');
+  if(!(shell&&shell.getAttribute('data-tab')===TAB&&document.getElementById('tabBody')&&document.getElementById('crmAside'))){
+    el.innerHTML='<div class="crm-cols"><div class="crm-main">'
+      +'<div id="tabShell" data-tab="'+esc(TAB)+'">'+tabBarHtml()
+      +'<div id="tabBody">'+bodyHtml()+'</div></div></div>'+aside+'</div>';
+  }else{
+    renderBody();
+    /* outerHTML, not innerHTML: the aside string carries its own
+       .crm-aside wrapper — innerHTML would nest a duplicate-id copy
+       inside itself on every refresh (H review). */
+    document.getElementById('crmAside').outerHTML=aside;
+  }
   renderLogs();
+  updateTabCount();
 }
 async function refresh(){
   try{
@@ -7333,10 +7978,16 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 self._send(404, b"not found", "text/plain")
         elif route == "/favicon.ico":
-            svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
-                   "<rect width='32' height='32' rx='7' fill='%236d8bff'/>"
-                   "<text x='16' y='22' font-size='16' font-family='sans-serif' "
-                   "font-weight='bold' fill='white' text-anchor='middle'>I</text></svg>")
+            # v1.4.0: the IRICA brand mark (path-drawn R, from
+            # lab/design/irica-brand.md) — font-independent and legible at
+            # 16px, in the unified brand color.
+            svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
+                   "<rect width='24' height='24' rx='5.5' fill='#4460e3'/>"
+                   "<g fill='none' stroke='#fff' stroke-width='3.4' "
+                   "stroke-linecap='round' stroke-linejoin='round'>"
+                   "<path d='M7 18.5v-13'/>"
+                   "<path d='M7 5.5h4.6c2.9 0 4.8 1.7 4.8 4.3s-1.9 4.3-4.8 4.3H7'/>"
+                   "<path d='M11.4 14.1l5.6 4.4'/></g></svg>")
             self._send(200, svg.encode("utf-8"), "image/svg+xml")
         elif route == "/site-1":
             self._send(200, render_page())
@@ -7999,42 +8650,85 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <title>ورود — ایریکا</title>
 <link rel="icon" href="/favicon.ico">
 <style>
-:root { color-scheme: dark; }
+/* IRICA design system — light entry skin (login, no theme toggle).
+   Keep the 'irica-version' chip: _panel_already_running and the tray probe
+   identify this panel through that marker on the public /login page. */
+@font-face{
+  font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-var.woff2') format('woff2-variations');
+  font-weight:100 900;font-style:normal;font-display:swap;
+}
+@font-face{
+  font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-weight:700;font-style:normal;font-display:swap;
+}
+:root{
+  --bg:#f4f6fb;--card:#ffffff;--card2:#f7f8fd;--line:rgba(27,32,54,.10);
+  --line-strong:rgba(27,32,54,.16);--txt:#1b2036;--muted:#5c6484;
+  --brand:#4460e3;--brand-hover:#3757cf;--brand-soft:rgba(68,96,227,.10);
+  --on-brand:#ffffff;--ok:#0c7d4f;--ok-soft:rgba(15,157,99,.12);
+  --danger:#d93752;--danger-soft:rgba(217,55,82,.10);
+  --shadow-1:0 1px 2px rgba(16,20,40,.05),0 1px 6px rgba(16,20,40,.04);
+  --shadow-2:0 4px 14px rgba(16,20,40,.10),0 1px 3px rgba(16,20,40,.06);
+  --ring:0 0 0 3px rgba(68,96,227,.30);
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html { color-scheme: light; }
 body {
-  font-family: Vazirmatn, Tahoma, sans-serif;
-  background: #0b1220; color: #e7edf7; min-height: 100vh;
+  font-family: Vazirmatn, "Segoe UI", Tahoma, sans-serif;
+  background:
+    radial-gradient(900px 480px at 85% -10%, rgba(79,107,239,.13), transparent 60%),
+    radial-gradient(720px 420px at 6% 8%, rgba(124,92,245,.09), transparent 55%),
+    var(--bg);
+  color: var(--txt); min-height: 100vh; font-size: 14px; line-height: 1.7;
   display: flex; align-items: center; justify-content: center; padding: 24px;
+  -webkit-font-smoothing: antialiased;
 }
 .card {
-  width: 100%; max-width: 380px; background: #111a2e; border: 1px solid #22304d;
-  border-radius: 14px; padding: 28px 26px;
+  width: 100%; max-width: 392px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 18px;
+  padding: 34px 30px 26px; box-shadow: var(--shadow-2);
 }
-h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
-.sub { font-size: 12px; color: #8fa3c8; margin-bottom: 22px; }
-label { display: block; font-size: 12px; color: #8fa3c8; margin: 12px 0 6px; }
+.mono {
+  width: 56px; height: 56px; border-radius: 14px; margin: 0 auto 16px;
+  background: linear-gradient(135deg, var(--brand), #7c5cf5); color: var(--on-brand);
+  display: grid; place-items: center; font-size: 24px; font-weight: 800;
+  box-shadow: var(--shadow-1);
+}
+h1 { font-size: 19px; font-weight: 750; text-align: center; margin-bottom: 4px; }
+.sub { font-size: 12.5px; color: var(--muted); text-align: center; margin-bottom: 22px; }
+label { display: block; font-size: 12.5px; color: var(--muted); margin: 14px 0 6px; }
 input {
-  width: 100%; padding: 10px 12px; border-radius: 8px; font-size: 14px;
-  border: 1px solid #2c3d61; background: #0d1526; color: #e7edf7;
-  font-family: inherit;
+  width: 100%; padding: 11px 13px; border-radius: 10px; font-size: 14px;
+  border: 1px solid var(--line-strong); background: var(--card2); color: var(--txt);
+  font-family: inherit; transition: border-color .15s, box-shadow .15s, background .15s;
 }
-input:focus { outline: 2px solid #4f7cd1; border-color: transparent; }
+input:hover { border-color: rgba(27,32,54,.30); }
+input:focus { outline: none; border-color: var(--brand); background: var(--card); box-shadow: var(--ring); }
 button {
-  width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
-  background: #2f6fdb; color: #fff; font-size: 14px; font-weight: 700;
-  font-family: inherit; cursor: pointer;
+  width: 100%; margin-top: 22px; padding: 12px; border: 0; border-radius: 10px;
+  background: var(--brand); color: var(--on-brand); font-size: 14.5px; font-weight: 700;
+  font-family: inherit; cursor: pointer; transition: background .15s, transform .15s;
 }
-button:hover { background: #3a7ce8; }
-button:disabled { opacity: .6; cursor: default; }
+button:hover { background: var(--brand-hover); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: .6; cursor: default; transform: none; }
+button:focus-visible { outline: none; box-shadow: var(--ring); }
 .err {
-  display: none; margin-top: 14px; padding: 9px 12px; border-radius: 8px;
-  background: #3a1520; border: 1px solid #7a2a3a; color: #f2a0b0; font-size: 12px;
+  display: none; margin-top: 14px; padding: 10px 12px; border-radius: 10px;
+  background: var(--danger-soft); border: 1px solid rgba(217,55,82,.28);
+  color: #b72740; font-size: 12.5px; line-height: 1.8;
 }
-.foot { margin-top: 18px; font-size: 11px; color: #5d719a; text-align: center; }
+.foot { margin-top: 18px; font-size: 11.5px; color: var(--muted); text-align: center; }
+.foot.irica-version {
+  display: block; width: max-content; margin: 8px auto 0; padding: 3px 12px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--card2);
+  font-size: 11px;
+}
 </style>
 </head>
 <body>
 <form class="card" id="f" autocomplete="off">
+  <div class="mono">R</div>
   <h1>ورود به پنل</h1>
   <div class="sub">برای ادامه، نام کاربری و رمز عبور خود را وارد کنید</div>
   <label for="u">نام کاربری</label>
@@ -8044,7 +8738,7 @@ button:disabled { opacity: .6; cursor: default; }
          autocomplete="current-password" required>
   <button type="submit" id="btn">ورود</button>
   <div class="err" id="err"></div>
-  <div class="foot">ایریکا — سامانهٔ استعلام و ثبت سفارش</div>
+  <div class="foot">ایریکا · سامانهٔ استعلام و ثبت سفارش</div>
   <div class="foot irica-version">نسخه __VERSION__</div>
 </form>
 <script>

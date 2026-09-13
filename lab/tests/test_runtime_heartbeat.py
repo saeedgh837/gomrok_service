@@ -66,7 +66,8 @@ class RuntimeHeartbeatTests(unittest.TestCase):
     def test_layout_places_profile_sidebar_on_right(self):
         html = panel.render_page().decode("utf-8")
         self.assertIn("flex-direction:row-reverse", html)
-        self.assertIn("⚙️ تنظیمات کلی", html)
+        # site-1 redesign: the tab label lost its ⚙ emoji to an SVG icon.
+        self.assertIn("تنظیمات کلی", html)
 
 
 if __name__ == "__main__":
