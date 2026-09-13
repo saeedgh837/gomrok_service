@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-09-13
+
+### Added
+
+- **CRM page-width control (operator request):** a «عرض» button in the
+  header opens a small popover with three presets (باریک ۱۰۸۰ / عادی
+  ۱۲۴۰ / عریض — capped by the viewport), a fine range slider with a live
+  pixel readout, and a reset. The choice persists in the browser and is
+  clamped to 900–1920px so it can never overflow; the control lives in
+  the header outside the refresh region, so the 5-second background
+  refresh never closes it, and Esc/outside-click close it without
+  touching the dialog's own Esc path.
+
 ## [1.4.0] - 2026-09-13
 
 The product-wide UI/UX overhaul: every page rebuilt on one IRICA design

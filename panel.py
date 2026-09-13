@@ -5261,7 +5261,10 @@ CRM_PAGE = r"""<!DOCTYPE html>
     font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;
     font-size:14px;line-height:1.6;padding:24px 18px 70px;
     -webkit-font-smoothing:antialiased}
-  .wrap{width:min(1240px,98vw);margin:0 auto}
+  /* v1.4.1: page width is operator-controlled (--crm-w, set from the
+     header «عرض» popover) and capped by the viewport so it can never
+     overflow. */
+  .wrap{width:min(var(--crm-w,1240px),98vw);margin:0 auto}
   /* v1.3.7 header nav: the two panel links are real navigation buttons,
      not bare text; account actions sit behind a hairline divider. */
   .headnav{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -5275,6 +5278,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .navlink:focus-visible{box-shadow:var(--ring)}
   .headacts{display:flex;gap:8px;align-items:center;padding-inline-start:14px;
     border-inline-start:1px solid var(--line);margin-inline-start:2px}
+  /* v1.4.1 page-width popover: presets + fine slider, persisted. */
+  .wwrap{position:relative}
+  .wpop{position:absolute;top:calc(100% + 8px);inset-inline-end:0;width:236px;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow-2);padding:12px 14px;display:none;z-index:40}
+  .wpop.open{display:block}
+  .wpop-lbl{font-size:11px;font-weight:600;color:var(--muted);margin:0 0 8px}
+  .wpop input[type=range]{width:100%;margin:12px 0 2px;accent-color:var(--brand);min-height:0;padding:0;border:0;background:transparent}
   :is(a,button,input,select,textarea,summary):focus-visible{outline:none;box-shadow:var(--ring)}
   /* inline icons sit on the text baseline (flex boxes ignore this) */
   svg.ic{vertical-align:-.18em}
@@ -5609,6 +5620,22 @@ CRM_PAGE = r"""<!DOCTYPE html>
       <a class="navlink" href="/site-1"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>سامانه مدیریت گمرک</a>
     </nav>
     <div class="headacts">
+      <div class="wwrap">
+        <button class="iconbtn" id="widthBtn" aria-expanded="false" aria-haspopup="true" title="عرض صفحه"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg> عرض</button>
+        <div class="wpop" id="wPop">
+          <div class="wpop-lbl">عرض صفحه</div>
+          <div class="row" style="gap:6px">
+            <button type="button" class="btn mini ghost wpreset" data-w="1080">باریک</button>
+            <button type="button" class="btn mini ghost wpreset" data-w="1240">عادی</button>
+            <button type="button" class="btn mini ghost wpreset" data-w="1920">عریض</button>
+          </div>
+          <input type="range" id="wRange" min="900" max="1920" step="20" aria-label="عرض دقیق صفحه">
+          <div class="row" style="justify-content:space-between;margin-top:4px">
+            <span class="kbd" id="wVal"></span>
+            <button type="button" class="btn mini ghost" id="wReset">بازنشانی</button>
+          </div>
+        </div>
+      </div>
       <button class="iconbtn" id="themeBtn">پوسته</button>
       <button class="iconbtn" id="logoutBtn" title="خروج از حساب">خروج (__ACTOR__)</button>
     </div>
@@ -5794,6 +5821,64 @@ document.getElementById('logoutBtn').onclick=function(){
     window.location.replace('/login');
   }).catch(function(){ toast('خروج ناموفق بود',false); });
 };
+/* ================= v1.4.1 page width =================
+   Operator-controlled page width: presets + a fine slider, persisted in
+   localStorage, clamped to [900,1920] and always capped by 98vw in CSS
+   so it can never overflow. The control lives in the header (outside
+   #view), so the 5-second refresh never touches it. */
+var CRMW={key:'irica-crm-w',min:900,max:1920,def:1240,cur:1240};
+function crmWApply(v){
+  v=Math.max(CRMW.min,Math.min(CRMW.max,Math.round(Number(v)||CRMW.def)));
+  CRMW.cur=v;
+  document.documentElement.style.setProperty('--crm-w',v+'px');
+  return v;
+}
+function crmWSet(v){
+  v=crmWApply(v);
+  try{localStorage.setItem(CRMW.key,String(v));}catch(e){}
+  crmWSync();
+  return v;
+}
+function crmWSync(){
+  var r=document.getElementById('wRange');
+  if(r)r.value=String(CRMW.cur);
+  var lbl=document.getElementById('wVal');
+  if(lbl)lbl.textContent=fa(CRMW.cur)+'px';
+  var btns=document.querySelectorAll('.wpreset');
+  for(var i=0;i<btns.length;i++){
+    btns[i].classList.toggle('primary',Number(btns[i].getAttribute('data-w'))===CRMW.cur);
+    btns[i].classList.toggle('ghost',Number(btns[i].getAttribute('data-w'))!==CRMW.cur);
+  }
+}
+(function(){
+  var stored=Number(localStorage.getItem(CRMW.key)||'0');
+  crmWApply(stored||CRMW.def);
+  crmWSync();
+  var pop=document.getElementById('wPop');
+  var btn=document.getElementById('widthBtn');
+  btn.onclick=function(e){
+    e.stopPropagation();
+    var open=pop.classList.toggle('open');
+    btn.setAttribute('aria-expanded',open?'true':'false');
+  };
+  pop.onclick=function(e){e.stopPropagation();};
+  document.addEventListener('click',function(){
+    if(pop.classList.contains('open')){pop.classList.remove('open');btn.setAttribute('aria-expanded','false');}
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&pop.classList.contains('open')&&!document.getElementById('dlg').open){
+      pop.classList.remove('open');btn.setAttribute('aria-expanded','false');
+    }
+  });
+  var presets=document.querySelectorAll('.wpreset');
+  for(var i=0;i<presets.length;i++){
+    presets[i].onclick=function(){crmWSet(this.getAttribute('data-w'));};
+  }
+  var range=document.getElementById('wRange');
+  range.addEventListener('input',function(){crmWApply(this.value);crmWSync();});
+  range.addEventListener('change',function(){crmWSet(this.value);});
+  document.getElementById('wReset').onclick=function(){crmWSet(CRMW.def);};
+})();
 
 /* ================= lookups ================= */
 function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)||null;}
