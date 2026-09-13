@@ -73,7 +73,7 @@ RUNTIME_REQS = [
 
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
-    "app_paths.py", "crm.py", "panel_auth.py",
+    "app_paths.py", "crm.py", "jalali.py", "panel_auth.py",
     "estelam_all.py", "estelam_gomrok.py", "estelam_hamta.py", "exitban.py",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
