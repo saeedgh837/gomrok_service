@@ -3,6 +3,114 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-09-13
+
+The case-workflow update: a 14-item operator-driven CRM overhaul —
+identity-pool inquiries at every stage, per-passenger passports, editable
+and rollback-able completed cases, a case table with a detail modal, and a
+Telegram registration handoff. Implemented through a reviewed multi-agent
+pipeline (2 domains, per-task supervisor verification, 3 independent
+reviews); the suite grew 511 -> 749 tests, all green.
+
+### Added
+
+- **Identity-pool inquiries at every stage (item 7):** watch-stage customs
+  inquiries now run under the inquiry-identity pool exactly like intake —
+  never under the passenger's national code — failing closed with a clear
+  Persian error when the pool is empty or invalid. The site's
+  "registered under another national code" message (متعلق به این کد ملی
+  نیست, operator-provided) is classified as the `advanced` (registered)
+  status, so the existing auto-advance join moves handed cases toward
+  payment; «یافت نشد» keeps the case polling on its interval.
+- **Per-passenger passport:** required (latin letters/digits, 5-20 chars,
+  stored uppercased) on every passenger save; legacy records without one
+  keep loading unchanged. The registration profile gains an OPTIONAL
+  `passport` field (auto-filled from the passenger on create/link, never
+  overwritten) with a site-1 form field and route-level validation.
+- **Attach-time registration profiles (item 11):** the profile is created
+  or linked the moment a passenger is connected to a case (idempotent,
+  deduplicated by serial/national) with the handover/auto-advance ensure
+  kept as a backstop. `/crm-start-payment` self-heals an empty or stale
+  profile link and returns an actionable Persian error (naming the
+  recovery) when no passenger is attached — the reported
+  «پروفایل ثبت‌نام ساخته نشده» failure is regression-tested.
+- **Telegram registration handoff (item 8):** after a successful handover
+  tick the panel sends exactly one message
+  (`kodmeli = … / imei1 = … / imei2 = … / passport = …`) to the new
+  «registration channel/group numeric id» setting. Fail-closed when the
+  destination is unset or the passenger's passport is missing; Telegram
+  failures never affect the case state; a per-case «ارسال مجدد به تلگرام»
+  button; logs carry the device id and destination only.
+- **Case management:** a case/device edit modal (primary IMEI locked with
+  delete-and-recreate guidance), editable completed cases with a
+  strongly-confirmed rollback (done → payment_done, completion timestamps
+  cleared), strict section separation (active/completed/problem/closed —
+  each case in exactly one section), created/updated/completion timestamps
+  on every case surface, and a consistent × close affordance on every
+  dialog with ESC support.
+- **Case table + detail modal (item 14):** the devices tab is now a clean
+  table (id, passenger, device, masked serial, stage, status, created,
+  updated) with all per-case actions living in a case-detail modal.
+
+### Fixed
+
+- Silent step-2 customs-inquiry failures (items 1+9): every gomrok inquiry
+  affordance surfaces backend errors; gomrok buttons disable with a tooltip
+  while the identity pool has no valid entry (hamta unaffected); bulk runs
+  report per-device errors.
+- "Back at step 5 completed the case" (item 12): no UI or backend path can
+  complete a case except the deliver_code tick — the skip-to-done path is
+  removed everywhere and an exhaustive 10-stage × 13-action invariant
+  matrix pins the contract.
+- **Registry-fee double-booking:** correcting a serial typo (delete +
+  recreate, forced by the immutable primary IMEI) now books an automatic
+  `base_fee_refund` reversal on the customer holding the original row, so
+  the ledger stays fee-neutral end to end.
+- Auto-advance gave up on a case after a rollback re-advance (stale local
+  attempt counter) leaving it stuck at `to_payment` until a manual start.
+- `retry_count` UnboundLocalError crashed the customs inquiry robot's
+  first-try verdicts (no preceding transient error) before classification
+  ran — a latent pre-existing crash, now guarded.
+- cp1252 console crash: `/save` and `/activate` dropped their HTTP response
+  when printing Persian/profile data on a non-UTF-8 console.
+- Double-start guard: a device with a live inquiry run can no longer be
+  started again (per-device in-flight refusal; the periodic-tab reset
+  button disables while runs are live).
+- Owner-record hardening: `update_owner` no longer crashes on hand-edited
+  rows lacking `card_no`; spaced 16-digit cards store normalized.
+- `last_inquiry_at` writes are under `STORE_LOCK`; the site-2 estelam page
+  labels an `advanced` result «ثبت‌شده در گمرک» (success) instead of
+  «مسدود/خطر»; the periodic tab marks payment-stage cases «فقط دستی»
+  instead of a countdown for inquiries that never run; all copy claiming
+  watch inquiries run under the passenger's identity corrected.
+
+### Changed
+
+- Passenger card number is optional (empty allowed; 16 digits still
+  enforced when present).
+- `telegram_notify.send_message` gained an additive `chat_id` parameter for
+  single-destination sends (existing callers and fan-out behavior
+  unchanged).
+- The test runner's DEFAULT suite grew from 38 to 54 modules.
+
+### Tests
+
+- Suite 511 → 749, all green: 238 new tests across 13 new modules (stage
+  transitions, case/ledger/owner-passport integrity, watch identity +
+  not-owner classification, inquiry gate, forms/tabs, sections/wiring,
+  case list, dialog chrome, profile-ready, review fixes, telegram
+  handoff); 5 stale contract tests rewritten; 34 fixtures updated; the
+  pre-existing `test_periodic_inquiry_tab` failure fixed and the module
+  registered.
+
+### Notes
+
+- `gomrok.py` is untouched in this release (operator decision); passports
+  are entered into the portal manually per the operator's workflow.
+- Before first use: complete each passenger's passport in the passenger
+  tab, and set the registration Telegram channel id in settings — both
+  gates fail closed with guidance messages until then.
+
 ## [1.2.0] - 2026-09-10
 
 ### Added
