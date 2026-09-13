@@ -127,6 +127,10 @@ def _locked_store():
 PROFILE_DEFAULTS = {
     "id": "", "title": "", "national": "", "birth": "", "mobile": "", "telegram_chat_id": "",
     "first_name": "", "last_name": "", "father_name": "", "birth_certificate_no": "",
+    # v1.5 item 11: OPTIONAL latin passport number, carried for the operator's
+    # manual portal workflow. Never required — start_profile's missing-list
+    # deliberately does NOT include it (robot side out of scope).
+    "passport": "",
     "imeis": ["", ""], "no_confirm_check": False, "submit": True,
     "debugging": False, "manual_manage": False,
     # Morurgar be tore pishfarz makhfi (off-screen) ejra mishavad ta manabe-e
@@ -175,6 +179,10 @@ def _clean_profile(p):
               "gomrok_inquiry_checked_at", "hamta_inquiry_status", "hamta_inquiry_error",
               "hamta_inquiry_checked_at"):
         out[k] = str(out.get(k) or "").strip()
+    # Optional passport (v1.5 item 11): normalize strip+uppercase, NEVER
+    # reject — legacy rows without the key simply default to "" and stay
+    # valid. Format enforcement lives in the /save route only.
+    out["passport"] = str(out.get("passport") or "").strip().upper()
     for key in ("gomrok_inquiry_results", "hamta_inquiry_results"):
         out[key] = list(out.get(key) or [])
     imeis = out.get("imeis") or []
@@ -1248,7 +1256,10 @@ ESTELAM_STATUS_FA = {
     "running": "در حال استعلام",
     "healthy": "سالم (شناسه در گمرک ورودی یافت نشد)",
     "problem": "دارای اشکال",
-    "advanced": "هشدار: رفتن به مرحله بعد",
+    # Pool semantics: 'advanced' = registered under the passenger's code —
+    # the SUCCESS signal for the watch stages (same wording as the CRM tab,
+    # v1.5 review item 2), not a warning.
+    "advanced": "ثبت‌شده در گمرک (رفتن به مرحله بعد)",
     "error": "خطای ربات",
 }
 
@@ -1260,7 +1271,7 @@ ESTELAM_BADGE_FA = {
     "running": "در حال استعلام",
     "healthy": "مجاز (قابل ثبت)",
     "problem": "مسدود/خطر",
-    "advanced": "مسدود/خطر",
+    "advanced": "ثبت‌شده",
     "error": "خطای ربات",
 }
 
@@ -1467,8 +1478,12 @@ def crm_periodic_toggle(device_id, remove=True):
 def crm_start_inquiry(device_id, service="gomrok", origin="manual",
                       actor=None):
     """CRM-scoped inquiry start (plan section 2):
-      - pick the identity FOR THIS STAGE: random valid pool entry for
-        pre-registration intake, the device OWNER for the watch stages (F1);
+      - identity: a random valid POOL entry for EVERY inquiry (pool-only
+        contract, user item 7 — intake and watch stages alike); the old
+        stage-based routing (owner identity for the watch stages, F1) was
+        removed — the owner is needed for registration and handover, never
+        as the inquiry identity. Fails closed exactly like intake when no
+        valid pool entry exists, so the request is never sent;
       - materialize it into store['person'] (F3 — no new store keys);
       - sync + reset the CRM row and start ONE device (F2 — never the
         unscoped sweep that would swallow the operator's manual site-2 rows).
@@ -1504,12 +1519,17 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual",
     result = estelam_start(device_id=device_id, service=service,
                            actor=actor)
     if result.get("ok"):
-        data = crm_mod.store_read()
-        device = next((d for d in data.get("devices", [])
-                       if d.get("id") == device_id), None)
-        if device:
-            device["last_inquiry_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            crm_mod.store_write(data)
+        # Locked read-modify-write (v1.5 review item 9): a bare
+        # read -> mutate -> write here could clobber a concurrent
+        # store_write (scheduler/auto-advance ticks) — same pattern
+        # as every other device mutation in this module.
+        with crm_mod.STORE_LOCK:
+            data = crm_mod.store_read()
+            device = next((d for d in data.get("devices", [])
+                           if d.get("id") == device_id), None)
+            if device:
+                device["last_inquiry_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                crm_mod.store_write(data)
         crm_mod.crm_log("info", "inquiry_started", device_id=device_id,
                         service=service, origin=origin,
                         person_masked=crm_mod.mask_national(person.get("national")))
@@ -1554,6 +1574,7 @@ def crm_ensure_registration_profile(device_id):
             "national": (owner or {}).get("national", ""),
             "birth": (owner or {}).get("birth", ""),
             "mobile": (owner or {}).get("mobile", ""),
+            "passport": str((owner or {}).get("passport") or "").strip(),
             "imeis": [s for s in (serial1, device.get("serial2") or "") if s],
             "enabled": False,
             "registration_status": "pending",
@@ -1563,6 +1584,16 @@ def crm_ensure_registration_profile(device_id):
         crm_mod.crm_log("info", "profile_created", device_id=device_id,
                         profile_id=profile["id"])
     else:
+        # Fill-once passport (v1.5 item 11): an EMPTY profile passport takes
+        # the attached owner's; a non-empty value is NEVER overwritten (the
+        # operator's manual entry wins). Idempotent — after the first fill
+        # the profile side is non-empty and this becomes a no-op.
+        owner_passport = str((owner or {}).get("passport") or "").strip()
+        if owner_passport and not str(profile.get("passport") or "").strip():
+            profile["passport"] = owner_passport
+            save_store(store)
+            crm_mod.crm_log("info", "profile_passport_filled",
+                            device_id=device_id, profile_id=profile["id"])
         crm_mod.crm_log("info", "profile_linked", device_id=device_id,
                         profile_id=profile["id"])
     with crm_mod.STORE_LOCK:
@@ -1574,6 +1605,56 @@ def crm_ensure_registration_profile(device_id):
             dev["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
             crm_mod.store_write(data)
     return profile["id"]
+
+
+HANDOFF_STAGES = ("handed", "to_payment", "payment", "payment_done", "done")
+
+
+def crm_send_registration_handoff(device_id, actor=None):
+    """v1.5 B10: hand the registration data (national code, IMEIs, passport)
+    to the registration Telegram destination after handover. FAIL-CLOSED on
+    every error shape — unset destination, missing passport, send failure:
+    the caller's handover stays committed and only the notice differs. The
+    body is sensitive, so it targets ONLY the configured registration chat
+    (send_message chat_id=); never the configured fanout list. Returns
+    (sent, notice) with a Persian operator notice, "" on success. Log lines
+    carry device_id and the destination id ONLY (plan §12)."""
+    import crm as crm_mod
+    data = crm_mod.store_read()
+    settings = data.get("settings") or {}
+    destination = str(settings.get("registration_chat_id") or "").strip()
+    if not destination:
+        crm_mod.crm_log("info", "registration_handoff_skipped",
+                        device_id=device_id, reason="no_destination")
+        return False, ("مقصد تلگرام ثبت مسافری تنظیم نشده — "
+                       "از بخش تنظیمات مشخص کنید")
+    device = next((d for d in data.get("devices", [])
+                   if d.get("id") == device_id), None)
+    owner = next((o for o in data.get("owners", [])
+                  if o.get("id") == (device or {}).get("owner_id")), None)
+    if not device or not str((owner or {}).get("passport") or "").strip():
+        crm_mod.crm_log("info", "registration_handoff_skipped",
+                        device_id=device_id, reason="no_passport")
+        return False, ("برای ارسال اطلاعات ثبت، ابتدا شمارهٔ گذرنامهٔ مسافر را "
+                       "در بخش اطلاعات مسافر کامل کنید")
+    body = "\n".join((
+        f"kodmeli = {owner.get('national') or ''}",
+        f"imei1 = {device.get('serial1') or ''}",
+        f"imei2 = {device.get('serial2') or ''}",
+        f"passport = {owner.get('passport') or ''}",
+    ))
+    try:
+        import telegram_notify
+        telegram_notify.send_message(body, chat_id=destination, timeout=20,
+                                     actor=actor)
+    except Exception:
+        # No exception text in the log — ids only (plan §12).
+        crm_mod.crm_log("warn", "registration_handoff_failed",
+                        device_id=device_id, destination=destination)
+        return False, "ارسال اطلاعات ثبت به تلگرام ناموفق بود"
+    crm_mod.crm_log("info", "registration_handoff_sent",
+                    device_id=device_id, destination=destination)
+    return True, ""
 
 
 def _crm_is_due(device, settings):
@@ -1735,6 +1816,10 @@ def crm_auto_advance_scan():
                 dev["advance_attempts"] = 0
                 dev["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 crm_mod.store_write(fresh)
+            # The store reset above also resets THIS scan's local counter: a
+            # rollback to handed must restart payment attempts from zero, not
+            # give up on the stale pre-rollback value (v1.5 review item 1).
+            attempts = 0
             moved.append(device["id"])
             crm_mod.crm_log("info", "registered_detected", device_id=device["id"])
         elif not is_retry:
@@ -1830,6 +1915,17 @@ def crm_update_settings(fields):
             errors.append("هزینهٔ ثبت رجیستری باید عدد نامنفی باشد (تومان)")
         else:
             settings["registry_fee_amount"] = fee
+    if "registration_chat_id" in fields:
+        # v1.5 B10: the registration handoff destination — a numeric Telegram
+        # chat id (groups/channels are negative, e.g. -1001234567890).
+        # Empty clears it (handoff then fails closed with a notice).
+        raw = str(fields.get("registration_chat_id") or "").strip()
+        if not raw:
+            settings["registration_chat_id"] = ""
+        elif re.fullmatch(r"-?\d+", raw):
+            settings["registration_chat_id"] = raw
+        else:
+            errors.append("شناسهٔ تلگرام باید عددی باشد (مثلاً -1001234567890)")
     if errors:
         return None, errors
     data["settings"] = settings
@@ -2008,9 +2104,19 @@ def estelam_start(device_id=None, service="gomrok", actor=None):
     # gomrok/all be kod-e melli va tarikh-e tavallod niaz darand.
     if errors and service != "hamta":
         return {"ok": False, "errors": ["اطلاعات شخص برای استعلام را پر کنید"] +errors}
-    if len(estelam_live_runs()) >= ESTELAM_MAX_CONCURRENT:
+    live_runs = estelam_live_runs()
+    if len(live_runs) >= ESTELAM_MAX_CONCURRENT:
         return {"ok": False, "errors": [
             f"سقف اجرای همزمان استعلام ({ESTELAM_MAX_CONCURRENT}) پر است — بعداً تلاش می‌شود"]}
+    # Per-device in-flight guard (v1.5 review item 4): an inquiry reset clears
+    # last_inquiry_at making the device instantly due again; without this
+    # check the scheduler or a manual click could double-start the SAME
+    # device while its run is still alive. Other devices keep starting in
+    # parallel under the global cap — this is per-device only.
+    if device_id and any(str(run.get("device_id") or "") == str(device_id)
+                         for run in live_runs):
+        return {"ok": False,
+                "errors": ["استعلام این دستگاه همین حالا در حال اجراست"]}
     targets = data.get("devices") or []
     if device_id:
         targets = [d for d in targets if str(d.get("id")) == str(device_id)]
@@ -3163,6 +3269,8 @@ function buildForm(p){
     '<label>تاریخ تولد</label>'+withPaste('<input type="text" name="identity_birth" class="ltr" value="'+escHtml(p.birth||'')+'" oninput="syncSharedField(\'birth\',this.value)">')+
     '<label>شماره شناسنامه</label>'+withPaste('<input type="text" name="birth_certificate_no" class="ltr" value="'+escHtml(p.birth_certificate_no||'')+'">')+
     '<label>کد ملی</label>'+withPaste('<input type="text" name="identity_national" class="ltr" value="'+escHtml(p.national||'')+'" oninput="syncSharedField(\'national\',this.value)">')+
+    '<label>شمارهٔ گذرنامه</label>'+withPaste('<input type="text" name="passport" class="ltr" value="'+escHtml(p.passport||'')+'">')+
+    '<div class="hint">شمارهٔ گذرنامهٔ مسافر — برای فرآیند ثبت (اختیاری)</div>'+
     '</div>'+
     '<div id="view-profile-inquiries" class="hidden">'+
       buildDeviceInquiryPanel(p)+
@@ -3308,15 +3416,24 @@ function saveProfile(e){
     last_name:f.last_name.value.trim(),
     father_name:f.father_name.value.trim(),
     birth_certificate_no:f.birth_certificate_no.value.trim(),
+    passport:f.passport.value.trim(),
     imeis:imeis,
     no_confirm_check:!document.getElementById('confirm_on').checked,
     debugging:document.getElementById('debug_on').checked,
     manual_manage:document.getElementById('manual_on').checked
   };
   fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-  .then(function(r){return r.json();})
+  .then(function(r){return r.json().then(function(data){return {ok:r.ok,data:data};});})
   .then(function(res){
-    STORE=res; activeId=res.active_id;
+    if(!res.ok){
+      /* v1.5 item 11: a 400 (e.g. malformed passport) must NOT assign the
+         error body to STORE — surface it on the toast, red like the catch. */
+      var t=document.getElementById('toast');
+      t.style.color='var(--danger)'; t.textContent='✕ '+(res.data&&res.data.error||'خطا در ذخیره');
+      t.classList.add('show');
+      return;
+    }
+    STORE=res.data; activeId=res.data.active_id;
     renderProfiles();
     var t=document.getElementById('toast');
     t.style.color='var(--ok)'; t.textContent='✓ ذخیره شد — حالا ربات را اجرا کن';
@@ -3972,7 +4089,7 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
   .b-running{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
   .b-healthy{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .b-problem{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
-  .b-advanced{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
+  .b-advanced{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .b-error{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
   .b-good{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .b-registered{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
@@ -4013,7 +4130,8 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
         background:var(--pill-neutral-bg);color:var(--pill-neutral-fg)}
   .chip.healthy{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.problem,.chip.error{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
-  .chip.running,.chip.advanced{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
+  .chip.running{background:var(--pill-warn-bg);color:var(--pill-warn-fg)}
+  .chip.advanced{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.good,.chip.success{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.registered{background:var(--pill-ok-bg);color:var(--pill-ok-fg)}
   .chip.blocked{background:var(--pill-danger-bg);color:var(--pill-danger-fg)}
@@ -4968,6 +5086,18 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .dev .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:2px}
   .dev .subrow{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px}
   .dev .subrow .cell b{font-size:11px;color:var(--muted);font-weight:600;display:block}
+  /* v1.5 B7: cases table + case-detail modal — per-case actions moved off
+     the list into the modal; table rows keep the devcard-<id> anchor the
+     summary rail flashes (tr cells pulse the background, devRow cards keep
+     the old box-shadow pulse). */
+  .tbl-wrap{overflow-x:auto}
+  .casetbl td{white-space:nowrap}
+  tr.flash>td{animation:rowflash 1.6s ease-out 1}
+  @keyframes rowflash{0%,70%{background:var(--brand-soft)}100%{background:transparent}}
+  .card.flash{animation:devflash 1.6s ease-out 1}
+  .dlg-lbl{font-size:11px;color:var(--muted);font-weight:600;margin:12px 0 5px}
+  .dlg-sec{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  @media (prefers-reduced-motion:reduce){tr.flash>td,.card.flash{animation:none}}
   /* forms & dialog */
   input,select,textarea{font-family:inherit;font-size:13.5px;border:1px solid var(--line-strong);
     border-radius:9px;padding:8px 11px;background:var(--card);color:var(--txt);min-height:34px}
@@ -4992,10 +5122,15 @@ CRM_PAGE = r"""<!DOCTYPE html>
   label.f.check input:focus-visible+.box{box-shadow:var(--ring)}
   label.f.check .ft{font-size:12.5px;color:var(--txt);font-weight:500}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
-  dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--txt);
+  dialog{position:relative;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--txt);
     padding:20px;width:min(600px,94vw);box-shadow:var(--shadow-2)}
   dialog::backdrop{background:rgba(8,10,25,.55)}
-  dialog h3{margin:0 0 12px;font-size:16px;font-weight:650}
+  dialog h3{margin:0 0 12px;font-size:16px;font-weight:650;padding-inline-end:34px}
+  /* shared dialog chrome: one x-close outside #dlgBody (bodies keep their
+     own dismiss buttons; native ESC/cancel path untouched) */
+  .dlg-x{position:absolute;top:10px;inset-inline-end:10px;background:transparent;border:0;
+    color:var(--muted);font-size:20px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:8px}
+  .dlg-x:hover{color:var(--txt);background:var(--card2)}
   .err{color:var(--danger);font-size:12.5px;white-space:pre-line}
   /* states */
   .empty{padding:34px 16px;text-align:center;color:var(--muted)}
@@ -5032,7 +5167,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
   <div id="view"></div>
 </div>
 
-<dialog id="dlg"><div id="dlgBody"></div></dialog>
+<dialog id="dlg"><button type="button" class="dlg-x" onclick="closeDlg()" aria-label="بستن">×</button><div id="dlgBody"></div></dialog>
 <div id="toasts"></div>
 <div class="quickbox-wrap" id="quickWrap"></div>
 
@@ -5052,9 +5187,11 @@ var STAGE_FA = {
 };
 var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
   'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok','closed':'n'};
+/* No 'payment_done' entry (v1.5 B8): completion is never gate-free -- the
+   continue button at payment_done is the only path that can land on 'done'. */
 var STAGE_SKIP_NEXT = {
   'new':'inquiry','inquiry':'ready_owner','ready_owner':'handed','handed':'to_payment',
-  'to_payment':'payment','payment':'payment_done','payment_done':'done','problem':'inquiry'
+  'to_payment':'payment','payment':'payment_done','problem':'inquiry'
 };
 var EST_FA = {'pending':'در انتظار','running':'در حال استعلام','healthy':'سالم',
   'advanced':'ثبت‌شده در گمرک','problem':'دارای اشکال','error':'بدون پاسخ','':'—'};
@@ -5138,6 +5275,10 @@ var ICONS = {
   info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11.2 12h.8v4h.8"/><path d="M11.2 12h1.6v4h1"/></svg>',
 };
 var INTAKE_STAGES = ['new','inquiry','problem','ready_owner'];
+/* v1.5 B10: stages where the case has been handed over and the
+   «ارسال مجدد به تلگرام» re-send button is offered (mirrors the
+   server's HANDOFF_STAGES tuple). */
+var HANDOFF_STAGES_JS = ['handed','to_payment','payment','payment_done','done'];
 var STAGE_CONTINUE_FA = {
   'new':'ارسال به استعلام ثبت‌نبودن','inquiry':'ثبت نتیجهٔ ثبت‌نبودن','ready_owner':'تحویل به مسئول ثبت',
   'handed':'رفتن به انتظار پرداخت','to_payment':'شروع ربات پرداخت','payment':'تأیید پرداخت',
@@ -5157,13 +5298,12 @@ var STAGE_NEEDS = {
   'ready_owner':()=>['مسافر',''],
   'handed':()=>['ثبت‌بودن در گمرک','']};
 var STAGE_SKIP_WARN = {
-  'new':'استعلام ورودی اجرا نمی‌شود و پرونده مستقیم به صف استعلام می‌رود.',
+  'new':'مرحلهٔ ثبت پرونده نادیده گرفته می‌شود؛ استعلام ثبت‌نبودن همچنان برای این دستگاه لازم است.',
   'inquiry':'نتایج استعلام ثبت‌نبودن نادیده گرفته می‌شوند و پرونده مستقیم «خام» فرض می‌شود.',
-  'ready_owner':'نیاز به مسافر نادیده گرفته می‌شود؛ بدون مسافر، استعلام‌های نظارتی اجرا نمی‌شوند.',
+  'ready_owner':'نیاز به مسافر نادیده گرفته می‌شود؛ مشخصات مسافر برای ثبت پرونده و تحویل لازم است، نه برای هویت استعلام.',
   'handed':'استعلام ثبت‌بودن دستگاه در گمرک نادیده گرفته می‌شود و پرونده مستقیم به گام پرداخت می‌رود.',
   'to_payment':'ربات پرداخت خودکار اجرا نمی‌شود؛ لینک پرداخت گرفته نمی‌شود.',
-  'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.',
-  'payment_done':'تحویل کد بدون ثبت ثبت‌نام نهایی انجام می‌شود و پرونده تکمیل‌شده علامت می‌خورد.'};
+  'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.'};
 function stageReady(d){
   var fn=STAGE_READY[d.stage];
   return fn===true?true:(typeof fn==='function'?Boolean(fn(d)):false);
@@ -5217,7 +5357,8 @@ function devTick(id, action){
   }
   if(action==='__stage_back'){
     api('/crm-state').then(function(state){
-      var d=(state.devices||[]).find(x=>x.id===id);if(!d)return;
+      var d=(state.devices||[]).find(x=>x.id===id);
+      if(!d){toast('پرونده پیدا نشد',false);return;}
       var target=STAGE_BACK_FA[d.stage]||'مرحلهٔ قبل';
       confirmDlg('برگشت به مرحلهٔ قبل','مطمئنی می‌خوای به گام «'+target+'» برگردی؟',
         'برگشت',function(){
@@ -5225,7 +5366,7 @@ function devTick(id, action){
             toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
             .catch(e=>toast(e,false));
         });
-    });
+    }).catch(e=>toast(e,false));
     return;
   }
   if(action==='__start_payment'){
@@ -5236,18 +5377,21 @@ function devTick(id, action){
   if(action==='__close_case'){closeCaseDialog(id);return;}
   if(action==='__noop'){return;}
   api('/crm-tick',{device_id:id,action:action}).then(async r=>{
-      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));await refresh();})
+      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));
+      if(r.handoff_notice){toast(r.handoff_notice,false);}
+      await refresh();})
     .catch(e=>toast(e,false));
 }
 /* ================= completed / problem / closed tabs (v1.1.5) ================= */
 function devRow(d, extra){
   var st=d.stage;
   var cust=esc(custName(d.customer_id));
-  var row='<div class="card" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
+  var row='<div class="card" id="devrow-'+d.id+'" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
     +'<b>'+esc(d.name)+'</b>'
     +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
     +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
     +(cust?'<span class="chip">'+ICONS.user+cust+'</span>':'')
+    +'<span class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+'</span>'
     +(extra||'')+'</div>';
   if(extra===undefined||extra==='')row+='';
   return row+'</div>';
@@ -5256,9 +5400,25 @@ function doneTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='done')
     .sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')));
   var note='<div class="row" style="margin-bottom:10px"><span class="muted">'
-    +'پرونده‌های تکمیل‌شده — از جریان اصلی خارج شده‌اند و فقط برای مرور نگه‌داری می‌شوند.</span></div>';
+    +'پرونده‌های تکمیل‌شده — از جریان اصلی خارج شده‌اند؛ در صورت نیاز مشخصات را ویرایش کنید یا با احتیاط پرونده را به مرحلهٔ قبل برگردانید.</span></div>';
   if(!ds.length)return note+emptyHtml('پروندهٔ تکمیل‌شده‌ای نیست','پرونده‌ها پس از تحویل کد فعال‌سازی به این‌جا می‌آیند.');
-  return note+ds.map(d=>devRow(d)).join('');
+  return note+ds.map(d=>devRow(d,
+    '<span class="kbd">تاریخ تکمیل: '+esc(d.done_at||'—')+'</span>'
+    +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
+    +'<button class="btn mini danger" onclick="doneRollback(\''+d.id+'\')">بازگشت به مرحلهٔ قبل</button>')).join('');
+}
+/* Done-tab rollback (v1.5 B3): undoing a completion is bookkeeping-sensitive,
+   so it lives here with its own strong confirmation instead of riding the
+   active-case __stage_back flow. STAGE_BACK_FA deliberately has no 'done'
+   entry — the completed tab is the only surface offering this rollback. */
+function doneRollback(id){
+  confirmDlg('بازگشت به مرحلهٔ قبل',
+    'پروندهٔ تکمیل‌شده به گام «پرداخت تأییدشده» برمی‌گردد و تاریخ تکمیل آن پاک می‌شود. این کار نادرست می‌تواند حساب‌ها را به‌هم بریزد؛ مطمئنی؟',
+    'بازگشت به مرحلهٔ قبل',function(){
+      api('/crm-tick',{device_id:id,action:'stage_back'}).then(async r=>{
+        toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
+        .catch(e=>toast(e,false));
+    });
 }
 function problemTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='problem')
@@ -5283,6 +5443,7 @@ function closedTabHtml(){
     +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
     +'<span class="chip closedreason">دلیل: '+esc(d.closed_reason||'—')+'</span>'
     +'<span class="chip">'+esc(d.closed_at||'—')+'</span>'
+    +'<span class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+'</span>'
     +'</div></div>').join('');
 }
 function devRequeue(id){
@@ -5309,6 +5470,9 @@ function closeCaseYes(id){
       .catch(e=>toast(e,false));
   });
 }
+/* v1.5 B4: the main grid lists active cases only; done/problem/closed
+   devices appear exclusively in their own tabs (no case in two sections). */
+function isActiveCase(d){return !['done','problem','closed'].includes(d.stage);}
 function needsAction(d){
   return ['problem','ready_owner','to_payment','payment'].includes(d.stage);
 }
@@ -5320,7 +5484,7 @@ var STAGE_GUIDE = {
   'to_payment': {n:5, name:'استعلام ثبت‌بودن دستگاه در گمرک', desc:'در این گام دستگاه باید در سامانهٔ گمرک استعلام گرفته شود. اگر دستگاه ثبت شده باشد این گام تأیید است و می‌توان به گام بعد رفت؛ اگر ثبت نشده باشد گام هنوز تکمیل نشده است. این گام به استعلام دوره‌ای نیاز دارد؛ پیام موفق پرونده‌هایی که به استعلام دوره‌ای فرستاده می‌شوند «ثبت‌بودن دستگاه» است و با آن امکان رفتن به گام بعد باز می‌شود.'},
   'payment': {n:6, name:'رسیدن به مرحلهٔ پرداخت', desc:'پرونده با مشخصات مسافری که به آن وصل شده برای دریافت لینک پرداخت با ربات گمرک می‌رود. در صورت دریافت لینک پرداخت، اسکرین‌شات‌های موردنیاز و فایل لینک پرداخت برای این دستگاه در پنل CRM قابل مشاهده و استفاده است و برای گام بعد آزاد می‌شود.'},
   'payment_done': {n:7, name:'تأیید دستی انجام‌شدن پرداخت', desc:'پرداخت پرونده به‌صورت دستی بررسی و تأیید می‌شود. رسید و اسکرین‌شات‌ها در کارت پرونده قابل مشاهده است.'},
-  'done': {n:8, name:'تأیید تحویل کد فعال‌سازی', desc:'تحویل کد فعال‌سازی به مشتری تأیید می‌شود و پرونده تکمیل می‌شود. استعلام دوره‌ای برای اطمینان ادامه دارد.'}
+  'done': {n:8, name:'تأیید تحویل کد فعال‌سازی', desc:'تحویل کد فعال‌سازی به مشتری تأیید می‌شود و پرونده تکمیل می‌شود.'}
 };
 var STAGE_GUIDE_PROBLEM = 'این دستگاه در گام ۲ (استعلام ثبت‌نبودن) دارای اشکال شد — معمولاً به این معناست که دستگاه قبلاً در یکی از سامانه‌ها ثبت بوده یا سایت پاسخ رد داده است. با «بازگشت به صف» دوباره استعلام بگیرد یا پرونده بسته شود.';
 function stageGuideModal(stage){
@@ -5368,9 +5532,12 @@ function kpisHtml(){
     +'</div>';
 }
 
-/* ================= devices (card grid) ================= */
+/* ================= devices (case table + detail modal) ================= */
+/* Serials are long IMEIs; the table shows a masked form (the full value
+   lives in the case detail modal). Short values pass through untouched. */
+function maskSerial(s){s=String(s||'');return s.length<=8?s:s.slice(0,4)+'…'+s.slice(-3);}
 function devicesHtml(){
-  var ds=(STATE.devices||[]).slice().sort((a,b)=>
+  var ds=(STATE.devices||[]).filter(isActiveCase).sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
   var runCount=(STATE.estelam_runs||[]).length;
   var runningBanner=(STATE.estelam_running)
@@ -5378,74 +5545,138 @@ function devicesHtml(){
       +'<span class="pill warn">ربات استعلام در حال اجراست'+(runCount>1?' — '+fa(runCount)+' اجرای همزمان':'')+'</span>'
       +'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button></div>'
     :'';
+  // B4: an empty active grid must not claim the workspace has no cases at
+  // all when only done/problem/closed ones exist — point at their tabs.
+  var others=(STATE.devices||[]).length>0;
   if(!ds.length) return runningBanner+'<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.</span></div>'
-    +emptyHtml('پرونده‌ای ثبت نشده','هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
-  var cards=ds.map(function(d){
+    +'<span class="muted">'+(others
+      ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
+      :'اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.')+'</span></div>'
+    +emptyHtml(others?'پروندهٔ در جریانی نیست':'پرونده‌ای ثبت نشده',
+      others?'این‌جا فقط پرونده‌های فعال را نشان می‌دهد؛ بقیهٔ پرونده‌ها در سربرگ‌های «تکمیل شده‌ها»، «دارای اشکال» و «مختومه‌ها» هستند.'
+        :'هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
+  // B7: a clean case table — every per-case action moved into the
+  // caseDetail modal (row click / «جزئیات»); rows keep the devcard-<id>
+  // anchor the summary rail focuses, and the only list-area buttons are
+  // «+ پروندهٔ جدید», the per-row «جزئیات» and the global stop-robot banner.
+  var rows=ds.map(function(d){
     var est=d.estelam||{};
-    var pay=d.pay||{};
-    var st=d.stage;
-    var cont=stageContinue(d);
-    var acts=stageActions(d).map(a=>a[0]?
-      '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
-    var continueBtn=cont?
-      '<button class="btn mini primary btn-continue" '+(cont.ready?'':'disabled title="'+esc(cont.need?'نیازمند: '+cont.need:'هنوز آماده نیست')+'"')+
-      ' onclick="stageContinueClick(\''+d.id+'\')">'+cont.label+(cont.ready?'':' ⌛')+'</button>':'';
-    var payRow='';
-    if(st==='payment'||st==='payment_done'||(st==='to_payment'&&d.profile_id)){
-      var busy=pay.run_status==='busy';
-      var autoChip=d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'';
-      if(st==='to_payment'&&d.auto_advance)
-        payRow='<div class="payrow">'+autoChip+'<span class="muted">روبات پرداخت خودکار در جریان است — پس از گرفتن لینک، کنترل‌ها همین‌جا فعال می‌شوند</span></div>';
-      else if(st==='to_payment'&&!busy&&!d.auto_advance)
-        payRow='<div class="payrow">'+autoChip+'<span class="muted">پرداخت دستی: با «شروع ربات پرداخت» لینک پرداخت گرفته می‌شود.</span></div>';
-      else
-        payRow='<div class="payrow">'+autoChip
-          +(busy?'<span class="pill warn">ربات پرداخت در حال اجرا</span>':'')
-          +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' بستن ربات</button>':'')
-          +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>':'')
-          +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">🔗 لینک پرداخت</a>':'')
-          +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">🧾 رسید</a>':'')
-          +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
-          +'</div>';
-    }
-    return '<div class="dev'+(needsAction(d)?' needs-action':'')+'" id="devcard-'+d.id+'">'
-      +'<div class="devhead">'+ICONS.dev+'<b>'+esc(d.name)+'</b>'
-      +'<span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
-      +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')+'</div>'
-      +'<div class="ser">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div>'
-      +railHtml(d)
-      +(payRow?'<div style="margin:6px 0">'+payRow+'</div>':'')
-      +'<div class="meta">'
-      +ICONS.user+'<span class="chip">'+esc(custName(d.customer_id))+'</span>'
-      +ICONS.id+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
-      +'<span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">استعلام: '
-      +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
-      +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')
-      +'</div>'
-      +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
-      +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
-      +'<div class="acts">'
-      +(INTAKE_STAGES.includes(d.stage)
-        ?'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
-         +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
-      +(PERIODIC_STAGES[d.stage]
-        ?(d.periodic_opt_out
-          ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
-          :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
-      +(STATE.estelam_running?'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button>':'')
-      +(acts?'':'<span class="muted">—</span>')
-      +(acts?'<span style="flex:1"></span>'+acts:'')
-      +' <button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button></div>'
-      +(continueBtn?'<div class="acts" style="margin-top:4px">'+continueBtn+'</div>':'')
-      +'</div>';
+    return '<tr id="devcard-'+d.id+'" style="cursor:pointer" onclick="caseDetail(\''+d.id+'\')">'
+      +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
+      +'<td>'+esc(ownerName(d.owner_id))+'</td>'
+      +'<td><b>'+esc(d.name)+'</b></td>'
+      +'<td class="kbd" dir="ltr">'+esc(maskSerial(d.serial1))+'</td>'
+      +'<td><span class="pill '+(STAGE_TONE[d.stage]||'n')+'">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span></td>'
+      +'<td><span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">'
+        +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
+        +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
+      +'<td class="kbd">'+esc(d.created||'—')+'</td>'
+      +'<td class="kbd">'+esc(d.updated||'—')+'</td>'
+      +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
   }).join('');
-  return '<div class="row" style="margin-bottom:12px">'
+  return runningBanner+'<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌شده: نیازمند اقدام در بالا · استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند</span></div>'
-    +'<div class="devwrap"><div class="devmain"><div class="devgrid">'+cards+'</div></div>'
+    +'<div class="devwrap"><div class="devmain"><div class="card tbl-wrap"><table class="casetbl">'
+    +'<thead><tr><th>شناسه پرونده</th><th>مسافر</th><th>دستگاه</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
+    +rows+'</tbody></table></div></div>'
     +'<div class="devrail">'+devicesRailHtml()+'</div></div>';
+}
+/* Case detail modal (v1.5 B7): every per-case action that used to sit on
+   the card opens here — stage actions, continue, inquiries, periodic
+   opt-in/out, pay controls, edit, delete. Handlers are the existing card
+   functions verbatim; the modal adds no new action literals. After an
+   action the shared handlers toast + refresh() the list behind the modal;
+   close and reopen to see the case's new state. */
+function caseDetail(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  if(!d){toast('پرونده پیدا نشد',false);return;}
+  var est=d.estelam||{};
+  var pay=d.pay||{};
+  var st=d.stage;
+  var o=findOwner(d.owner_id)||{};
+  var cont=stageContinue(d);
+  var acts=stageActions(d).map(a=>a[0]?
+    '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
+  var continueBtn=cont?
+    '<button class="btn mini primary btn-continue" '+(cont.ready?'':'disabled title="'+esc(cont.need?'نیازمند: '+cont.need:'هنوز آماده نیست')+'"')+
+    ' onclick="stageContinueClick(\''+d.id+'\')">'+cont.label+(cont.ready?'':' ⌛')+'</button>':'';
+  var payRow='';
+  if(st==='payment'||st==='payment_done'||(st==='to_payment'&&d.profile_id)){
+    var busy=pay.run_status==='busy';
+    var autoChip=d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'';
+    if(st==='to_payment'&&d.auto_advance)
+      payRow='<div class="payrow">'+autoChip+'<span class="muted">روبات پرداخت خودکار در جریان است — پس از گرفتن لینک، کنترل‌ها همین‌جا فعال می‌شوند</span></div>';
+    else if(st==='to_payment'&&!busy&&!d.auto_advance)
+      payRow='<div class="payrow">'+autoChip+'<span class="muted">پرداخت دستی: با «شروع ربات پرداخت» لینک پرداخت گرفته می‌شود.</span></div>';
+    else
+      payRow='<div class="payrow">'+autoChip
+        +(busy?'<span class="pill warn">ربات پرداخت در حال اجرا</span>':'')
+        +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' بستن ربات</button>':'')
+        +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>':'')
+        +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">🔗 لینک پرداخت</a>':'')
+        +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">🧾 رسید</a>':'')
+        +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
+        +'</div>';
+  }
+  openDlg('<h3>جزئیات پرونده</h3>'
+    +'<div style="margin:14px 0 6px">'+railHtml(d)+'</div>'
+    +'<div class="dlg-lbl">مسافر</div>'
+    +'<div class="dlg-sec">'
+    +ICONS.user+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
+    +'<span class="chip">کد ملی: '+esc(o.national||'—')+'</span>'
+    +'<span class="chip">تولد: '+esc(o.birth||'—')+'</span>'
+    +'<span class="chip">موبایل: '+esc(o.mobile||'—')+'</span>'
+    +'<span class="chip">کارت: '+esc(o.card_no||'—')+'</span>'
+    +'<span class="chip">گذرنامه: '+esc(o.passport||'—')+'</span>'
+    +(st==='ready_owner'?'<button class="btn mini primary" onclick="dlgAttach(\''+d.id+'\')">اتصال مسافر</button>':'')
+    +'</div>'
+    +'<div class="dlg-lbl">دستگاه</div>'
+    +'<div class="dlg-sec">'
+    +ICONS.dev+'<b>'+esc(d.name)+'</b>'
+    +'<span class="chip" dir="ltr">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
+    +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
+    +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')
+    +'</div>'
+    +'<div class="kbd">ایجاد: '+esc(d.created||'—')+' · آخرین تغییر: '+esc(d.updated||'—')+(d.done_at?' · تکمیل: '+esc(d.done_at):'')+'</div>'
+    +(d.notes?'<div class="kbd">یادداشت: '+esc(d.notes)+'</div>':'')
+    +'<div class="dlg-lbl">استعلام</div>'
+    +'<div class="dlg-sec">'
+    +'<span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">استعلام: '
+    +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
+    +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')
+    +'</div>'
+    +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
+    +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
+    +(payRow?'<div style="margin:10px 0 0">'+payRow+'</div>':'')
+    +'<div class="dlg-lbl">اقدام‌ها</div>'
+    +'<div class="dlg-sec">'
+    +(INTAKE_STAGES.includes(d.stage)
+      ?'<button class="btn mini ghost"'+gomrokGateAttrs()+' onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
+       +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
+    +(PERIODIC_STAGES[d.stage]
+      ?(d.periodic_opt_out
+        ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
+        :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
+    +(HANDOFF_STAGES_JS.includes(d.stage)
+      ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">ارسال مجدد به تلگرام</button>':'')
+    +(acts||'<span class="muted">—</span>')
+    +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
+    +'<button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button>'
+    +'</div>'
+    +(continueBtn?'<div class="dlg-sec" style="margin-top:6px">'+continueBtn+'</div>':'')
+    +'<div class="row" style="margin-top:14px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
+}
+/* v1.5 B10: manual re-send of the registration handoff (case detail modal).
+   The route re-checks stage/destination/passport server-side; a failed send
+   keeps the case untouched and surfaces the Persian notice in red. */
+function crmHandoffResend(id){
+  api('/crm-handoff-resend',{device_id:id}).then(async r=>{
+    if(r.ok){toast('اطلاعات ثبت به تلگرام ارسال شد');}
+    else{toast(r.notice||'ارسال مجدد به تلگرام انجام نشد',false);}
+    await refresh();
+  }).catch(e=>toast(e,false));
 }
 /* ================= left summary rail (v1.1.5) ================= */
 function sumBalPill(id){
@@ -5477,11 +5708,25 @@ function sumCasesHtml(){
     +'</div>').join('')+'</div>';
 }
 function sumFocusDevice(id){
-  var el=document.getElementById('devcard-'+id);
-  if(!el){setTab('devices');setTimeout(function(){sumFocusDevice(id);},250);return;}
-  el.scrollIntoView({behavior:'smooth',block:'center'});
-  el.classList.add('flash');
-  setTimeout(function(){el.classList.remove('flash');},1700);
+  /* v1.5 B7: route to the tab owning this case before focusing — done/
+     problem/closed rows live in their own tabs now, so the old
+     devices-only retry loop would spin forever. One delayed retry covers
+     the post-setTab render; devRow ids are tried too (done/problem tabs). */
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  var st=d?d.stage:'';
+  if(st==='done')setTab('done_tab');
+  else if(st==='problem')setTab('problem_tab');
+  else if(st==='closed')setTab('closed_tab');
+  else setTab('devices');
+  function flashRow(){
+    var el=document.getElementById('devcard-'+id)||document.getElementById('devrow-'+id);
+    if(!el)return false;
+    el.scrollIntoView({behavior:'smooth',block:'center'});
+    el.classList.add('flash');
+    setTimeout(function(){el.classList.remove('flash');},1700);
+    return true;
+  }
+  if(!flashRow())setTimeout(flashRow,250);
 }
 function sumDebtorsHtml(){
   var ds=(STATE.customers||[]).filter(c=>bal(c.id)<0)
@@ -5536,7 +5781,7 @@ function ownersHtml(){
     +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
     +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
     +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مسافری ثبت نشده است</b>مشخصات مسافر برای استعلام نظارتی و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="7"><div class="empty"><b>مسافری ثبت نشده است</b>مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.</div></td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= periodic gomrok inquiry tab ================= */
@@ -5561,13 +5806,24 @@ function periodicSelAll(master){
     if(box)box.checked=!!master.checked;
   });
 }
+/* Bulk /crm-inquiry answers 200 with per-device results; surface the first
+   backend error instead of a bare «شروع نشد» so a fail-closed start (e.g.
+   empty identity pool) tells the operator why. */
+function inquiryBulkToast(r){
+  if(r.ok){toast('استعلام برای '+fa(r.queued)+' دستگاه شروع شد');return;}
+  var firstErr='';
+  (r.results||[]).forEach(function(x){
+    if(!firstErr&&x&&x.errors&&x.errors.length)firstErr=String(x.errors[0]);
+  });
+  toast(firstErr||'استعلام شروع نشد',false);
+}
 function periodicRunSelected(){
   var ids=periodicSelIds();
   if(!ids.length){toast('دستگاهی انتخاب نشده است',false);return;}
   confirmDlg('استعلام گروهی','استعلام گمرک برای '+fa(ids.length)+' دستگاه انتخاب‌شده اجرا شود؟',
     'شروع',function(){
       api('/crm-inquiry',{service:'gomrok',device_ids:ids}).then(async r=>{
-        toast(r.ok?('استعلام برای '+fa(r.queued)+' دستگاه شروع شد'):'شروع نشد',r.ok);await refresh();})
+        inquiryBulkToast(r);await refresh();})
         .catch(e=>toast(e,false));
     });
 }
@@ -5661,7 +5917,7 @@ function periodicRunAll(){
   confirmDlg('شروع فوری استعلام','استعلام گمرک برای '+fa(ids.length)+' دستگاه همین حالا اجرا شود؟',
     'شروع',function(){
       api('/crm-inquiry',{service:'gomrok',device_ids:ids}).then(async r=>{
-        toast(r.ok?('استعلام برای '+fa(r.queued)+' دستگاه شروع شد'):'شروع نشد',r.ok);await refresh();})
+        inquiryBulkToast(r);await refresh();})
         .catch(e=>toast(e,false));
     });
 }
@@ -5704,7 +5960,11 @@ function periodicHtml(){
     var opt=d.periodic_opt_out;
     var statusPill='<span class="pill '+(opt?'n':(EST_PILL[est.status]||'n'))+'">'+
       (opt?'خارج از لیست':(EST_FA[est.status]||'—'))+'</span>';
-    var due=dueIn(d,hours);
+    // payment/payment_done are NEVER auto-inquired (the scheduler watch set is
+    // handed/to_payment only): show a manual-only badge instead of a due
+    // countdown that would imply a scheduled run (v1.5 review item 3).
+    var due=(d.stage==='payment'||d.stage==='payment_done')
+      ?'<span class="pill n">فقط دستی</span>':dueIn(d,hours);
     return '<tr'+(opt?' style="opacity:.55"':'')+'><td><input type="checkbox" id="periodicSel'+d.id+'" class="periodicSel"></td>'+
       '<td><b>'+esc(d.name)+'</b>'+
       '<div class="kbd">'+esc(d.serial1)+'</div></td>'+
@@ -5714,9 +5974,9 @@ function periodicHtml(){
       '<td class="kbd">'+esc(d.last_inquiry_at||'—')+'</td>'+
       '<td class="kbd">'+due+'</td>'+
       '<td><button class="btn mini ghost" onclick="periodicHistory(\''+d.id+'\')">تاریخچه</button> '+
-      '<button class="btn mini warn" onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
-      '<button class="btn mini ghost" onclick="periodicResetOne(\''+d.id+'\')">ریست تاریخچه</button> '+
-      '<button class="btn mini ok" onclick="periodicReInquire(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>استعلام مجدد</button> '+
+      '<button class="btn mini warn"'+gomrokGateAttrs()+' onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
+      '<button class="btn mini ghost" onclick="periodicResetOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>ریست تاریخچه</button> '+
+      '<button class="btn mini ok"'+gomrokGateAttrs()+' onclick="periodicReInquire(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>استعلام مجدد</button> '+
       (opt?'<button class="btn mini primary" onclick="periodicReAdd(\''+d.id+'\')">افزودن</button>'
           :'<button class="btn mini danger" onclick="periodicRemove(\''+d.id+'\')">حذف از لیست</button>')+'</td></tr>';
   }).join('');
@@ -5729,11 +5989,12 @@ function periodicHtml(){
     '<label class="f" style="flex-direction:row;align-items:center;gap:6px">بازهٔ استعلام دوره‌ای (ساعت): '+
     '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
     '</label><button class="btn" onclick="periodicSaveInterval()">ذخیره بازه</button>'+
-    '<button class="btn primary" onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
-    '<button class="btn" onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
+    '<button class="btn primary"'+gomrokGateAttrs()+' onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
+    '<button class="btn"'+gomrokGateAttrs()+' onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
     '<button class="btn warn" onclick="periodicResetSelected()">ریست تاریخچهٔ انتخاب‌شده‌ها</button>'+
     '<button class="btn" onclick="periodicAddModal()">+ افزودن پرونده</button>'+
-    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span></div>'+
+    '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(all.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span>'+
+    '<span class="muted">استعلام خودکار فقط برای مراحل «تحویل به مسئول ثبت» و «استعلام ثبت‌بودن» اجرا می‌شود؛ مراحل پرداخت فقط دستی‌اند.</span></div>'+
     '<table><thead><tr><th><input type="checkbox" id="periodicSelAll" onchange="periodicSelAll(this)"></th><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
     '<tbody>'+(rows||'<tr><td colspan="8"><div class="empty"><b>دستگاهی در لیست نیست</b>با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.</div></td></tr>')+'</tbody></table></div>'+
     '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+
@@ -5772,6 +6033,11 @@ function settingsHtml(){
   +'<input id="stFee" class="ltr" inputmode="numeric" style="width:150px" value="'+fa(settings.registry_fee_amount||0)+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveFee()">ذخیره مبلغ</button></div>'
   +'<p class="muted">این مبلغ هنگام ثبت هر دستگاه برای مشتریِ آن دستگاه به‌صورت خودکار بدهکار می‌شود.</p></div>'
+  +'<div class="card"><h3>تحویل اطلاعات ثبت به تلگرام</h3>'
+  +'<div class="row"><label class="f">شناسهٔ عددی کانال/گروه ثبت مسافری'
+  +'<input id="stRegChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.registration_chat_id||'')+'"></label>'
+  +'<button class="btn primary" onclick="settingsSaveRegChat()">ذخیره</button></div>'
+  +'<p class="muted">اطلاعات دستگاه و مسافر که برای فرآیند ثبت لازم است، برای تحویل به مسئول ثبت به این کانال/گروه تلگرام ارسال می‌شود.</p></div>'
   +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
     +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند فعال باشد</span></label>'
     +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
@@ -5795,6 +6061,11 @@ function settingsSaveFee(){
     toast('هزینه ثبت رجیستری ذخیره شد: '+money(r.settings.registry_fee_amount));await refresh();})
     .catch(e=>toast(e,false));
 }
+function settingsSaveRegChat(){
+  api('/crm-settings',{registration_chat_id:v('stRegChat')})
+    .then(async r=>{toast('شناسهٔ تلگرام ثبت مسافری ذخیره شد');await refresh();})
+    .catch(e=>toast(e,false));
+}
 function settingsSave(){
   api('/crm-settings',{scheduler_enabled:document.getElementById('stSched').checked})
     .then(async r=>{toast('تنظیمات ذخیره شد');await refresh();})
@@ -5816,7 +6087,7 @@ function renderQuickBox(){
   var wrap=document.getElementById('quickWrap');
   if(!wrap)return;
   var links=loadLinks();
-  wrap.innerHTML='<div class="quickbox"><div class="qb-title">سایت‌های مرتبط</div>'
+  wrap.innerHTML='<div class="quickbox" id="quickBox"><div class="qb-title">سایت‌های مرتبط</div>'
     +(links.map(l=>l.url?'<a class="qb-btn" target="_blank" href="'+esc(l.url)+'">'+esc(l.name||l.url)+'</a>':'').join('')
       ||'<span class="muted">لینکی ثبت نشده</span>')+'</div>';
 }
@@ -5843,9 +6114,9 @@ function identitiesHtml(){
     +'<button class="btn mini danger" onclick="identDelete(\''+i.id+'\')">حذف</button></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
-    +'<span class="muted">برای استعلام‌های ورودی یک مشخصات تصادفی معتبر انتخاب می‌شود؛ استعلام نظارتی پس از تحویل با هویت مسافر اجرا می‌شود.</span></div>'
+    +'<span class="muted">برای هر استعلام — ورودی و نظارتی — یک مشخصات تصادفی معتبر از همین استخر انتخاب می‌شود.</span></div>'
     +'<table><thead><tr><th>عنوان</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>استخر هویت خالی است</b>بدون حداقل یک مشخصات معتبر، استعلام ورودی اجرا نمی‌شود.</div></td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>استخر هویت خالی است</b>بدون حداقل یک مشخصات معتبر، هیچ استعلامی — ورودی و نظارتی — اجرا نمی‌شود.</div></td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= ledger ================= */
@@ -5864,7 +6135,7 @@ function ledgerHtml(){
   return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th><th></th></tr></thead>'
     +'<tbody>'+(rows||'<tr><td colspan="5"><div class="empty"><b>تراکنشی ثبت نشده است</b>از تب مشتریان روی «تراکنش» بزنید.</div></td></tr>')+'</tbody></table></div>';
 }
-var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','':'—'};
+var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','base_fee_refund':'بازگشت هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','':'—'};
 function txDetailModal(cid, idx){
   var c=(STATE.customers||[]).find(x=>x.id===cid);
   if(!c)return;
@@ -5957,19 +6228,76 @@ function doAddDevice(){
   api('/crm-device',payload).then(async()=>{closeDlg();toast('پرونده ثبت شد');await refresh();})
     .catch(e=>{showFieldErrors(String(e));});
 }
+/* Device EDIT modal (v1.5 B2): serial1 is the immutable case identity — the
+   backend (crm.update_device) rejects serial1 changes — so the field is
+   locked here and the update payload in doSaveDeviceEdit never carries a
+   serial1 key. The ADD modal dlgDevice above keeps an editable serial1. */
+function dlgDeviceEdit(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
+  if(!d){toast('پرونده پیدا نشد',false);return;}
+  var custOpts='<option value="">— بدون مشتری —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'"'+(c.id===d.customer_id?' selected':'')+'>'+esc(c.full_name)+'</option>').join('');
+  openDlg('<h3>ویرایش پروندهٔ دستگاه</h3>'
+    +'<div class="grid" style="margin-bottom:8px">'
+    +'<label class="f">نام دستگاه *<input id="dvEName" value="'+esc(d.name||'')+'"></label>'
+    +'<label class="f">سریال اول<input id="dvES1" value="'+esc(d.serial1||'')+'" inputmode="numeric" maxlength="15" disabled title="سریال اول قابل ویرایش نیست — برای تغییر، پرونده را حذف و دوباره بسازید"></label>'
+    +'<label class="f">سریال دوم (اختیاری)<input id="dvES2" value="'+esc(d.serial2||'')+'" inputmode="numeric" maxlength="15"></label>'
+    +'</div>'
+    +'<div class="row"><label class="f">مشتری<select id="dvECust">'+custOpts+'</select></label>'
+    +'<label class="f check"><input type="checkbox" id="dvEAuto"'+(d.auto_advance?' checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پس از ثبت در گمرک</span></label></div>'
+    +'<label class="f" style="margin-top:8px">یادداشت دستگاه (اختیاری)<input id="dvENotes" value="'+esc(d.notes||'')+'"></label>'
+    +'<div class="err" id="dvEErr"></div>'
+    +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveDeviceEdit(\''+id+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function doSaveDeviceEdit(id){
+  var payload={action:'update',id:id,name:v('dvEName'),serial2:v('dvES2'),
+    customer_id:v('dvECust'),notes:v('dvENotes'),
+    auto_advance:document.getElementById('dvEAuto').checked};
+  api('/crm-device',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+    .catch(e=>{document.getElementById('dvEErr').textContent=e;showFieldErrors(String(e));});
+}
 function digitsFa(s){return String(s||'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[^0-9]/g,'');}
+/* Gomrok inquiries need a usable identity. Approximate client-side mirror
+   of the backend pool validation (crm.pick_pool_identity ->
+   panel.validate_estelam_person): an entry roughly validates when national
+   is 10 digits and mobile is 09xxxxxxxxx (both after digitsFa), and birth
+   looks like YYYY/MM/DD. digitsFa strips separators, so birth is checked on
+   a Persian-digit-normalized copy that keeps the slashes; the year test
+   /\d{4} is deliberately looser than the backend's 1[34]\d{2} — the backend
+   stays the authority, this gate only disables the obvious no-valid-entry
+   case and devInquire still surfaces the exact backend error. */
+function identityPoolReady(){
+  return (STATE.identities||[]).some(function(i){
+    var birth=String((i&&i.birth)||'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+    return /^\d{10}$/.test(digitsFa(i.national))
+      && /^09\d{9}$/.test(digitsFa(i.mobile))
+      && /\d{4}\/\d{2}\/\d{2}/.test(birth);
+  });
+}
+var IDENTITY_POOL_HINT='ابتدا در بخش استخر هویت حداقل یک مشخصات معتبر اضافه کنید';
+function gomrokGateAttrs(){
+  return identityPoolReady()?'':' disabled title="'+IDENTITY_POOL_HINT+'"';
+}
 function dlgAttach(id){
-  var opts=(STATE.owners||[]).map(o=>'<option value="'+o.id+'">'+esc(o.first_name+' '+o.last_name)+' — '+esc(o.national)+'</option>').join('');
+  /* An owner bound to ANY device renders as a disabled option so the operator
+     sees why it cannot be picked; the server stays the enforcer of the 1:1. */
+  var bound={};(STATE.devices||[]).forEach(d=>{if(d.owner_id)bound[d.owner_id]=true;});
+  var opts=(STATE.owners||[]).map(o=>{
+    var label=esc(o.first_name+' '+o.last_name)+' — '+esc(o.national);
+    return bound[o.id]
+      ?'<option value="'+o.id+'" disabled>'+label+' — متصل</option>'
+      :'<option value="'+o.id+'">'+label+'</option>';
+  }).join('');
   openDlg('<h3>اتصال مسافر به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
     +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
     +'<p class="muted">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
 }
 function doAttach(id){
   api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value})
-    .then(async()=>{closeDlg();toast('مسافر متصل شد');await refresh();})
+    .then(async r=>{closeDlg();toast('مسافر متصل شد');if(r.profile_notice){toast(r.profile_notice,false);}await refresh();})
     .catch(e=>toast(e,false));
 }
 function devInquire(id, service){
+  if(service!=='hamta'&&!identityPoolReady()){toast(IDENTITY_POOL_HINT,false);return;}
   var labels={gomrok:'گمرک',hamta:'همتا',all:'همهٔ استعلام‌ها'};
   confirmDlg('اجرای استعلام','استعلام «'+(labels[service]||service)+'» برای این دستگاه اجرا شود؟',
     'اجرا',function(){
@@ -6099,19 +6427,29 @@ function doTx(cid,kind){
 }
 function dlgOwner(mode,id){
   var o = id?findOwner(id):{};
+  /* Passport is required for the registration submission (v1.5); owners
+     created before the field existed get a hint under the empty input. */
+  var passHint=(id&&!String(o.passport||'').trim())
+    ?'<span class="muted" style="display:block;margin-top:2px;font-size:12px">برای ارسال اطلاعات ثبت، شمارهٔ گذرنامه لازم است</span>'
+    :'';
   openDlg('<h3>'+(id?'ویرایش مسافر':'مسافر جدید')+'</h3><div class="grid">'
     +'<label class="f">نام *<input id="oFn" value="'+esc(o.first_name||'')+'"></label>'
     +'<label class="f">نام خانوادگی *<input id="oLn" value="'+esc(o.last_name||'')+'"></label>'
     +'<label class="f">کد ملی *<input id="oNat" value="'+esc(o.national||'')+'" inputmode="numeric"></label>'
     +'<label class="f">تاریخ تولد * (۱۳۷۵/۰۴/۲۹)<input id="oBirth" value="'+esc(o.birth||'')+'"></label>'
     +'<label class="f">موبایل *<input id="oMob" value="'+esc(o.mobile||'')+'" inputmode="tel"></label>'
-    +'<label class="f">شماره کارت ۱۶ رقمی *<input id="oCard" value="'+esc(o.card_no||'')+'" inputmode="numeric"></label>'
+    +'<label class="f">گذرنامه *<input id="oPassport" value="'+esc(o.passport||'')+'" dir="ltr">'+passHint+'</label>'
+    +'<label class="f">شماره کارت ۱۶ رقمی<input id="oCard" value="'+esc(o.card_no||'')+'" inputmode="numeric"></label>'
     +'</div><div class="err" id="oErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveOwner(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveOwner(id){
+  var passport=v('oPassport');
+  if(!passport){document.getElementById('oErr').textContent='شمارهٔ گذرنامه الزامی است';
+    var pEl=document.getElementById('oPassport');if(pEl)pEl.setAttribute('aria-invalid','true');return;}
+  var pEl=document.getElementById('oPassport');if(pEl)pEl.removeAttribute('aria-invalid');
   var payload={action:id?'update':'add',first_name:v('oFn'),last_name:v('oLn'),
-    national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),card_no:v('oCard')};
+    national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),passport:v('oPassport'),card_no:v('oCard')};
   if(id)payload.id=id;
   api('/crm-owner',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
     .catch(e=>{document.getElementById('oErr').textContent=e;showFieldErrors(String(e));});
@@ -6507,10 +6845,38 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "errors": ["دستگاه پیدا نشد"]}, 404)
             return
         profile_id = str(device.get("profile_id") or "").strip()
+        if profile_id:
+            # Stale link (v1.5 review item 11): a profile_id pointing at a
+            # profile that no longer exists in the store must self-heal the
+            # same way as a missing one — otherwise start_profile answers an
+            # English 404 "profile not found" instead of the actionable
+            # Persian path below.
+            store = load_store()
+            if not next((p for p in store.get("profiles", [])
+                         if p.get("id") == profile_id), None):
+                profile_id = ""
         if not profile_id:
-            self._json({"ok": False,
-                                    "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است"]}, 400)
-            return
+            # Self-heal (v1.5 item 11): cases that skipped past handover
+            # (stage_skip) or lost their linked profile reach payment without
+            # a registration profile. ONE ensure attempt — only with a
+            # passenger attached: without an owner the ensure could mint
+            # nothing but a national-less profile the robot rejects anyway,
+            # so the actionable 400 below names the real recovery. F5 stays
+            # intact: the heal produces an EXPLICIT device link; there is
+            # still no pool claim and no auto-advance semantics change.
+            healed = ""
+            if str(device.get("owner_id") or "").strip():
+                try:
+                    healed = str(crm_ensure_registration_profile(device_id) or "").strip()
+                except Exception:
+                    healed = ""
+            if not healed:
+                self._json({"ok": False,
+                            "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است — "
+                                       "ابتدا مسافر را به پرونده متصل کنید "
+                                       "(در صورت نیاز پرونده را به گام «اتصال مسافر» برگردانید)"]}, 400)
+                return
+            profile_id = healed
         status, payload = start_profile(profile_id, actor=self.actor)
         if status != 200:
             crm_mod.crm_log("error", "payment_start_failed", device_id=device_id,
@@ -6843,19 +7209,44 @@ class Handler(BaseHTTPRequestHandler):
             if not found:
                 data["id"] = pid or None
                 store["profiles"].append(data)
+            # Route-level passport validation (v1.5 item 11): the field is
+            # OPTIONAL — empty always passes; a non-empty value must be 5-20
+            # latin letters/digits (after strip+upper). Deliberately NOT in
+            # _clean_profile/save_store so legacy stores keep loading/saving
+            # unchanged; only operator edits through this route are checked.
+            candidate_passport = str(data.get("passport") or "").strip().upper()
+            if candidate_passport and \
+                    not re.fullmatch(r"[A-Z0-9]{5,20}", candidate_passport):
+                self._json({"error": "شمارهٔ گذرنامه باید ۵ تا ۲۰ کاراکتر حرف یا رقم لاتین باشد"}, 400)
+                return
             # profile-i ke zakhire shod ra ACTIVE mikonim
             store["active_id"] = pid or store["profiles"][-1].get("id") or ""
             clean = save_store(store)
             # active_id-e vaghe'i ba'd az tamiz-shodan
-            print(f">>> Zakhire shod: profile={data.get('title')!r} "
-                  f"active={clean['active_id']}")
+            # The title is operator data and can be Persian: on a cp1252
+            # console this print raises UnicodeEncodeError inside the handler
+            # thread and the client would get a connection drop instead of
+            # the saved store. Diagnostics must never break the response
+            # (v1.5 review item 10).
+            try:
+                print(f">>> Zakhire shod: profile={data.get('title')!r} "
+                      f"active={clean['active_id']}")
+            except UnicodeEncodeError:
+                pass
             self._json(clean)
 
         elif self.path == "/activate":
             data = self._read_json()
             store["active_id"] = (data.get("id") or "").strip()
             clean = save_store(store)
-            print(f">>> Faal shod: {clean['active_id']}")
+            # active_id comes from the operator's payload: on a cp1252
+            # console an unencodable id would raise UnicodeEncodeError inside
+            # the handler thread and drop the response. Diagnostics must
+            # never break the route (same guard as /save, v1.5 item 10/12).
+            try:
+                print(f">>> Faal shod: {clean['active_id']}")
+            except UnicodeEncodeError:
+                pass
             self._json(clean)
 
         elif self.path == "/toggle":
@@ -7079,14 +7470,54 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-tick":
             data = self._read_json()
-            device, errors = crm_advance_logged(str(data.get("device_id") or ""),
-                                                str(data.get("action") or ""),
+            tick_device_id = str(data.get("device_id") or "")
+            tick_action = str(data.get("action") or "")
+            device, errors = crm_advance_logged(tick_device_id, tick_action,
                                                 owner_id=data.get("owner_id") or "",
                                                 reason=str(data.get("reason") or ""))
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:
-                self._json({"ok": True, "device": device})
+                payload = {"ok": True, "device": device}
+                if tick_action == "attach_owner":
+                    # TWO-LAYER invariant (v1.5 item 11): the registration
+                    # profile is created/linked at passenger-connect time
+                    # (THIS hook — the primary layer), while the existing
+                    # handover-time ensure inside crm_auto_advance_scan stays
+                    # as the backstop for shapes that skipped the attach
+                    # (stage_skip, legacy stores, a failed ensure here).
+                    # Nothing may 500 the route: on failure/empty return the
+                    # owner binding is KEPT, the operator gets profile_notice,
+                    # and the backstop retries at handover/auto-advance time.
+                    try:
+                        profile_id = crm_ensure_registration_profile(tick_device_id)
+                    except Exception:
+                        profile_id = ""
+                    if not profile_id:
+                        import crm as crm_mod
+                        # device_id only — never personal data (plan §12).
+                        crm_mod.crm_log("warn", "profile_ensure_failed",
+                                        device_id=tick_device_id,
+                                        phase="attach")
+                        payload["profile_notice"] = (
+                            "مسافر متصل شد اما ساخت پروفایل ثبت‌نام ناموفق بود — "
+                            "هنگام تحویل دوباره تلاش می‌شود")
+                if tick_action == "handover":
+                    # v1.5 B10: after a COMMITTED handover, try to hand the
+                    # registration data to the registration Telegram
+                    # destination. Fail-closed on every error shape (no
+                    # destination, missing passport, send failure): the
+                    # handover itself is already saved and stays; the
+                    # operator gets handoff_notice. Nothing here may 500
+                    # the route.
+                    try:
+                        _sent, handoff_notice = \
+                            crm_send_registration_handoff(
+                                tick_device_id, self.actor)
+                    except Exception:
+                        handoff_notice = "ارسال اطلاعات ثبت به تلگرام ناموفق بود"
+                    payload["handoff_notice"] = handoff_notice
+                self._json(payload)
 
         elif self.path == "/crm-start-payment":
             self._crm_start_payment(str(self._read_json().get("device_id") or ""))
@@ -7124,6 +7555,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "errors": errors}, 400)
             else:
                 self._json({"ok": True, "settings": settings})
+
+        elif self.path == "/crm-handoff-resend":
+            # v1.5 B10: manual re-send of the registration handoff from the
+            # case detail modal. Valid only once the case has been handed
+            # over (HANDOFF_STAGES); the destination/passport/send gates and
+            # the log hygiene all live in the shared helper.
+            import crm as crm_mod
+            resend_id = str(self._read_json().get("device_id") or "")
+            device = next((d for d in crm_mod.store_read().get("devices", [])
+                           if d.get("id") == resend_id), None)
+            if not device:
+                self._json({"ok": False, "errors": ["دستگاه پیدا نشد"]}, 400)
+            elif device.get("stage") not in HANDOFF_STAGES:
+                self._json({"ok": False, "errors": [
+                    "ارسال مجدد اطلاعات ثبت فقط برای مراحل پس از تحویل ممکن است"]},
+                    400)
+            else:
+                try:
+                    sent, notice = crm_send_registration_handoff(
+                        resend_id, self.actor)
+                except Exception:
+                    # Mirror the /crm-tick handover hook: a helper crash must
+                    # never abort the connection — surface the failure notice.
+                    crm_mod.crm_log("warn", "registration_handoff_failed",
+                                    device_id=resend_id)
+                    sent, notice = False, "ارسال اطلاعات ثبت به تلگرام ناموفق بود"
+                self._json({"ok": sent, "notice": notice})
 
         elif self.path == "/crm-report-telegram":
             self._crm_report_telegram(bool(self._read_json().get("full_data")))

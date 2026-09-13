@@ -50,7 +50,8 @@ class CrmInquiryCase(unittest.TestCase):
             owner_rec, errs = crm.add_owner({
                 "first_name": "رضا", "last_name": "محمدی",
                 "national": "0012345679", "birth": "1375/04/29",
-                "mobile": "09121234567", "card_no": "6219861012345678"})
+                "mobile": "09121234567", "card_no": "6219861012345678",
+                "passport": "PP0000001"})
             assert errs == [], errs
             crm.advance(record["id"], "attach_owner", owner_id=owner_rec["id"])
             if stage == "handed":
@@ -98,28 +99,53 @@ class TestIdentityMaterialization(CrmInquiryCase):
                 saved = json.load(open(self.estelam, encoding="utf-8"))
                 self.assertEqual(saved["person"]["national"], "0012345679")
 
-    def test_handed_stage_uses_owner_identity(self):
+    def test_handed_stage_uses_pool_identity(self):
+        """Pool-only identity contract (user item 7): watch-stage inquiries
+        run under a POOL identity, NOT the attached owner's."""
         owner_rec = self._crm_device(stage="handed", owner=True)
+        pool_rec, errs = crm.add_identity({"label": "pool-watch",
+                                           "national": "0076431309",
+                                           "birth": "1375/04/29",
+                                           "mobile": "09121234567"})
+        assert errs == [], errs
         with patch.object(panel, "start_estelam_process") as spawn, \
                 patch.object(panel, "estelam_is_running", return_value=False):
             spawn.return_value = {"pid": 5}
             result = panel.crm_start_inquiry(owner_rec["id"], service="gomrok")
         self.assertTrue(result["ok"], result)
         saved = json.load(open(self.estelam, encoding="utf-8"))
-        self.assertEqual(saved["person"]["national"], "0012345679")
+        self.assertEqual(saved["person"]["national"], "0076431309")
+        self.assertNotEqual(saved["person"]["national"], "0012345679")
 
-    def test_handed_without_owner_is_rejected(self):
-        """Defense-in-depth: a device AT a watch stage with no resolvable
-        owner (e.g. owner record deleted) must not silently run with a random
-        pool identity (F1)."""
+    def test_handed_without_owner_runs_under_pool(self):
+        """Pool-only contract (user item 7): a watch-stage inquiry no longer
+        requires an attached owner — the pool supplies the identity. The owner
+        requirement itself lives at the handover gate (see below)."""
         device = self._crm_device(stage="new")
         data = crm.store_read()
         dev = next(d for d in data["devices"] if d["id"] == device["id"])
         dev["stage"] = "handed"      # simulate drifted state
         crm.store_write(data)
-        result = panel.crm_start_inquiry(device["id"], service="gomrok")
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("مسافر" in e for e in result["errors"]))
+        rec, errs = crm.add_identity({"label": "pool-watch",
+                                      "national": "0012345679",
+                                      "birth": "1375/04/29",
+                                      "mobile": "09121234567"})
+        assert errs == [], errs
+        with patch.object(panel, "start_estelam_process") as spawn, \
+                patch.object(panel, "estelam_is_running", return_value=False):
+            spawn.return_value = {"pid": 6}
+            result = panel.crm_start_inquiry(device["id"], service="gomrok")
+        self.assertTrue(result["ok"], result)
+        saved = json.load(open(self.estelam, encoding="utf-8"))
+        self.assertEqual(saved["person"]["national"], "0012345679")
+
+    def test_handover_gate_still_requires_owner(self):
+        """The passenger («مسافر») requirement moved to the HANDOVER gate: a
+        ready_owner device without an attached owner cannot be handed over."""
+        device = self._crm_device(stage="ready_owner")
+        _record, errors = crm.advance(device["id"], "handover")
+        self.assertTrue(errors)
+        self.assertTrue(any("مسافر" in e for e in errors), errors)
 
     def test_empty_pool_and_no_owner_rejected_for_intake(self):
         device = self._crm_device(stage="new")

@@ -59,6 +59,14 @@ MAX_DEVICE_TRY = 4          # restart-e morurgar baraye YEK device
 # javab-e KHUB: shenase dar gomrok-e vorudi nist -> dastgah salem ast
 HEALTHY_MARKERS = ["یافت نشد", "پیدا نشد"]
 
+# Not-the-owner verdict — operator-provided site message 2026-09-13 (user
+# item 7): querying with a POOL identity a device registered under the
+# passenger's code returns «شناسه <serial> متعلق به این کد ملی نیست». The
+# device IS registered — this is the SUCCESS signal for the watch-stage
+# payment gate, so it is classified 'advanced' (registered). The serial is
+# embedded in the full message; the stable substring is matched.
+NOT_OWNER_MARKERS = ["متعلق به این کد ملی نیست"]
+
 
 def _store_read():
     import json
@@ -159,6 +167,9 @@ def classify_outcome(messages, advanced, attempts):
 
     Order matters:
       advanced  -> the page moved to step-2 (device IS registered upstream)
+      not-owner -> site says the serial belongs to ANOTHER national code:
+                   registered under the passenger's code — same 'advanced'
+                   verdict (user item 7, watch-stage pool queries)
       healthy   -> the site's own 'not found upstream' verdict
       retryable -> captcha/transient exhaustion: the DEVICE WAS NEVER
                    EVALUATED. status='error' (re-inquirable by the next
@@ -173,6 +184,9 @@ def classify_outcome(messages, advanced, attempts):
     if advanced:
         return {"status": "advanced", "messages": err,
                 "result": "رفتن به مرحله بعد — شناسه در گمرک ورودی ثبت است"}
+    if is_not_owner_result(err):
+        return {"status": "advanced", "messages": err,
+                "result": "ثبت‌شده در گمرک به نام کد ملی دیگری — شناسه در گمرک ورودی ثبت است"}
     if is_healthy_result(err):
         return {"status": "healthy", "messages": err, "result": err_text}
     if G.is_imei_retryable_error(err):
@@ -269,6 +283,11 @@ def clear_errors(driver):
 def is_healthy_result(messages):
     text = " | ".join(str(x or "") for x in (messages or []))
     return any(marker in text for marker in HEALTHY_MARKERS)
+
+
+def is_not_owner_result(messages):
+    text = " | ".join(str(x or "") for x in (messages or []))
+    return any(marker in text for marker in NOT_OWNER_MARKERS)
 
 
 def open_site(driver, wait):
@@ -431,6 +450,10 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
         for m in err:
             print("     -", m.encode("unicode_escape").decode("ascii"))
 
+    # Guard first-try verdict classification: with no preceding transient the
+    # retry block below never runs, so `retry_count` must already exist for
+    # the final classify_outcome(attempts=retry_count if err else 1) call.
+    retry_count = 0
     # khata-haye MOVAGHAT/captcha/hamta -> captcha-ye taze + click-e dobare
     if (conn_error or G.is_imei_retryable_error(err)) and not hamta_present(driver):
         def _prepare_form():
@@ -528,6 +551,24 @@ def _inquire_device(driver, wait, solver, person, device, no_confirm_check=False
     # 'error' (device NOT evaluated, re-inquirable) — never a 'problem'.
     outcome = classify_outcome(err, advanced=False, attempts=retry_count if err else 1)
     status = outcome["status"]
+
+    if status == "advanced":
+        # Message-derived "advanced" (not-the-owner verdict, user item 7):
+        # the site message says the serial is registered under ANOTHER
+        # national code — the positive "registered" signal for watch-stage
+        # pool queries. Mirror the hamta_present block's logging; without
+        # this branch the no-response fallthrough below would silently
+        # replace the verdict with a generic error.
+        message = (f"⚠️ MOHEM: site goft shenase be nam-e kod-e meli-ye "
+                   f"digar sabt shode (not-owner) — shenase dar gomrok-e "
+                   f"vorudi THABT ast: {err_text}")
+        G.log_event("error", message, step="estelam/imeiStep",
+                    title=title, national=person.get("national") or "",
+                    imei=serials[0] if serials else "")
+        _elog("advanced", outcome["result"],
+              serial=serials[0] if serials else "",
+              device_id=device.get("id") or "")
+        return outcome
 
     if status == "healthy":
         G.log_event("success", f"estelam-e SALEM: {err_text}", step="estelam/imeiStep",

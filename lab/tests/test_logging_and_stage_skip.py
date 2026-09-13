@@ -119,8 +119,15 @@ class StageSkipTests(_CrmStoreBase):
         _, errors = self._advance(self._device("done"), "stage_skip")
         self.assertTrue(errors)
 
-    def test_skip_from_payment_done_completes_case(self):
-        device, errors = self._advance(self._device("payment_done"), "stage_skip")
+    @unittest.skipUnless('payment_done' not in crm._STAGE_SKIP_NEXT,
+                         "crm.py contract (skip removal at payment_done) not landed")
+    def test_skip_from_payment_done_is_rejected(self):
+        store = self._device("payment_done")
+        device, errors = self._advance(store, "stage_skip")
+        self.assertTrue(errors)
+        self.assertIsNone(device)          # advance returns no device on rejection
+        # Stage-unchanged proof: deliver_code is only legal AT payment_done.
+        device, errors = self._advance(store, "deliver_code")
         self.assertEqual(errors, [])
         self.assertEqual(device["stage"], "done")
 

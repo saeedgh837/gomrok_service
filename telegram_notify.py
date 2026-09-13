@@ -181,14 +181,24 @@ def actor_prefix(who=None):
 
 
 def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None,
-                 actor=None):
+                 actor=None, chat_id=None):
     """Payam mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
     TimeoutError partab mishavad (baraye jaha ke robot nabayad gir konad).
-    `actor` overrides the attribution name for this message."""
+    `actor` overrides the attribution name for this message.
+    `chat_id` (v1.5 B10) targets EXACTLY that one chat: the configured chat
+    list and extra_chat_ids are ignored (sensitive registration data must
+    go only to its dedicated destination, never fan out)."""
     cfg = ensure_config()
     text = actor_prefix(actor) + text
     deadline = (time.monotonic() + timeout) if timeout else None
-    return _fanout("sendMessage", cfg, _target_chat_ids(cfg, extra_chat_ids),
+    if chat_id:
+        target = str(chat_id).strip()
+        if not target:
+            raise ValueError("chat_id must be a non-empty chat id")
+        targets = [target]
+    else:
+        targets = _target_chat_ids(cfg, extra_chat_ids)
+    return _fanout("sendMessage", cfg, targets,
                    lambda chat_id: {"chat_id": chat_id, "text": text,
                                     "parse_mode": parse_mode},
                    deadline=deadline)

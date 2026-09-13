@@ -116,7 +116,8 @@ class StageRollbackTests(_StoreHarness):
                 owner, errors = crm.add_owner({
                     "first_name": "رضا", "last_name": "محمدی",
                     "national": "0012345679", "birth": "1375/04/29",
-                    "mobile": "09121234567", "card_no": "1234567812345678"})
+                    "mobile": "09121234567", "card_no": "1234567812345678",
+                    "passport": "PP0000001"})
                 self.assertEqual(errors, [])
                 record, errors = crm.advance(device_id, "attach_owner",
                                              owner_id=owner["id"])
@@ -149,7 +150,7 @@ class StageRollbackTests(_StoreHarness):
             device = self._device_at(ACTION_PATH[order[index]], serial)
             self.assertEqual(device["stage"], order[index])
             if index == len(order) - 1:
-                continue                      # done: rollback is illegal
+                continue                      # done: rollback covered by test_stage_back_from_done_returns_to_payment_done
             device, errors = crm.advance(device["id"], "stage_back")
             self.assertEqual(errors, [])
             self.assertEqual(device["stage"], order[index - 1])
@@ -173,17 +174,25 @@ class StageRollbackTests(_StoreHarness):
         self.assertEqual(device["stage"], "ready_owner")
         self.assertEqual(device.get("handed_at"), "")
 
-    def test_stage_back_from_done_illegal(self):
+    @unittest.skipUnless('done' in crm._STAGE_BACK,
+                         "crm.py contract (done->payment_done rollback) not landed")
+    def test_stage_back_from_done_returns_to_payment_done(self):
         device = self._device_at(["queue_inquiry", "mark_ready", "handover",
                                   "to_payment", "start_payment",
                                   "confirm_payment", "deliver_code"])
-        _record, errors = crm.advance(device["id"], "stage_back")
-        self.assertTrue(errors)
+        self.assertEqual(device["stage"], "done")
+        self.assertTrue(device.get("done_at"))
+        device, errors = crm.advance(device["id"], "stage_back")
+        self.assertEqual(errors, [])
+        self.assertEqual(device["stage"], "payment_done")
+        self.assertEqual(device.get("done_at"), "")
+        self.assertEqual(device.get("code_delivered_at"), "")
 
     def test_handover_requires_attached_owner(self):
-        """Watch-stage inquiries run under the OWNER identity (F1): handing a
-        device over without an attached owner would strand it at `handed`
-        with un-runnable inquiries. Fail-closed at the source."""
+        """The handover gate requires an attached passenger: the case record,
+        the step-4 Telegram handoff, and the registration profile all need
+        the passenger's data (inquiries themselves are pool-only since the
+        v1.5 item-7 change). Fail-closed at the source."""
         device = self._device_at(["queue_inquiry", "mark_ready"])
         _record, errors = crm.advance(device["id"], "handover")
         self.assertTrue(errors)

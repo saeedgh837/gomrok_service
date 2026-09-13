@@ -54,7 +54,8 @@ class CrmApiHarness(unittest.TestCase):
         owner, errs = crm.add_owner({
             "first_name": "رضا", "last_name": "محمدی",
             "national": "0012345679", "birth": "1375/04/29",
-            "mobile": "09121234567", "card_no": "6219861012345678"})
+            "mobile": "09121234567", "card_no": "6219861012345678",
+            "passport": "PP0000001"})
         assert errs == [], errs
         # Intake gates: queue the inquiry, record both green results, attach.
         crm.advance(device["id"], "queue_inquiry")
@@ -149,7 +150,7 @@ class TestPeriodicTabPage(unittest.TestCase):
         self.assertIn("اطلاعات مسافر", src)
         self.assertNotIn("['owners','مالکان']", src)
         self.assertNotIn("سالم — نیازمند مالک", src)
-        self.assertIn("سالم — نیازمند مسافر", src)
+        self.assertIn("اتصال مسافر", src)
 
     def test_hamta_status_labels_and_colors(self):
         src = self._page()

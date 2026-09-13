@@ -34,11 +34,31 @@ DEFAULT = [
     "test_v1_4_finance_periodic",
     "test_v1_1_4_parallel_ux",
     "test_dashboard_rewrite",
-    "test_system_debug_logs",
+    "test_system_debug_logs", "test_logging_and_stage_skip",
     "test_robot_interpreter", "test_manual_scroll", "test_app_paths",
     "test_v1_1_5_summary_rail",
     "test_v1_1_5_tabs_closed",
     "test_v1_2_0_login_gate",
+    # v1.5 (B9): each module verified individually (exit 0) before being
+    # registered here. test_v1_5_passport_robot deliberately absent — the
+    # robot-side task was cancelled by the user.
+    "test_crm_design_gates",
+    "test_crm_v1_3_ui",
+    "test_v1_5_inquiry_gate",
+    "test_v1_5_forms_tabs",
+    "test_v1_5_sections_wiring",
+    "test_v1_5_case_list",
+    "test_v1_5_dialog_chrome",
+    "test_v1_5_profile_ready",
+    "test_v1_5_review_fixes",
+    "test_v1_5_handoff",
+    "test_periodic_inquiry_tab",
+    # Domain A contract modules (owner passport, ledger, stage machine).
+    "test_crm_stage_transitions",
+    "test_crm_case_integrity",
+    "test_crm_watch_identity",
+    "test_crm_owner_passport",
+    "test_crm_ledger_integrity",
 ]
 
 names = sys.argv[1:] or DEFAULT

@@ -10,11 +10,15 @@ Entities:
   owners     — device owner identities (1:1 with devices; validated with the
                full rule set: 10-digit national code + mod-11 checksum,
                shamsi birth date with a 15..99 age window, 09xx mobile,
-               16-digit card).
-  identities — the inquiry-identity pool. Pre-registration intake inquiries
-               pick a RANDOM entry; the watch re-inquiry runs under the
-               device owner's identity (customs registration is scoped to the
-               registering identity — see plan §2, review F1).
+               optional card number — 16 digits when present, empty allowed,
+               required latin passport — 5-20 chars, stored uppercase).
+  identities — the inquiry-identity pool. BOTH the pre-registration intake
+               inquiries AND the watch-stage re-inquiries pick a RANDOM
+               entry (user item 7): a legally-registered device is recorded
+               under the passenger's national code, so querying it with a
+               pool code returns the site's "registered under another code /
+               not the owner" message — and that message is itself the
+               positive "registered" signal that gates the payment step.
   devices    — master case records driven through the stage machine.
 
 All English in code per the project contract; Persian appears only in
@@ -40,6 +44,8 @@ DEFAULT_SETTINGS = {
     "auto_advance_default": False,
     "telegram_report_full_data": True,
     "registry_fee_amount": 24_000_000,  # هزینه ثبت رجیستری (تومان)
+    # Default only — the panel domain owns validation and use.
+    "registration_chat_id": "",
 }
 
 REGISTRY_FEE_NOTE = "هزینهٔ ثبت رجیستری"
@@ -91,13 +97,18 @@ _STAGE_BACK = {
     "to_payment": "handed",
     "payment": "to_payment",
     "payment_done": "payment",
-    # `done` is intentionally NOT rollback-able: the case is complete and its
-    # code was delivered; reopening it would corrupt the ledger trail.
+    # `done` IS rollback-able by operator decision (user item 3): a wrongly
+    # delivered code must be correctable. advance()'s generic rollback clears
+    # code_delivered_at and done_at, so the case can be completed again via
+    # deliver_code. `closed` (مختومه) stays terminal — see ALLOWED above.
+    "done": "payment_done",
 }
 
 # Operator-initiated SKIP: jump to the NEXT mainline stage without passing the
 # normal gates (inquiry results, owner attachment). UI asks for explicit
 # confirmation and each skipped stage is recorded in `skipped_stages`.
+# NO skip path may reach `done`: deliver_code is the ONLY action that can
+# complete a case (user item 12) — completion is never gate-free.
 _STAGE_SKIP_NEXT = {
     "new": "inquiry",
     "inquiry": "ready_owner",
@@ -105,7 +116,6 @@ _STAGE_SKIP_NEXT = {
     "handed": "to_payment",
     "to_payment": "payment",
     "payment": "payment_done",
-    "payment_done": "done",
     # `done` is terminal: nothing to skip.
     "problem": "inquiry",  # off-mainline branch re-enters the mainline
 }
@@ -244,9 +254,20 @@ def validate_owner(data):
     mobile = normalize_digits(data.get("mobile")).strip()
     if not re.fullmatch(MOBILE_RE, mobile):
         errors.append("شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود")
+    # Card is optional (user item 13): empty/missing passes; when present it
+    # must be exactly 16 digits (after digit normalization and dash/space
+    # stripping).
     card = normalize_digits(data.get("card_no")).replace("-", "").replace(" ", "")
-    if not re.fullmatch(CARD_RE, card):
+    if card and not re.fullmatch(CARD_RE, card):
         errors.append("شماره کارت باید ۱۶ رقم باشد")
+    # Passport is required: 5-20 latin letters/digits, validated on the
+    # trimmed original (mixed case accepted); uppercasing happens at
+    # persistence (add_owner/update_owner).
+    passport = str(data.get("passport") or "").strip()
+    if not passport:
+        errors.append("شماره گذرنامه الزامی است")
+    elif not re.fullmatch(r"[A-Za-z0-9]{5,20}", passport):
+        errors.append("شماره گذرنامه باید ۵ تا ۲۰ کاراکتر و فقط شامل حروف و اعداد لاتین باشد")
     return errors
 
 
@@ -390,6 +411,17 @@ def _store_read():
     settings = dict(DEFAULT_SETTINGS)
     settings.update(loaded.get("settings") or {})
     data["settings"] = settings
+    # Legacy backfill (user item 10): device rows written before `created`
+    # existed derive it from `updated` — in memory only; it persists naturally
+    # on the next mutation's _store_write. Existing `created` values are never
+    # touched, and odd rows (non-dict entries, non-list collections) never
+    # raise.
+    devices = data.get("devices")
+    if isinstance(devices, list):
+        for device in devices:
+            if (isinstance(device, dict) and not device.get("created")
+                    and device.get("updated")):
+                device["created"] = device["updated"]
     return data
 
 
@@ -515,7 +547,10 @@ def delete_customer(customer_id, force=False):
             mid = _device_mid_robot(device)
             if mid:
                 return False, ["دستگاه در حال اجرای ربات است — ابتدا آن را متوقف کنید"]
-            device["customer_id"] = ""
+            if device.get("customer_id"):
+                # Unlinking is a device mutation: stamp it (user item 10).
+                device["customer_id"] = ""
+                device["updated"] = _now()
         data["customers"] = [c for c in data.get("customers", [])
                              if c.get("id") != customer_id]
         _store_write(data)
@@ -600,6 +635,42 @@ def _charge_registry_fee(data, customer_id, device_id):
     return entry
 
 
+def _refund_registry_fee(data, device):
+    """Reverse the base_fee rows booked for a device being deleted (Gate-H
+    finding 2): serial1 corrections force delete-and-recreate, which would
+    otherwise double-book the registry fee. The refund lands on whichever
+    customer's ledger holds the original row (device_id marker), so a
+    customer reassignment after booking still nets out. Idempotent per
+    device like the charge side. Caller holds STORE_LOCK."""
+    device_id = str(device.get("id") or "")
+    if not device_id:
+        return False
+    already = any(t.get("device_id") == device_id
+                  and t.get("kind") == "base_fee_refund"
+                  for c in data.get("customers", [])
+                  for t in c.get("transactions", []))
+    if already:
+        return False
+    device_name = str(device.get("name") or "").strip()
+    refunded = False
+    for customer in data.get("customers", []):
+        fees = [t for t in customer.get("transactions", [])
+                if t.get("device_id") == device_id
+                and t.get("kind") == "base_fee"]
+        if not fees:
+            continue
+        for fee in fees:
+            entry = {"at": _now(), "amount": -int(fee.get("amount") or 0),
+                     "note": ("بازگشت " + REGISTRY_FEE_NOTE +
+                              (" — " + device_name if device_name else "")),
+                     "kind": "base_fee_refund", "image": "",
+                     "device_id": device_id}
+            customer.setdefault("transactions", []).append(entry)
+        customer["updated"] = _now()
+        refunded = True
+    return refunded
+
+
 def add_owner(fields):
     errs = validate_owner(fields)
     if errs:
@@ -613,7 +684,9 @@ def add_owner(fields):
             "national": normalize_digits(fields.get("national")).strip(),
             "birth": normalize_digits(fields.get("birth")).strip(),
             "mobile": normalize_digits(fields.get("mobile")).strip(),
-            "card_no": normalize_digits(fields.get("card_no")).replace("-", "").strip(),
+            "card_no": normalize_digits(fields.get("card_no")).replace(
+                "-", "").replace(" ", "").strip(),
+            "passport": str(fields.get("passport") or "").strip().upper(),
             "created": _now(),
         }
         _collection(data, "owners").append(record)
@@ -631,13 +704,19 @@ def update_owner(owner_id, fields):
         merged = dict(record)
         merged.update({k: fields[k] for k in
                        ("first_name", "last_name", "national", "birth",
-                        "mobile", "card_no") if k in (fields or {})})
+                        "mobile", "card_no", "passport") if k in (fields or {})})
         errs = validate_owner(merged)
         if errs:
             return None, errs
         record.update(merged)
         for key in ("national", "birth", "mobile", "card_no"):
-            record[key] = normalize_digits(record[key]).replace("-", "").strip()
+            record[key] = normalize_digits(record.get(key) or "").replace(
+                "-", "").replace(" ", "").strip()
+        # Passport skips digit normalization (Persian-digit translation is
+        # wrong for latin passports) and gets its own trim+uppercase; the
+        # defensive .get keeps legacy rows without the key safe here.
+        record["passport"] = str(record.get("passport") or "").strip().upper()
+        record["updated"] = _now()
         _store_write(data)
         return record, []
 
@@ -703,6 +782,7 @@ def update_identity(identity_id, fields):
         record.update(merged)
         for key in ("national", "birth", "mobile"):
             record[key] = normalize_digits(record[key]).strip()
+        record["updated"] = _now()
         _store_write(data)
         return record, []
 
@@ -776,6 +856,20 @@ def update_device(device_id, fields):
                        if d.get("id") == device_id), None)
         if not record:
             return None, ["دستگاه پیدا نشد"]
+        # serial1 is the immutable case identity (user item 2): a correction
+        # means deleting the case and registering a new device. The delete
+        # refunds the booked registry fee (Gate-H finding 2), so the message
+        # tells the operator the correction is fee-neutral. Unchanged
+        # (after digit normalization) or omitted serial1 keeps working;
+        # serial2 stays fully editable.
+        if "serial1" in (fields or {}) and normalize_digits(
+                fields["serial1"]).strip() != normalize_digits(
+                record.get("serial1") or "").strip():
+            return None, [
+                "سریال اول دستگاه قبلاً ثبت‌شده و قابل تغییر نیست — برای "
+                "اصلاح، پروندهٔ دستگاه را حذف و دستگاه جدیدی با سریال صحیح "
+                "ثبت کنید؛ هزینهٔ ثبت پروندهٔ قبلی هنگام حذف، خودکار به "
+                "حساب مشتری برمی‌گردد"]
         merged = dict(record)
         merged.update({k: fields[k] for k in
                        ("name", "serial1", "serial2", "customer_id",
@@ -807,6 +901,10 @@ def delete_device(device_id):
             return False, ["دستگاه پیدا نشد"]
         if _device_mid_robot(record):
             return False, ["دستگاه در حال اجرای ربات است — ابتدا آن را متوقف کنید"]
+        # Reverse the booked registry fee before the case disappears (Gate-H
+        # finding 2): the device_id marker survives on the ledger rows, but the
+        # device name for the refund note comes from the record being deleted.
+        _refund_registry_fee(data, record)
         data["devices"] = [d for d in data.get("devices", [])
                            if d.get("id") != device_id]
         _store_write(data)
@@ -960,8 +1058,6 @@ def advance(device_id, action, **payload):
             stamp_key = _STAGE_TIMESTAMP_KEY.get(next_stage)
             if stamp_key and not device.get(stamp_key):
                 device[stamp_key] = _now()
-            if next_stage == "done":
-                device["done_at"] = _now()
             device["updated"] = _now()
             _store_write(data)
             return device, []
@@ -976,14 +1072,14 @@ def advance(device_id, action, **payload):
                 return None, ["ثبت دلیل برای مختومه‌کردن پرونده الزامی است"]
             device["closed_reason"] = reason
             device["closed_at"] = _now()
-        # Owner gate (F1 at the source): watch-stage inquiries run under the
-        # device OWNER identity, so handing a device over without one would
-        # strand it at `handed` with un-runnable customs inquiries. Fail
-        # closed here instead of producing an un-inquirable device.
+        # Owner gate: the case record and the step-4 Telegram handoff need
+        # the passenger — NOT the inquiry identity (every stage's inquiries
+        # run under the identity pool; user item 7). Handing a device over
+        # without a passenger would produce an incomplete case; fail closed.
         if action == "handover":
             if not str(device.get("owner_id") or "").strip():
-                return None, ["ابتدا مسافر را به دستگاه متصل کنید — استعلام "
-                              "نظارتی با هویت مسافر انجام می‌شود"]
+                return None, ["ابتدا مسافر را به دستگاه متصل کنید — اطلاعات "
+                              "مسافر برای ثبت پرونده و تحویل لازم است"]
             owner = next((o for o in data.get("owners", [])
                           if o.get("id") == device.get("owner_id")), None)
             if not owner:
@@ -1091,8 +1187,12 @@ def build_report(state, stage_filter=None, fmt="txt", full_data=True, plain=Fals
                          f" | تولد: {owner.get('birth')}"
                          f" | موبایل: {owner.get('mobile')}")
             if full_data and not plain:
+                # Cardless owners (user item 13): omit the «کارت» fragment
+                # instead of rendering an empty «کارت: ».
+                card_part = (f" | کارت: {owner.get('card_no')}"
+                             if owner.get("card_no") else "")
                 parts.append(f"کد ملی کامل: {owner.get('national')}"
-                             f" | کارت: {owner.get('card_no')}")
+                             + card_part)
             elif full_data and plain:
                 # Telegram/report bodies: masked national, NEVER the card (§6)
                 parts.append(f"کد ملی ماسک‌شده: {mask_national(owner.get('national'))}")
@@ -1160,27 +1260,16 @@ def pick_pool_identity():
             "mobile": entry.get("mobile")}, []
 
 
-def owner_identity_for(device_id):
-    """The device owner's identity for the watch re-inquiry (review F1 — the
-    customs site only reports «ثبت است» to the identity that registered)."""
-    data = store_read()
-    device = next((d for d in data.get("devices", [])
-                   if d.get("id") == device_id), None)
-    if not device:
-        return None, ["دستگاه پیدا نشد"]
-    owner = next((o for o in data.get("owners", [])
-                  if o.get("id") == device.get("owner_id")), None)
-    if not owner:
-        return None, ["این دستگاه هنوز مسافر ندارد — استعلام نظارتی با هویت مسافر انجام می‌شود"]
-    return {"national": owner.get("national"), "birth": owner.get("birth"),
-            "mobile": owner.get("mobile")}, []
-
-
 def identity_for_stage(device_id, stage=None):
-    data = store_read()
-    device = next((d for d in data.get("devices", [])
-                   if d.get("id") == device_id), None)
-    stage = stage or stage_of(device)
-    if stage in WATCH_STAGES:
-        return owner_identity_for(device_id)
+    """Identity for ANY inquiry stage: a random VALID pool entry.
+
+    Both intake and watch-stage inquiries run under the pool (user item 7):
+    a legally-registered device is recorded under the passenger's national
+    code, so querying with a pool code returns the site's "registered under
+    another code / not the owner" message — which is itself the positive
+    "registered" signal that gates the payment step. Fails closed exactly
+    like intake when no valid pool entry exists (review F8): the caller
+    must NOT send the request. `stage` is kept for signature compatibility
+    and no longer changes the routing.
+    """
     return pick_pool_identity()

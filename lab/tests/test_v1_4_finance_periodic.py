@@ -293,7 +293,8 @@ class PeriodicToolsApiTests(unittest.TestCase):
         owner, _ = crm.add_owner({"first_name": "ا", "last_name": "م",
                                   "national": "0123456789",
                                   "birth": "1375/04/29", "mobile": "09120000000",
-                                  "card_no": "6037991111111111"})
+                                  "card_no": "6037991111111111",
+                                  "passport": "PP0000001"})
         crm.attach_owner(did, owner["id"])
         device, _ = crm.advance(did, "handover")
         return did
@@ -319,6 +320,13 @@ class PeriodicToolsApiTests(unittest.TestCase):
 
     def test_reinquiry_starts_when_not_running(self):
         did = self._device_at_handed()
+        # Pool-only identity contract: the re-inquiry start materializes a
+        # POOL identity (never the owner's), so one valid entry must exist.
+        _pool_rec, errs = crm.add_identity({"label": "pool-watch",
+                                            "national": "0012345679",
+                                            "birth": "1375/04/29",
+                                            "mobile": "09121234567"})
+        self.assertEqual(errs, [], errs)
         with open(self.estelam_store, "w", encoding="utf-8") as handle:
             json.dump({"person": {}, "devices": [
                 {"id": did, "status": "advanced", "hamta_status": "good"}]}, handle)
@@ -333,6 +341,27 @@ class PeriodicToolsApiTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["queued"], 1)
         fake_start.assert_called_once()
+
+    def test_reinquiry_rejected_when_pool_empty(self):
+        # Same fixture WITHOUT any pool entry: the restart must fail closed
+        # (identity cannot be materialized) and never spawn a robot.
+        did = self._device_at_handed()
+        with open(self.estelam_store, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [
+                {"id": did, "status": "advanced", "hamta_status": "good"}]}, handle)
+        with patch.object(panel, "estelam_start") as fake_start:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/crm-inquiry-reset",
+                data=json.dumps({"device_ids": [did], "restart": True}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(request) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                payload = json.loads(exc.read().decode("utf-8"))
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["queued"], 0)
+        fake_start.assert_not_called()
 
     def test_reset_unknown_device_fails_cleanly(self):
         request = urllib.request.Request(

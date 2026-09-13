@@ -59,7 +59,8 @@ class CrmSchedulerCase(unittest.TestCase):
             owner, errs = crm.add_owner({
                 "first_name": "رضا", "last_name": "محمدی",
                 "national": "0012345679", "birth": "1375/04/29",
-                "mobile": "09121234567", "card_no": "6219861012345678"})
+                "mobile": "09121234567", "card_no": "6219861012345678",
+                "passport": "PP0000001"})
             assert errs == [], errs
             crm.advance(device["id"], "attach_owner", owner_id=owner["id"])
             crm.advance(device["id"], "handover")

@@ -235,7 +235,8 @@ class TestCrmReports(CrmApiHarness):
         device, _ = crm_mod.add_device({"name": "x", "serial1": "356938035643809"})
         crm_mod.add_owner({"first_name": "رضا", "last_name": "محمدی",
                            "national": "0012345679", "birth": "1375/04/29",
-                           "mobile": "09121234567", "card_no": "6219861012345678"})
+                           "mobile": "09121234567", "card_no": "6219861012345678",
+                           "passport": "PP0000001"})
         crm_mod.advance(device["id"], "queue_inquiry")
         self._seed_green_estelam(device["id"])
         crm_mod.advance(device["id"], "mark_ready")

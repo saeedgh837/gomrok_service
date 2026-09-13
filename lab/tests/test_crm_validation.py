@@ -70,7 +70,8 @@ class TestOwnerValidation(TempStoreCase):
     def valid_owner(self, **over):
         base = {"first_name": "علی", "last_name": "رضایی",
                 "national": "0012345679", "birth": "1375/04/29",
-                "mobile": "09121234567", "card_no": "6219861012345678"}
+                "mobile": "09121234567", "card_no": "6219861012345678",
+                "passport": "PP0000001"}
         base.update(over)
         return base
 
