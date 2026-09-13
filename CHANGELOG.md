@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.7] - 2026-09-13
+
+### Changed
+
+- **CRM header redesigned (operator report):** «پنل استعلام‌ها» and
+  «سامانه مدیریت گمرک» are now proper navigation buttons (icon + label,
+  bordered cards with hover state) instead of bare inconsistent text
+  links, and the theme/logout actions sit behind a hairline divider.
+- **Devices-tab toolbar tidied (operator report):** the sorting hint no
+  longer glues to the «+ پروندهٔ جدید» button — a base `.row` flex rule
+  (previously only `.card .row` was styled, so toolbars outside a card
+  rendered as a plain block) plus a comfortable gap, and the hint text
+  is fully Persian («... خودکار و بدون تکرار اجرا می‌شوند», dropping
+  the mixed-English «یک‌بار-per-device»).
+
 ## [1.3.6] - 2026-09-13
 
 ### Fixed

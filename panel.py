@@ -4936,8 +4936,19 @@ CRM_PAGE = r"""<!DOCTYPE html>
     font-size:14px;line-height:1.6;padding:24px 18px 70px;
     -webkit-font-smoothing:antialiased}
   .wrap{width:min(1240px,98vw);margin:0 auto}
-  a.back{color:var(--muted);text-decoration:none;font-size:13px;padding:6px 2px;border-radius:6px}
-  a.back:hover{color:var(--brand)}
+  /* v1.3.7 header nav: the two panel links are real navigation buttons,
+     not bare text; account actions sit behind a hairline divider. */
+  .headnav{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .navlink{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;
+    border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--txt);
+    text-decoration:none;font-size:13px;font-weight:500;box-shadow:var(--shadow-1);
+    transition:border-color .15s,color .15s,background .15s}
+  .navlink .ic{color:var(--muted);flex:none}
+  .navlink:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
+  .navlink:hover .ic{color:var(--brand)}
+  .navlink:focus-visible{box-shadow:var(--ring)}
+  .headacts{display:flex;gap:8px;align-items:center;padding-inline-start:14px;
+    border-inline-start:1px solid var(--line);margin-inline-start:2px}
   :is(a,button,input,select,textarea,summary):focus-visible{outline:none;box-shadow:var(--ring)}
   /* header */
   .head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
@@ -5026,6 +5037,9 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
     margin-bottom:14px;box-shadow:var(--shadow-1)}
   .card .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  /* v1.3.7: a base .row — toolbars outside .card (devices tab) rendered
+     as an unstyled block with the hint text glued to the button. */
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:right;vertical-align:top}
   th{color:var(--muted);font-weight:600;font-size:11.5px;white-space:nowrap;text-transform:none}
@@ -5190,10 +5204,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="head">
     <h1><span class="mono">R</span><span>مدیریت مشتریان و پرونده‌ها<div class="sub">چرخهٔ کامل دستگاه: استعلام ← مسافر ← تحویل ← پرداخت ← کد فعال‌سازی</div></span></h1>
-    <a class="back" href="/site-2">پنل استعلام‌ها →</a>
-    <a class="back" href="/site-1">→ سامانه مدیریت گمرک</a>
-    <button class="iconbtn" id="themeBtn">پوسته</button>
-    <button class="iconbtn" id="logoutBtn" title="خروج از حساب">خروج (__ACTOR__)</button>
+    <nav class="headnav" aria-label="سایر بخش‌های پنل">
+      <a class="navlink" href="/site-2"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>پنل استعلام‌ها</a>
+      <a class="navlink" href="/site-1"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>سامانه مدیریت گمرک</a>
+    </nav>
+    <div class="headacts">
+      <button class="iconbtn" id="themeBtn">پوسته</button>
+      <button class="iconbtn" id="logoutBtn" title="خروج از حساب">خروج (__ACTOR__)</button>
+    </div>
   </div>
   <div class="tabs" id="tabs"></div>
   <div id="view"></div>
@@ -5717,9 +5735,9 @@ function devicesHtml(){
       +'<td class="kbd">'+esc(d.updated||'—')+'</td>'
       +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
   }).join('');
-  return runningBanner+'<div class="row" style="margin-bottom:12px">'
+  return runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">مرتب‌شده: نیازمند اقدام در بالا · استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند</span></div>'
+    +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
     +'<div class="card tbl-wrap"><table class="casetbl">'
     +'<thead><tr><th>شناسه پرونده</th><th>مسافر</th><th>دستگاه</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
     +rows+'</tbody></table></div>';
