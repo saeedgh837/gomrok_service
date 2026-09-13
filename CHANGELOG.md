@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.4] - 2026-09-13
+
+### Changed
+
+- **Case list owns the full main column (operator request):** the KPI
+  strip and the devices summary rail (recent customers / recent cases /
+  top debtors) moved into the side aside, stacked above the «تاریخچه»
+  card. Previously the case table was boxed in between the KPI row on
+  top and a 300px summary rail beside it (plus the 300px history aside
+  on the other side) — it now gets the full width of the main column
+  and starts at the top of the page. In the narrow desktop aside the
+  four KPIs render as a 2x2 grid; below the 1100px breakpoint the aside
+  is full-width and the 4-column strip returns. The rail renders only
+  on the devices tab, as before, and its rows still focus/flash the
+  matching case row.
+
 ## [1.3.3] - 2026-09-13
 
 ### Changed

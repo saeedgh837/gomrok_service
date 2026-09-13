@@ -56,11 +56,18 @@ class SummaryRailMarkupTests(unittest.TestCase):
         self.page = panel.CRM_PAGE
         self.js = crm_js()
 
-    def test_devices_view_wraps_cards_and_rail(self):
+    def test_rail_renders_in_the_aside_on_devices_tab(self):
+        # v1.3.4 (operator request): the rail moved into the aside, above
+        # the history card, so the case table owns the full main column.
+        view = fn_body(self.js, "renderView")
+        self.assertTrue(view, "renderView not found")
+        self.assertIn(
+            "(TAB==='devices'?'<div class=\"devrail\">'+devicesRailHtml()"
+            "+'</div>':'')", view)
+        self.assertIn("kpisHtml()", view)
         body = fn_body(self.js, "devicesHtml")
-        self.assertIn('class="devwrap"', body)
-        self.assertIn('class="devmain"', body)
-        self.assertIn("devicesRailHtml()", body)
+        self.assertNotIn("devicesRailHtml()", body,
+                         "the rail must not narrow the case table")
 
     def test_three_card_headers_present(self):
         for title in (T_SUM_CUSTOMERS, T_SUM_CASES, T_SUM_DEBTORS):
@@ -72,11 +79,11 @@ class SummaryRailMarkupTests(unittest.TestCase):
                                       self.js), "missing function " + fn)
 
     def test_css_two_column_layout(self):
-        self.assertIn(".devwrap{display:grid", self.page)
+        self.assertIn(".crm-cols{display:grid", self.page)
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.page)
 
     def test_css_collapses_below_cards_on_narrow_widths(self):
-        self.assertIn("@media (max-width:900px){.devwrap{grid-template-columns:1fr}",
+        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:1fr}",
                       self.page)
 
     def test_device_card_anchor_ids_added(self):

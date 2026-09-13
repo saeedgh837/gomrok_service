@@ -4971,7 +4971,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
      clone cards (frontend-design: structure carries the information). */
   .kpis{display:grid;grid-template-columns:repeat(4,1fr);background:var(--card);
     border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-1);
-    margin-bottom:16px;overflow:hidden}
+    margin-bottom:0;overflow:hidden}
   .kpi{position:relative;background:transparent;border:none;border-inline-start:1px solid var(--line);
     padding:14px 18px;cursor:pointer;text-align:right;font-family:inherit;transition:background .15s}
   .kpi:first-child{border-inline-start:none}
@@ -4996,10 +4996,18 @@ CRM_PAGE = r"""<!DOCTYPE html>
     border-radius:999px;padding:1px 7px;margin-inline-start:5px;font-variant-numeric:tabular-nums}
   /* two-column content + history aside */
   .crm-cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
+  .crm-aside{display:flex;flex-direction:column;gap:12px;min-width:0}
   .crm-aside .history{max-height:420px;overflow:auto;position:sticky;top:12px}
   .crm-aside .history h3{margin:0 0 8px;font-size:13px}
   .crm-aside .history .kbd{margin-bottom:4px;line-height:1.7}
   @media (max-width:1100px){.crm-cols{grid-template-columns:1fr}.crm-aside .history{position:static;max-height:260px}}
+  /* v1.3.4 (operator request): the KPI strip and the devices summary rail
+     render in the aside above the history card, so the case table owns the
+     full main column. On the narrow desktop aside the four KPIs become a
+     2x2 grid; below the 1100px breakpoint the aside is full-width and the
+     base 4-column strip returns. */
+  @media (min-width:1101px){.crm-aside .kpis{grid-template-columns:repeat(2,1fr)}
+    .crm-aside .kpi:nth-child(3){border-inline-start:none}}
   /* payment robot row on device cards */
   .payrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--card2);
     border:1px solid var(--line);border-radius:10px;padding:8px 10px}
@@ -5035,9 +5043,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
     border-radius:7px;padding:2px 9px;font-size:11.5px}
   /* device cards */
   .devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
-  .devwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
   .devrail{display:flex;flex-direction:column;gap:12px;min-width:0}
-  .devrail .card{padding:10px 12px}
+  .devrail .card{padding:10px 12px;margin-bottom:0}
   .devrail h4{margin:0 0 6px;font-size:12.5px;color:var(--muted);font-weight:600}
   .sumrow{display:flex;align-items:center;gap:8px;padding:4px 2px;border-top:1px solid var(--line);cursor:pointer}
   .sumrow:first-of-type{border-top:0}
@@ -5049,7 +5056,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
   @keyframes devflash{0%{box-shadow:0 0 0 3px var(--brand-soft)}70%{box-shadow:0 0 0 3px var(--brand-soft)}100%{box-shadow:none}}
   @media (prefers-reduced-motion:reduce){.dev.flash{animation:none}}
   .closedreason{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;unicode-bidi:plaintext}
-  @media (max-width:900px){.devwrap{grid-template-columns:1fr}.closedreason{max-width:60vw}}
+  @media (max-width:900px){.closedreason{max-width:60vw}}
   .dev{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px 12px;
     box-shadow:var(--shadow-1);display:flex;flex-direction:column;gap:10px;
     border-inline-start:3px solid transparent}
@@ -5632,10 +5639,9 @@ function devicesHtml(){
   return runningBanner+'<div class="row" style="margin-bottom:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌شده: نیازمند اقدام در بالا · استعلام‌ها خودکار و یک‌بار-per-device اجرا می‌شوند</span></div>'
-    +'<div class="devwrap"><div class="devmain"><div class="card tbl-wrap"><table class="casetbl">'
+    +'<div class="card tbl-wrap"><table class="casetbl">'
     +'<thead><tr><th>شناسه پرونده</th><th>مسافر</th><th>دستگاه</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>تاریخ ایجاد</th><th>آخرین تغییر</th><th></th></tr></thead><tbody>'
-    +rows+'</tbody></table></div></div>'
-    +'<div class="devrail">'+devicesRailHtml()+'</div></div>';
+    +rows+'</tbody></table></div>';
 }
 /* Case detail modal (v1.5 B7): every per-case action that used to sit on
    the card opens here — next-step continue card, step tools, quiet row
@@ -6658,7 +6664,6 @@ function renderLogs(){
 function renderView(){
   var el=document.getElementById('view');
   if(!STATE){ el.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';return; }
-  var head='<div id="kpis">'+kpisHtml()+'</div>';
   var body;
   if(TAB==='devices')body=devicesHtml();
   else if(TAB==='done_tab')body=doneTabHtml();
@@ -6671,8 +6676,14 @@ function renderView(){
   else if(TAB==='ledger')body=ledgerHtml();
   else if(TAB==='settings')body=settingsHtml();
   else body=reportsHtml();
-  var aside='<div class="crm-aside">'+historyHtml()+'</div>';
-  el.innerHTML=head+'<div class="crm-cols"><div class="crm-main">'+body+'</div>'+aside+'</div>';
+  /* v1.3.4 (operator request): the KPI strip and the devices summary rail
+     render in the aside, above the «تاریخچه» card, so the case list owns
+     the full main column — the old top strip and in-table side rail are
+     gone. The rail stays devices-tab-only, as before. */
+  var aside='<div class="crm-aside">'+kpisHtml()
+    +(TAB==='devices'?'<div class="devrail">'+devicesRailHtml()+'</div>':'')
+    +historyHtml()+'</div>';
+  el.innerHTML='<div class="crm-cols"><div class="crm-main">'+body+'</div>'+aside+'</div>';
   renderLogs();
 }
 async function refresh(){

@@ -164,13 +164,17 @@ class PreservedMarkerTests(unittest.TestCase):
         self.js = crm_js()
 
     def test_layout_contract_with_summary_rail(self):
+        # v1.3.4: the rail renders in the renderView aside (above the
+        # history card) instead of narrowing the case table.
+        view = fn_body(self.js, "renderView")
+        self.assertIn(
+            "(TAB==='devices'?'<div class=\"devrail\">'+devicesRailHtml()"
+            "+'</div>':'')", view)
         body = fn_body(self.js, "devicesHtml")
-        self.assertIn('class="devwrap"', body)
-        self.assertIn('class="devmain"', body)
-        self.assertIn("devicesRailHtml()", body)
-        self.assertIn(".devwrap{display:grid", self.src)
+        self.assertNotIn("devicesRailHtml()", body)
+        self.assertIn(".crm-cols{display:grid", self.src)
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.src)
-        self.assertIn("@media (max-width:900px){.devwrap{grid-template-columns:1fr}",
+        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:1fr}",
                       self.src)
 
     def test_focus_flash_css(self):
