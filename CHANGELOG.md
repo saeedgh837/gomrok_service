@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.3] - 2026-09-13
+
+### Changed
+
+- **Passenger passport is optional:** creating or editing a passenger no
+  longer requires a passport number. When supplied, it accepts 1-20 Latin
+  letters or digits and is stored uppercased.
+
 ## [1.3.2] - 2026-09-13
 
 ### Fixed

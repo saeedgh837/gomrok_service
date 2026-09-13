@@ -6567,16 +6567,12 @@ function dlgOwner(mode,id){
     +'<label class="f">کد ملی *<input id="oNat" value="'+esc(o.national||'')+'" inputmode="numeric"></label>'
     +'<label class="f">تاریخ تولد * (۱۳۷۵/۰۴/۲۹)<input id="oBirth" value="'+esc(o.birth||'')+'"></label>'
     +'<label class="f">موبایل *<input id="oMob" value="'+esc(o.mobile||'')+'" inputmode="tel"></label>'
-    +'<label class="f">گذرنامه *<input id="oPassport" value="'+esc(o.passport||'')+'" dir="ltr">'+passHint+'</label>'
+    +'<label class="f">گذرنامه<input id="oPassport" value="'+esc(o.passport||'')+'" dir="ltr">'+passHint+'</label>'
     +'<label class="f">شماره کارت ۱۶ رقمی<input id="oCard" value="'+esc(o.card_no||'')+'" inputmode="numeric"></label>'
     +'</div><div class="err" id="oErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveOwner(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveOwner(id){
-  var passport=v('oPassport');
-  if(!passport){document.getElementById('oErr').textContent='شمارهٔ گذرنامه الزامی است';
-    var pEl=document.getElementById('oPassport');if(pEl)pEl.setAttribute('aria-invalid','true');return;}
-  var pEl=document.getElementById('oPassport');if(pEl)pEl.removeAttribute('aria-invalid');
   var onm=v('oFn')+' '+v('oLn');
   var payload={action:id?'update':'add',first_name:v('oFn'),last_name:v('oLn'),
     national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),passport:v('oPassport'),card_no:v('oCard')};

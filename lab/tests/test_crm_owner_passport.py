@@ -1,11 +1,11 @@
-"""Required owner passport + registration_chat_id default (Task A5).
+"""Optional owner passport + registration_chat_id default.
 
-1. validate_owner rejects missing/invalid passports (5-20 latin alnum,
+1. validate_owner accepts missing passports and rejects invalid provided values
+   (1-20 latin alnum,
    mixed case accepted on input) while the other owner rules stay on.
 2. add_owner/update_owner persist the passport trimmed + uppercased;
    modern-row updates omitting it keep the stored value; legacy rows
-   without the key load unchanged and are only blocked on saves that
-   omit a passport.
+   without the key load unchanged and can be saved without a passport.
 3. build_report never renders the passport (the step-4 Telegram message
    reads owner.passport straight from the store); DEFAULT_SETTINGS
    carries registration_chat_id as a default only (the panel domain
@@ -77,7 +77,7 @@ class TempStoreCase(unittest.TestCase):
 
 
 class TestPassportValidation(TempStoreCase):
-    def test_missing_passport_required(self):
+    def test_missing_passport_allowed(self):
         for variant in (None, "", "   ", "ABSENT"):
             fields = valid_owner_fields()
             if variant == "ABSENT":
@@ -85,12 +85,11 @@ class TestPassportValidation(TempStoreCase):
             else:
                 fields["passport"] = variant
             errors = crm.validate_owner(fields)
-            self.assertTrue(
-                any("گذرنامه" in e and "الزامی" in e for e in errors),
-                (variant, errors))
+            self.assertEqual(errors, [], (variant, errors))
 
     def test_valid_boundaries_and_forms(self):
-        for passport in ("abcde",                              # 5 chars
+        for passport in ("A",                                  # 1 char
+                         "abcd",                               # 4 chars
                          "abcdefghijklmnopqrst",               # 20 chars
                          "AbCdEf123",                          # mixed case
                          "123456789"):                         # digits only
@@ -109,8 +108,7 @@ class TestPassportValidation(TempStoreCase):
                 (passport, errors))
 
     def test_length_out_of_range_rejected(self):
-        for passport in ("abcd",                                # 4 chars
-                         "abcdefghijklmnopqrstu"):               # 21 chars
+        for passport in ("abcdefghijklmnopqrstu",):              # 21 chars
             errors = crm.validate_owner(valid_owner_fields(passport=passport))
             self.assertTrue(
                 any("گذرنامه" in e and "لاتین" in e for e in errors),
@@ -158,12 +156,11 @@ class TestPassportPersistence(TempStoreCase):
         # Loads unchanged, no crash.
         owner = crm.store_read()["owners"][0]
         self.assertNotIn("passport", owner)
-        # Save omitting the passport is blocked with the Persian error.
+        # Save omitting the optional passport succeeds and materializes it empty.
         _record, errors = crm.update_owner("own-legacy-1",
                                            {"first_name": "مسافر ویرایش‌شده"})
-        self.assertTrue(
-            any("گذرنامه" in e and "الزامی" in e for e in errors), errors)
-        self.assertNotIn("passport", crm.store_read()["owners"][0])
+        self.assertEqual(errors, [], errors)
+        self.assertEqual(self.stored_owner("own-legacy-1")["passport"], "")
         # Save providing a valid passport succeeds and persists uppercased.
         _record, errors = crm.update_owner("own-legacy-1",
                                            {"passport": " ab1234567 "})

@@ -11,7 +11,7 @@ Entities:
                full rule set: 10-digit national code + mod-11 checksum,
                shamsi birth date with a 15..99 age window, 09xx mobile,
                optional card number — 16 digits when present, empty allowed,
-               required latin passport — 5-20 chars, stored uppercase).
+               optional latin passport — 1-20 chars when present, stored uppercase).
   identities — the inquiry-identity pool. BOTH the pre-registration intake
                inquiries AND the watch-stage re-inquiries pick a RANDOM
                entry (user item 7): a legally-registered device is recorded
@@ -260,14 +260,12 @@ def validate_owner(data):
     card = normalize_digits(data.get("card_no")).replace("-", "").replace(" ", "")
     if card and not re.fullmatch(CARD_RE, card):
         errors.append("شماره کارت باید ۱۶ رقم باشد")
-    # Passport is required: 5-20 latin letters/digits, validated on the
+    # Passport is optional: when provided, it must be 1-20 latin letters/digits,
     # trimmed original (mixed case accepted); uppercasing happens at
     # persistence (add_owner/update_owner).
     passport = str(data.get("passport") or "").strip()
-    if not passport:
-        errors.append("شماره گذرنامه الزامی است")
-    elif not re.fullmatch(r"[A-Za-z0-9]{5,20}", passport):
-        errors.append("شماره گذرنامه باید ۵ تا ۲۰ کاراکتر و فقط شامل حروف و اعداد لاتین باشد")
+    if passport and not re.fullmatch(r"[A-Za-z0-9]{1,20}", passport):
+        errors.append("شماره گذرنامه باید ۱ تا ۲۰ کاراکتر و فقط شامل حروف و اعداد لاتین باشد")
     return errors
 
 

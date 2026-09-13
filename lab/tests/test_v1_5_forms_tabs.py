@@ -83,8 +83,9 @@ class FormSourceMarkerTests(unittest.TestCase):
         self.assertNotIn("disabled", body,
                          "add-modal serial1 must stay editable (creation)")
 
-    def test_owner_passport_required_card_optional(self):
-        self.assertIn("گذرنامه *", self.page)
+    def test_owner_passport_optional_card_optional(self):
+        self.assertIn("گذرنامه<input", self.page)
+        self.assertNotIn("گذرنامه *", self.page)
         self.assertIn('id="oPassport"', self.page)
         self.assertIn("شماره کارت ۱۶ رقمی", self.page)
         self.assertNotIn("شماره کارت ۱۶ رقمی *", self.page)
@@ -94,13 +95,12 @@ class FormSourceMarkerTests(unittest.TestCase):
         # passport field renders before the card field
         self.assertLess(owner.find('id="oPassport"'), owner.find('id="oCard"'))
 
-    def test_do_save_owner_sends_passport_and_blocks_empty(self):
+    def test_do_save_owner_sends_optional_passport(self):
         body = fn_body_js(self.js, "doSaveOwner")
         self.assertTrue(body, "doSaveOwner body not found")
         self.assertIn("passport:v('oPassport')", body)
         self.assertIn("card_no:v('oCard')", body)
-        self.assertIn("oErr", body)
-        self.assertIn("گذرنامه", body)   # client-side empty-passport error
+        self.assertNotIn("الزامی", body)
 
     def test_dlg_attach_disables_bound_owners(self):
         body = fn_body_js(self.js, "dlgAttach")
