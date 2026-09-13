@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.6] - 2026-09-13
+
+### Fixed
+
+- **Stale pages after an update (operator report):** HTML responses now
+  carry `Cache-Control: no-store` — after a panel update the browser kept
+  serving the previous version from heuristic cache until a hard refresh.
+  Static assets (fonts) keep normal caching. One hard refresh (Ctrl+F5)
+  is still needed once to clear whatever was already cached.
+
 ## [1.3.5] - 2026-09-13
 
 ### Changed
