@@ -30,10 +30,25 @@ def crm_page_src():
 
 
 class TestStageGatedActions(unittest.TestCase):
-    def test_inquiry_buttons_render_only_in_intake_stages(self):
+    def test_step_tools_scoped_to_their_own_stage(self):
         src = crm_page_src()
-        self.assertIn("INTAKE_STAGES", src)
-        self.assertIn("INTAKE_STAGES.includes(d.stage)", src)
+        # v1.3.1 round 3 (operator request): manual gomrok/hamta inquiries
+        # only on step 2 (inquiry), telegram re-send only on step 4 (handed),
+        # periodic watch toggle only on step 5 (to_payment).
+        self.assertIn("gomrokGateAttrs()+' onclick=\"devInquire(", src)
+        self.assertIn("+(d.stage==='inquiry'", src)
+        self.assertIn("+(d.stage==='to_payment'", src)
+        self.assertIn("+(d.stage==='handed'", src)
+        self.assertNotIn("INTAKE_STAGES.includes", src)
+        self.assertNotIn("HANDOFF_STAGES_JS", src)
+
+    def test_problem_stage_nextcard_offers_requeue(self):
+        src = crm_page_src()
+        # v1.3.1 round 3: problem's «بازگشت به صف» is the «قدم بعدی» hero
+        # card, no longer a tools-group button.
+        self.assertIn("}else if(st==='problem'){", src)
+        self.assertIn("onclick=\"devRequeue(\\''+d.id+'\\')\"", src)
+        self.assertNotIn("a.push(['requeue_inquiry'", src)
 
     def test_continue_button_and_gating_map(self):
         src = crm_page_src()

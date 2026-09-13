@@ -360,8 +360,13 @@ class TabsMarkupTests(unittest.TestCase):
         self.assertIn("'closed':'n'", tone.group(1))
 
     def test_close_button_on_problem_and_inquiry_cards(self):
-        self.assertIn("if(st==='inquiry'||st==='problem') "
-                      "a.push(['__close_case','مختومه کردن پرونده','danger']);",
+        # v1.3.1: the case-detail close affordance moved from stageActions
+        # (tools) to the quiet "other actions" row — still gated to
+        # inquiry/problem exactly like the server's ALLOWED map.
+        self.assertIn("((st==='inquiry'||st==='problem')?"
+                      "'<button class=\"btn mini danger\" "
+                      "onclick=\"devTick(\\''+d.id+'\\',\\'__close_case\\')\">"
+                      "مختومه کردن</button>':'')",
                       self.page)
 
     def test_close_case_dialog_flow(self):

@@ -458,7 +458,8 @@ class TestSourceMarkers(unittest.TestCase):
 
     def test_case_detail_offers_resend_and_function_wired(self):
         body = fn_body_js(panel.CRM_PAGE, "caseDetail")
-        self.assertIn("HANDOFF_STAGES_JS", body)
+        # v1.3.1 round 3: the re-send button is a step-4 (handed) tool only
+        self.assertIn("d.stage==='handed'", body)
         self.assertIn("ارسال مجدد به تلگرام", body)
         fn = fn_body_js(panel.CRM_PAGE, "crmHandoffResend")
         self.assertIn("api('/crm-handoff-resend',{device_id:id})", fn)

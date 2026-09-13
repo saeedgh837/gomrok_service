@@ -112,8 +112,9 @@ class InquiryGateSourceTests(unittest.TestCase):
         self.assertIn("api('/crm-state')", chunk)
         self.assertIn("پرونده پیدا نشد", chunk)
         # the /crm-state chain is fail-closed: its own catch precedes return
+        # (v1.3.1: the catch is a named contextual toast)
         self.assertRegex(
-            chunk, r"\}\)\.catch\(e=>toast\(e,false\)\);\s*return;")
+            chunk, r"\}\)\.catch\(e=>toastCtx\(cn,String\(e\),false\)\);\s*return;")
 
     def test_bulk_run_toasts_first_backend_error(self):
         js = crm_js()

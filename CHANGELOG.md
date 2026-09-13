@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-09-13
+
+The case-modal UX update: three operator-reviewed refinement rounds on the
+case-detail modal (live-verified on a scratch panel, independently
+reviewed). Frontend-only — panel.py markup/JS plus marker tests.
+
+### Fixed
+
+- **Stale case-detail modal:** the modal now keeps itself in sync — every
+  refresh re-renders it when the case's signature (stage, timestamps,
+  inquiry/payment status) changes, reopens it after confirm flows that
+  replaced it (inquiry, periodic remove/re-add, pay-stop, requeue, skip,
+  rollback), and closes it with a named toast when the case is deleted.
+  This removes the confusing «این کنش در مرحلهٔ فعلی مجاز نیست» errors
+  caused by clicking buttons of an already-advanced stage.
+- **Esc no longer resurrects the modal:** closing the dialog via the
+  native Esc path disarms the sync machine (a close listener clears the
+  modal tracking state), so a dismissed modal cannot pop back open on the
+  next background refresh.
+- Double-click guard on the «قدم بعدی» hero button: a second POST before
+  the first one lands no longer produces a stage-mismatch error.
+- Remaining anonymous toasts in the case flow and the periodic tab now
+  name their row (case/passenger name), e.g. «...» از استعلام دوره‌ای
+  حذف شد.
+
+### Changed
+
+- **Modal action redesign:** one clear primary per step — a «قدم بعدی»
+  hero card under the rail (with visible unmet-requirement chips and the
+  new destination-labelled continue buttons), stage tools grouped under
+  «ابزار این گام», and low-frequency actions (edit, rollback, skip,
+  close, delete) in a quiet «سایر اقدامات» row.
+- **Step-scoped tools (operator request):** every tool now appears only
+  on its own step — manual gomrok/hamta inquiries on step 2 (inquiry),
+  the Telegram re-send on step 4 (handed), the periodic-watch toggle on
+  step 5 (to_payment), pay controls on steps 5-7. The problem stage shows
+  its «بازگشت به صف» as the hero card; the periodic tab still offers the
+  watch toggle for every watched stage.
+- Creating a case opens the new case's modal immediately; the modal body
+  close button was removed (the × and Esc remain).
+
 ## [1.3.0] - 2026-09-13
 
 The case-workflow update: a 14-item operator-driven CRM overhaul —

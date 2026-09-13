@@ -410,7 +410,8 @@ class TestProfileReadySourceMarkers(unittest.TestCase):
     def test_do_attach_surfaces_profile_notice(self):
         body = fn_body_js(panel.CRM_PAGE, "doAttach")
         self.assertIn("if(r.profile_notice)", body)
-        self.assertIn("toast(r.profile_notice,false)", body)
+        # v1.3.1: the notice is named with the passenger (toastCtx)
+        self.assertIn("toastCtx(oname,r.profile_notice,false)", body)
 
     def test_start_profile_missing_list_untouched(self):
         """Robot side out of scope: passport must not gate the robot start."""

@@ -5097,6 +5097,12 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .card.flash{animation:devflash 1.6s ease-out 1}
   .dlg-lbl{font-size:11px;color:var(--muted);font-weight:600;margin:12px 0 5px}
   .dlg-sec{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  /* v1.5.x case detail: full-width next-step card + tool/quiet action groups */
+  .nextcard{margin:12px 0 4px;padding:12px 14px;border:1px solid var(--line);border-inline-start:4px solid var(--brand);border-radius:10px;background:var(--card2);display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+  .nextcard .btn{flex:1 1 auto;min-height:44px;font-size:15px}
+  .nextcard .need{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .tools{display:flex;flex-wrap:wrap;gap:8px}
+  .quiet{display:flex;flex-wrap:wrap;gap:6px;opacity:.92}
   @media (prefers-reduced-motion:reduce){tr.flash>td,.card.flash{animation:none}}
   /* forms & dialog */
   input,select,textarea{font-family:inherit;font-size:13.5px;border:1px solid var(--line-strong);
@@ -5223,10 +5229,46 @@ function toast(msg, ok){
   el.className='toast'+(ok===false?' bad':'');
   el.textContent=msg;
   document.getElementById('toasts').appendChild(el);
-  setTimeout(()=>el.remove(), 3200);
+  setTimeout(()=>el.remove(), 3800);
 }
-function openDlg(html){document.getElementById('dlgBody').innerHTML=html;document.getElementById('dlg').showModal();}
-function closeDlg(){document.getElementById('dlg').close();}
+/* v1.3.1: contextual toast — every entity action names its row so the
+   operator always knows WHICH case/customer/passenger the message is about. */
+function toastCtx(name, msg, ok){
+  toast(name?('«'+name+'» '+msg):msg, ok);
+}
+/* v1.3.1: the case-detail modal keeps itself in sync. CASE_MODAL.id is the
+   case whose detail SHOULD be showing; .live means the dialog currently on
+   screen IS that detail (any other openDlg clears .live, so attach/edit/
+   confirm dialogs are never overwritten by the sync loop). refresh() calls
+   dlgCaseSync() which re-renders when the case's signature changes and
+   closes the modal if the case was deleted. */
+var CASE_MODAL={id:'',sig:'',live:false};
+function dlgCaseSig(d){
+  var e=d.estelam||{},p=d.pay||{};
+  return [d.stage,d.updated,d.owner_id,d.profile_id,d.periodic_opt_out?1:0,
+          e.status,e.hamta_status,p.run_status,p.browser_visible?1:0,
+          (p.payment_link?'l':''),(STATE.identities||[]).length].join('|');
+}
+function dlgCaseSync(){
+  if(!CASE_MODAL.live||!CASE_MODAL.id)return;
+  var d=(STATE.devices||[]).find(x=>x.id===CASE_MODAL.id);
+  if(!d){var nm=CASE_MODAL.name||'';closeDlg();toastCtx(nm,'حذف شد — پنجرهٔ جزئیات بسته شد');return;}
+  var sig=dlgCaseSig(d);
+  if(sig!==CASE_MODAL.sig){caseDetail(CASE_MODAL.id);}
+}
+/* Restore the case detail after a child dialog (attach/edit) or a confirm
+   flow replaced it — used by the action callbacks that know the case id. */
+function dlgCaseRestore(id){
+  if(CASE_MODAL.id===id&&!CASE_MODAL.live)caseDetail(id);
+}
+function openDlg(html){CASE_MODAL.live=false;document.getElementById('dlgBody').innerHTML=html;document.getElementById('dlg').showModal();}
+function closeDlg(){document.getElementById('dlg').close();CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;}
+/* Native Esc/cancel never passes through closeDlg — arm a close listener so
+   the sync loop can never resurrect a dialog the operator dismissed. It also
+   fires for the × and programmatic closes, where it is an idempotent no-op. */
+document.getElementById('dlg').addEventListener('close',function(){
+  CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
+});
 /* Confirm dialog (native confirm() is blocking & unstyled): a small dialog
    reusing #dlg with a confirm/cancel pair — used by stage rollback. */
 var _confirmCb=null;
@@ -5274,14 +5316,13 @@ var ICONS = {
   stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
   info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11.2 12h.8v4h.8"/><path d="M11.2 12h1.6v4h1"/></svg>',
 };
-var INTAKE_STAGES = ['new','inquiry','problem','ready_owner'];
-/* v1.5 B10: stages where the case has been handed over and the
-   «ارسال مجدد به تلگرام» re-send button is offered (mirrors the
-   server's HANDOFF_STAGES tuple). */
-var HANDOFF_STAGES_JS = ['handed','to_payment','payment','payment_done','done'];
+/* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
+   / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
+   instead of the old broad intake/handoff stage lists — see the toolsHtml
+   block there. */
 var STAGE_CONTINUE_FA = {
-  'new':'ارسال به استعلام ثبت‌نبودن','inquiry':'ثبت نتیجهٔ ثبت‌نبودن','ready_owner':'تحویل به مسئول ثبت',
-  'handed':'رفتن به انتظار پرداخت','to_payment':'شروع ربات پرداخت','payment':'تأیید پرداخت',
+  'new':'شروع استعلام ثبت‌نبودن','inquiry':'ادامه ← اتصال مسافر','ready_owner':'تحویل به مسئول ثبت',
+  'handed':'ادامه ← انتظار پرداخت','to_payment':'شروع ربات پرداخت','payment':'تأیید پرداخت',
   'payment_done':'تحویل کد و تکمیل'};
 var STAGE_READY = {
   'new':true,
@@ -5321,18 +5362,16 @@ function stageContinue(d){
           label:label, ready:ready,
           need:(STAGE_NEEDS[d.stage]||function(){return[];})().join(' + ')};
 }
+/* v1.5.x: step tools only — the continue button moved to the caseDetail
+   «قدم بعدی» card (auto-advance «خودکار» display included) and skip/back to
+   its «سایر اقدامات» quiet row; attach stays here and now renders primary
+   (same class as the old passenger-block button). v1.3.1 round 3: problem's
+   «بازگشت به صف» also moved to the «قدم بعدی» card. */
 function stageActions(d){
   var a=[];
   var st=d.stage;
-  var cont=stageContinue(d);
-  if(cont&&cont.ready) a.push([cont.action,cont.label,'primary']);
   if(st==='inquiry') a.push(['mark_problem','ثبت اشکال','danger']);
-  if(st==='inquiry'||st==='problem') a.push(['__close_case','مختومه کردن پرونده','danger']);
-  if(st==='problem') a.push(['requeue_inquiry','بازگشت به صف','primary']);
-  if(st==='ready_owner') a.push(['__attach','اتصال مسافر','']);
-  if(STAGE_SKIP_WARN[st]) a.push(['__skip','رد کردن این مرحله ⏭','skip']);
-  if(st==='handed'&&d.auto_advance) a.push(['','خودکار','n']);
-  if(STAGE_BACK_FA[st]) a.push(['__stage_back','↩ برگشت به «'+STAGE_BACK_FA[st]+'»','']);
+  if(st==='ready_owner') a.push(['__attach','اتصال مسافر','primary']);
   return a;
 }
 var STAGE_BACK_FA = {
@@ -5341,17 +5380,18 @@ var STAGE_BACK_FA = {
   'payment_done':'در حال پرداخت'
 };
 function devTick(id, action){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   if(action==='__attach'){dlgAttach(id);return;}
   if(action==='__skip'){
-    var d=(STATE.devices||[]).find(x=>x.id===id);
+    var d=nm;
     var next=STAGE_SKIP_NEXT[d?d.stage:'']||'';
     if(!next){toast('رد کردن مرحله در این وضعیت ممکن نیست',false);return;}
     var msg=STAGE_SKIP_WARN[d.stage]||'';
     msg+=' پرونده مستقیم به «'+(STAGE_FA[next]||next)+'» می‌رود و این ردشدن در پرونده ثبت می‌شود. مطمئنی؟';
     confirmDlg('رد کردن این مرحله',msg,'رد کردن مرحله',function(){
         api('/crm-tick',{device_id:id,action:'stage_skip'}).then(async r=>{
-          toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» رفت (رد شد)');await refresh();})
-          .catch(e=>toast(e,false));
+          toastCtx(cn,'به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» رفت (مرحله رد شد)');await refresh();caseDetail(id);})
+          .catch(e=>{toastCtx(cn,String(e),false);caseDetail(id);});
       });
     return;
   }
@@ -5363,24 +5403,26 @@ function devTick(id, action){
       confirmDlg('برگشت به مرحلهٔ قبل','مطمئنی می‌خوای به گام «'+target+'» برگردی؟',
         'برگشت',function(){
           api('/crm-tick',{device_id:id,action:'stage_back'}).then(async r=>{
-            toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
-            .catch(e=>toast(e,false));
+            toastCtx(cn,'به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();caseDetail(id);})
+            .catch(e=>{toastCtx(cn,String(e),false);caseDetail(id);});
         });
-    }).catch(e=>toast(e,false));
+    }).catch(e=>toastCtx(cn,String(e),false));
     return;
   }
   if(action==='__start_payment'){
-    api('/crm-start-payment',{device_id:id}).then(async r=>{toast(r.ok?'ربات پرداخت شروع شد':'انجام نشد');await refresh();})
-      .catch(e=>toast(e,false));
+    api('/crm-start-payment',{device_id:id}).then(async r=>{toastCtx(cn, r.ok?'ربات پرداخت شروع شد':'شروع ربات پرداخت انجام نشد', r.ok);await refresh();dlgCaseRestore(id);})
+      .catch(e=>toastCtx(cn,String(e),false));
     return;
   }
   if(action==='__close_case'){closeCaseDialog(id);return;}
   if(action==='__noop'){return;}
   api('/crm-tick',{device_id:id,action:action}).then(async r=>{
-      toast('مرحله: '+(STAGE_FA[r.device.stage]||r.device.stage));
+      toastCtx(cn, action==='requeue_inquiry'
+        ? 'به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت'
+        : 'گام '+(STAGE_FA[r.device.stage]||r.device.stage));
       if(r.handoff_notice){toast(r.handoff_notice,false);}
-      await refresh();})
-    .catch(e=>toast(e,false));
+      await refresh();dlgCaseRestore(id);})
+    .catch(e=>toastCtx(cn,String(e),false));
 }
 /* ================= completed / problem / closed tabs (v1.1.5) ================= */
 function devRow(d, extra){
@@ -5412,12 +5454,13 @@ function doneTabHtml(){
    active-case __stage_back flow. STAGE_BACK_FA deliberately has no 'done'
    entry — the completed tab is the only surface offering this rollback. */
 function doneRollback(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   confirmDlg('بازگشت به مرحلهٔ قبل',
     'پروندهٔ تکمیل‌شده به گام «پرداخت تأییدشده» برمی‌گردد و تاریخ تکمیل آن پاک می‌شود. این کار نادرست می‌تواند حساب‌ها را به‌هم بریزد؛ مطمئنی؟',
     'بازگشت به مرحلهٔ قبل',function(){
       api('/crm-tick',{device_id:id,action:'stage_back'}).then(async r=>{
-        toast('به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
-        .catch(e=>toast(e,false));
+        toastCtx(cn,'به «'+(STAGE_FA[r.device.stage]||r.device.stage)+'» برگشت');await refresh();})
+        .catch(e=>toastCtx(cn,String(e),false));
     });
 }
 function problemTabHtml(){
@@ -5447,9 +5490,11 @@ function closedTabHtml(){
     +'</div></div>').join('');
 }
 function devRequeue(id){
+  var wasModal=CASE_MODAL.live&&CASE_MODAL.id===id;
   confirmDlg('بازگشت به صف','پرونده به مرحلهٔ «'+(STAGE_FA['inquiry']||'استعلام')+'» برمی‌گردد و استعلام از نو اجرا می‌شود. مطمئنی؟',
     'بازگشت به صف',function(){
       devTick(id,'requeue_inquiry');
+      if(wasModal)caseDetail(id);
     });
 }
 function closeCaseDialog(id){
@@ -5463,11 +5508,12 @@ function closeCaseYes(id){
   var reason=(document.getElementById('closeReason')||{}).value||'';
   reason=reason.trim();
   if(!reason){toast('ثبت دلیل الزامی است',false);return;}
+  var cn=((STATE.devices||[]).find(x=>x.id===id)||{}).name||'';
   closeDlg();
   confirmDlg('مختومه کردن پرونده','پرونده با دلیل «'+reason+'» مختومه می‌شود. مطمئنی؟','مختومه کردن',function(){
     api('/crm-tick',{device_id:id,action:'close_case',reason:reason}).then(async r=>{
-      toast('پرونده مختومه شد');await refresh();})
-      .catch(e=>toast(e,false));
+      toastCtx(cn,'مختومه شد');await refresh();})
+      .catch(e=>toastCtx(cn,String(e),false));
   });
 }
 /* v1.5 B4: the main grid lists active cases only; done/problem/closed
@@ -5584,11 +5630,12 @@ function devicesHtml(){
     +'<div class="devrail">'+devicesRailHtml()+'</div></div>';
 }
 /* Case detail modal (v1.5 B7): every per-case action that used to sit on
-   the card opens here — stage actions, continue, inquiries, periodic
-   opt-in/out, pay controls, edit, delete. Handlers are the existing card
-   functions verbatim; the modal adds no new action literals. After an
-   action the shared handlers toast + refresh() the list behind the modal;
-   close and reopen to see the case's new state. */
+   the card opens here — next-step continue card, step tools, quiet row
+   (edit/back/skip/close/delete), inquiries, periodic opt-in/out, pay
+   controls. Handlers are the existing card functions verbatim. After an
+   action refresh() runs dlgCaseSync() which re-renders this modal on state
+   change, and action callbacks restore it via dlgCaseRestore(id) after a
+   child dialog replaced it. */
 function caseDetail(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d){toast('پرونده پیدا نشد',false);return;}
@@ -5599,16 +5646,45 @@ function caseDetail(id){
   var cont=stageContinue(d);
   var acts=stageActions(d).map(a=>a[0]?
     '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
-  var continueBtn=cont?
-    '<button class="btn mini primary btn-continue" '+(cont.ready?'':'disabled title="'+esc(cont.need?'نیازمند: '+cont.need:'هنوز آماده نیست')+'"')+
-    ' onclick="stageContinueClick(\''+d.id+'\')">'+cont.label+(cont.ready?'':' ⌛')+'</button>':'';
+  /* v1.5.x «قدم بعدی» card: the ONE primary action of the current step,
+     full-width directly under the rail; unmet requirements render as warn
+     chips next to the disabled button. Terminal states explain themselves;
+     auto-advance cases show the non-action «خودکار» display instead. */
+  var nextHtml='';
+  if(st==='done'){
+    nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>'
+      +'<div class="muted">پرونده تکمیل شده — تاریخ تکمیل: '+esc(d.done_at||'—')+'</div>';
+  }else if(st==='closed'){
+    nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>'
+      +'<div class="muted">پرونده مختومه — قابل ادامه نیست</div>';
+  }else if(st==='problem'){
+    nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>'
+      +'<div class="muted need">برای ادامه، اشکال این مرحله را رفع کنید و پرونده را به صف استعلام برگردانید.</div>'
+      +'<button class="btn primary btn-continue" onclick="devRequeue(\''+d.id+'\')">بازگشت به صف</button>';
+  }else if(cont){
+    nextHtml='<span class="muted" style="font-size:11px;font-weight:600">قدم بعدی</span>';
+    if((st==='handed'||st==='to_payment')&&d.auto_advance){
+      nextHtml+='<span class="chip">خودکار</span>'
+        +'<span class="muted">'+(st==='to_payment'
+          ?'روبات پرداخت خودکار در جریان است — پس از گرفتن لینک، کنترل‌ها همین‌جا فعال می‌شوند'
+          :'پس از ثبت دستگاه در گمرک، پرداخت خودکار آغاز می‌شود')+'</span>'
+        +'<button class="btn primary btn-continue" disabled>خودکار در جریان است</button>';
+    }else if(cont.ready){
+      nextHtml+='<button class="btn primary btn-continue" onclick="stageContinueClick(\''+d.id+'\',this)">'+cont.label+'</button>';
+    }else{
+      var needs=cont.need?cont.need.split(' + ').filter(Boolean):[];
+      var needChips=needs.length
+        ?needs.map(function(x){return '<span class="pill warn">'+esc(x)+'</span>';}).join('')
+        :'<span class="pill warn">هنوز آماده نیست</span>';
+      nextHtml+='<div class="muted need">منتظر: '+needChips+'</div>'
+        +'<button class="btn primary btn-continue" disabled title="'+esc(cont.need?'نیازمند: '+cont.need:'هنوز آماده نیست')+'">'+cont.label+' ⌛</button>';
+    }
+  }
   var payRow='';
   if(st==='payment'||st==='payment_done'||(st==='to_payment'&&d.profile_id)){
     var busy=pay.run_status==='busy';
     var autoChip=d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'';
-    if(st==='to_payment'&&d.auto_advance)
-      payRow='<div class="payrow">'+autoChip+'<span class="muted">روبات پرداخت خودکار در جریان است — پس از گرفتن لینک، کنترل‌ها همین‌جا فعال می‌شوند</span></div>';
-    else if(st==='to_payment'&&!busy&&!d.auto_advance)
+    if(st==='to_payment'&&!busy&&!d.auto_advance)
       payRow='<div class="payrow">'+autoChip+'<span class="muted">پرداخت دستی: با «شروع ربات پرداخت» لینک پرداخت گرفته می‌شود.</span></div>';
     else
       payRow='<div class="payrow">'+autoChip
@@ -5620,8 +5696,29 @@ function caseDetail(id){
         +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
         +'</div>';
   }
-  openDlg('<h3>جزئیات پرونده</h3>'
+  /* v1.5.x: step tools in one group; v1.3.1 round 3 (operator request):
+     every tool appears only on its own step — manual gomrok/hamta inquiries
+     on step 2 (inquiry), telegram re-send on step 4 (handed), periodic watch
+     toggle on step 5 (to_payment). The periodic tab still offers the watch
+     toggle for every watched stage; the group hides when a step has none. */
+  var toolsHtml=''
+    +(d.stage==='inquiry'
+      ?'<button class="btn mini ghost"'+gomrokGateAttrs()+' onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
+       +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
+    +(d.stage==='to_payment'
+      ?(d.periodic_opt_out
+        ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
+        :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
+    +(d.stage==='handed'
+      ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">ارسال مجدد به تلگرام</button>':'')
+    +(acts||'')
+    +(payRow?'<div style="margin:10px 0 0">'+payRow+'</div>':'');
+  openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">'
+    +'<h3 style="margin:0;padding:0">'+esc(d.name)+'</h3>'
+    +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
+    +'<span class="chip kbd">'+esc(d.id)+'</span></div>'
     +'<div style="margin:14px 0 6px">'+railHtml(d)+'</div>'
+    +(nextHtml?'<div class="nextcard">'+nextHtml+'</div>':'')
     +'<div class="dlg-lbl">مسافر</div>'
     +'<div class="dlg-sec">'
     +ICONS.user+'<span class="chip">'+esc(ownerName(d.owner_id))+'</span>'
@@ -5630,7 +5727,6 @@ function caseDetail(id){
     +'<span class="chip">موبایل: '+esc(o.mobile||'—')+'</span>'
     +'<span class="chip">کارت: '+esc(o.card_no||'—')+'</span>'
     +'<span class="chip">گذرنامه: '+esc(o.passport||'—')+'</span>'
-    +(st==='ready_owner'?'<button class="btn mini primary" onclick="dlgAttach(\''+d.id+'\')">اتصال مسافر</button>':'')
     +'</div>'
     +'<div class="dlg-lbl">دستگاه</div>'
     +'<div class="dlg-sec">'
@@ -5649,34 +5745,29 @@ function caseDetail(id){
     +'</div>'
     +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
     +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
-    +(payRow?'<div style="margin:10px 0 0">'+payRow+'</div>':'')
-    +'<div class="dlg-lbl">اقدام‌ها</div>'
-    +'<div class="dlg-sec">'
-    +(INTAKE_STAGES.includes(d.stage)
-      ?'<button class="btn mini ghost"'+gomrokGateAttrs()+' onclick="devInquire(\''+d.id+'\',\'gomrok\')">'+ICONS.search+' استعلام گمرک</button>'
-       +'<button class="btn mini ghost" onclick="devInquire(\''+d.id+'\',\'hamta\')">'+ICONS.swap+' استعلام همتا</button>':'')
-    +(PERIODIC_STAGES[d.stage]
-      ?(d.periodic_opt_out
-        ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
-        :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
-    +(HANDOFF_STAGES_JS.includes(d.stage)
-      ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">ارسال مجدد به تلگرام</button>':'')
-    +(acts||'<span class="muted">—</span>')
-    +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
+    +(toolsHtml?'<div class="dlg-lbl">ابزار این گام</div>'
+      +'<div class="dlg-sec tools">'+toolsHtml+'</div>':'')
+    +'<div class="dlg-lbl">سایر اقدامات</div>'
+    +'<div class="dlg-sec quiet">'
+    +'<button class="btn mini ghost" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
+    +(STAGE_BACK_FA[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__stage_back\')">↩ برگشت به «'+STAGE_BACK_FA[st]+'»</button>':'')
+    +(STAGE_SKIP_WARN[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__skip\')">رد کردن این مرحله</button>':'')
+    +((st==='inquiry'||st==='problem')?'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن</button>':'')
     +'<button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button>'
-    +'</div>'
-    +(continueBtn?'<div class="dlg-sec" style="margin-top:6px">'+continueBtn+'</div>':'')
-    +'<div class="row" style="margin-top:14px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
+    +'</div>');
+  /* openDlg clears CASE_MODAL.live, so (re)arm the sync state only here. */
+  CASE_MODAL.id=id;CASE_MODAL.name=d.name;CASE_MODAL.live=true;CASE_MODAL.sig=dlgCaseSig(d);
 }
 /* v1.5 B10: manual re-send of the registration handoff (case detail modal).
    The route re-checks stage/destination/passport server-side; a failed send
    keeps the case untouched and surfaces the Persian notice in red. */
 function crmHandoffResend(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   api('/crm-handoff-resend',{device_id:id}).then(async r=>{
-    if(r.ok){toast('اطلاعات ثبت به تلگرام ارسال شد');}
-    else{toast(r.notice||'ارسال مجدد به تلگرام انجام نشد',false);}
+    if(r.ok){toastCtx(cn,'اطلاعات ثبت به تلگرام ارسال شد');}
+    else{toastCtx(cn,r.notice||'ارسال مجدد به تلگرام انجام نشد',false);}
     await refresh();
-  }).catch(e=>toast(e,false));
+  }).catch(e=>toastCtx(cn,String(e),false));
 }
 /* ================= left summary rail (v1.1.5) ================= */
 function sumBalPill(id){
@@ -5896,19 +5987,21 @@ function paAddSelected(){
 }
 
 function periodicResetOne(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   confirmDlg('ریست تاریخچهٔ استعلام','تاریخچهٔ استعلام این دستگاه پاک شود؟ نتیجهٔ فعلی و زمان آخرین استعلام حذف می‌شود.',
     'ریست',function(){
       api('/crm-inquiry-reset',{device_ids:[id]}).then(async r=>{
-        toast(r.ok?'تاریخچه ریست شد':'انجام نشد',r.ok);await refresh();})
-        .catch(e=>toast(e,false));
+        toastCtx(cn,r.ok?'تاریخچه ریست شد':'ریست انجام نشد',r.ok);await refresh();})
+        .catch(e=>toastCtx(cn,String(e),false));
     });
 }
 function periodicReInquire(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   confirmDlg('استعلام مجدد','ابتدا تاریخچهٔ استعلام ریست و سپس استعلام گمرک بلافاصله اجرا شود؟',
     'اجرا',function(){
       api('/crm-inquiry-reset',{device_ids:[id],restart:true}).then(async r=>{
-        toast(r.ok?'استعلام مجدد شروع شد':'انجام نشد',r.ok);await refresh();})
-        .catch(e=>toast(e,false));
+        toastCtx(cn,r.ok?'استعلام مجدد شروع شد':'انجام نشد',r.ok);await refresh();})
+        .catch(e=>toastCtx(cn,String(e),false));
     });
 }
 function periodicRunAll(){
@@ -5922,21 +6015,26 @@ function periodicRunAll(){
     });
 }
 function periodicRunOne(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   confirmDlg('اجرای فوری','استعلام گمرک همین حالا برای این دستگاه اجرا شود؟','اجرا',function(){
     api('/crm-inquire',{device_id:id,service:'gomrok'}).then(async r=>{
-      toast('استعلام شروع شد');await refresh();}).catch(e=>toast(e,false));
+      toastCtx(cn,'استعلام شروع شد');await refresh();}).catch(e=>toastCtx(cn,String(e),false));
   });
 }
 function periodicRemove(id){
-  confirmDlg('حذف از لیست','دستگاه از استعلام دوره‌ای حذف شود؟ استعلام خودکار دیگر برایش اجرا نمی‌شود.',
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
+  var wasModal=CASE_MODAL.live&&CASE_MODAL.id===id;
+  confirmDlg('حذف از استعلام دوره‌ای','دستگاه از استعلام دوره‌ای حذف شود؟ استعلام خودکار دیگر برایش اجرا نمی‌شود.',
     'حذف',function(){
       api('/crm-periodic',{device_id:id,remove:true}).then(async()=>{
-        toast('از لیست حذف شد');await refresh();}).catch(e=>toast(e,false));
+        toastCtx(cn,'از استعلام دوره‌ای حذف شد');await refresh();if(wasModal)caseDetail(id);})
+        .catch(e=>{toastCtx(cn,String(e),false);if(wasModal)caseDetail(id);});
     });
 }
 function periodicReAdd(id){
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
   api('/crm-periodic',{device_id:id,remove:false}).then(async()=>{
-    toast('دوباره به لیست اضافه شد');await refresh();}).catch(e=>toast(e,false));
+    toastCtx(cn,'دوباره به استعلام دوره‌ای اضافه شد');await refresh();}).catch(e=>toastCtx(cn,String(e),false));
 }
 function periodicHistory(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
@@ -6225,7 +6323,12 @@ function doAddDevice(){
   if(custSel){payload.customer_id=custSel;}
   else payload.customer={full_name:v('dvCn'),mobile:mobile,telegram_id:v('dvTg'),
     instagram_id:v('dvIg'),address:v('dvCa')};
-  api('/crm-device',payload).then(async()=>{closeDlg();toast('پرونده ثبت شد');await refresh();})
+  api('/crm-device',payload).then(async r=>{
+    closeDlg();
+    await refresh();
+    toastCtx(r.record.name,'ثبت شد — گام ۱');
+    if(r.record&&r.record.id)caseDetail(r.record.id);
+  })
     .catch(e=>{showFieldErrors(String(e));});
 }
 /* Device EDIT modal (v1.5 B2): serial1 is the immutable case identity — the
@@ -6249,10 +6352,13 @@ function dlgDeviceEdit(id){
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveDeviceEdit(\''+id+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveDeviceEdit(id){
-  var payload={action:'update',id:id,name:v('dvEName'),serial2:v('dvES2'),
+  var nm=v('dvEName');
+  var payload={action:'update',id:id,name:nm,serial2:v('dvES2'),
     customer_id:v('dvECust'),notes:v('dvENotes'),
     auto_advance:document.getElementById('dvEAuto').checked};
-  api('/crm-device',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+  /* No closeDlg() here: when the edit was opened from the case detail the
+     dialog returns to it via dlgCaseRestore; otherwise it just closes. */
+  api('/crm-device',payload).then(async()=>{toastCtx(nm,'ذخیره شد');await refresh();dlgCaseRestore(id);if(!CASE_MODAL.live)closeDlg();})
     .catch(e=>{document.getElementById('dvEErr').textContent=e;showFieldErrors(String(e));});
 }
 function digitsFa(s){return String(s||'').replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[^0-9]/g,'');}
@@ -6292,44 +6398,57 @@ function dlgAttach(id){
     +'<p class="muted">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
 }
 function doAttach(id){
+  var o=findOwner(document.getElementById('attOwner').value);
+  var oname=o?(o.first_name+' '+o.last_name):'';
   api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value})
-    .then(async r=>{closeDlg();toast('مسافر متصل شد');if(r.profile_notice){toast(r.profile_notice,false);}await refresh();})
-    .catch(e=>toast(e,false));
+    .then(async r=>{toastCtx(oname,'متصل شد');if(r.profile_notice){toastCtx(oname,r.profile_notice,false);}await refresh();dlgCaseRestore(id);if(!CASE_MODAL.live)closeDlg();})
+    .catch(e=>toastCtx(oname,String(e),false));
 }
 function devInquire(id, service){
   if(service!=='hamta'&&!identityPoolReady()){toast(IDENTITY_POOL_HINT,false);return;}
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var cn=(nm?nm.name:'')||'';
+  var wasModal=CASE_MODAL.live&&CASE_MODAL.id===id;
   var labels={gomrok:'گمرک',hamta:'همتا',all:'همهٔ استعلام‌ها'};
   confirmDlg('اجرای استعلام','استعلام «'+(labels[service]||service)+'» برای این دستگاه اجرا شود؟',
     'اجرا',function(){
       api('/crm-inquire',{device_id:id,service:service}).then(async r=>{
-        toast('استعلام شروع شد'+(r.pid?' (pid '+r.pid+')':''));await refresh();})
-        .catch(e=>toast(e,false));
+        toastCtx(cn,'استعلام شروع شد'+(r.pid?' (pid '+r.pid+')':''));await refresh();if(wasModal)caseDetail(id);})
+        .catch(e=>{toastCtx(cn,String(e),false);if(wasModal)caseDetail(id);});
     });
 }
-function stageContinueClick(id){
+function stageContinueClick(id, btn){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d)return;
   var cont=stageContinue(d);
   if(!cont){return;}
   if(!cont.ready){toast('نیازمند: '+(cont.need||'تکمیل این مرحله'),false);return;}
+  /* Double-click guard: a second POST before the first one lands is what
+     produced the old «این کنش در مرحلهٔ فعلی مجاز نیست» errors. Re-enable
+     after a beat — a successful action re-renders the card anyway and a
+     failed one must not leave the button stuck. */
+  if(btn){if(btn.disabled)return;btn.disabled=true;
+    setTimeout(function(){btn.disabled=false;},1500);}
   devTick(id,cont.action);
 }
 function payStop(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   var pid=(d&&d.pay&&d.pay.runner_pid)||0;
+  var cn=(d&&d.name)||'';
+  var wasModal=CASE_MODAL.live&&CASE_MODAL.id===id;
   confirmDlg('بستن ربات پرداخت','ربات پرداخت این پرونده متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و می‌توانید دوباره شروع کنید.',
     'بستن ربات',function(){
       api('/crm-pay-stop',{device_id:id,pid:pid}).then(async r=>{
-        toast(r.ok?'ربات پرداخت متوقف شد':'توقف انجام نشد',r.ok);await refresh();})
-        .catch(e=>toast(e,false));
+        toastCtx(cn,r.ok?'ربات پرداخت متوقف شد':'توقف انجام نشد',r.ok);await refresh();if(wasModal)caseDetail(id);})
+        .catch(e=>{toastCtx(cn,String(e),false);if(wasModal)caseDetail(id);});
     });
 }
 function payBrowser(id,visible){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   var pid=(d&&d.profile_id)||'';
+  var cn=(d&&d.name)||'';
   if(!pid){toast('پروفایل پرداخت این پرونده هنوز ساخته نشده',false);return;}
   api('/browser-visibility',{id:pid,visible:visible}).then(async r=>{
-    await refresh();}).catch(e=>toast(e,false));
+    toastCtx(cn,visible?'مرورگر ربات پرداخت نمایش داده شد':'مرورگر ربات پرداخت مخفی شد');await refresh();}).catch(e=>toastCtx(cn,String(e),false));
 }
 function crmStopRun(){
   confirmDlg('توقف ربات استعلام','ربات استعلام متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و ردیف‌های در جریان به «در صف» برمی‌گردند.',
@@ -6341,7 +6460,8 @@ function crmStopRun(){
 }
 function devDelete(id){
   if(!confirm('این پرونده حذف شود؟ ردیف استعلام آن نیز حذف می‌شود و برگشت‌پذیر نیست.'))return;
-  api('/crm-device',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
+  var nm=(STATE.devices||[]).find(x=>x.id===id); var dn=(nm?nm.name:'')||'';
+  api('/crm-device',{action:'delete',id:id}).then(async()=>{closeDlg();toastCtx(dn,'حذف شد');await refresh();}).catch(e=>toastCtx(dn,String(e),false));
 }
 function dlgCustomer(mode,id){
   var c = id?findCustomer(id):{};
@@ -6358,10 +6478,11 @@ function dlgCustomer(mode,id){
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveCustomer(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveCustomer(id){
-  var payload={action:id?'update':'add',full_name:v('cName'),mobile:v('cMobile'),
+  var cnm=v('cName');
+  var payload={action:id?'update':'add',full_name:cnm,mobile:v('cMobile'),
     telegram_id:v('cTg'),instagram_id:v('cIg'),address:v('cAddr'),notes:v('cNotes')};
   if(id)payload.id=id;
-  api('/crm-customer',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+  api('/crm-customer',payload).then(async()=>{closeDlg();toastCtx(cnm,'ذخیره شد');await refresh();})
     .catch(e=>{document.getElementById('cErr').textContent=e;showFieldErrors(String(e));});
 }
 function custDelete(id){
@@ -6369,7 +6490,7 @@ function custDelete(id){
   var msg=hasDevices?'این مشتری دستگاه دارد؛ دستگاه‌ها فقط از اتصال مشتری آزاد می‌شوند. حذف شود؟'
                     :'مشتری حذف شود؟';
   if(!confirm(msg))return;
-  api('/crm-customer',{action:'delete',id:id,force:true}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
+  api('/crm-customer',{action:'delete',id:id,force:true}).then(async()=>{toastCtx(custName(id),'حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgTx(cid){
   openDlg('<h3>تراکنش جدید — '+esc(custName(cid))+'</h3>'
@@ -6448,15 +6569,16 @@ function doSaveOwner(id){
   if(!passport){document.getElementById('oErr').textContent='شمارهٔ گذرنامه الزامی است';
     var pEl=document.getElementById('oPassport');if(pEl)pEl.setAttribute('aria-invalid','true');return;}
   var pEl=document.getElementById('oPassport');if(pEl)pEl.removeAttribute('aria-invalid');
+  var onm=v('oFn')+' '+v('oLn');
   var payload={action:id?'update':'add',first_name:v('oFn'),last_name:v('oLn'),
     national:v('oNat'),birth:v('oBirth'),mobile:v('oMob'),passport:v('oPassport'),card_no:v('oCard')};
   if(id)payload.id=id;
-  api('/crm-owner',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+  api('/crm-owner',payload).then(async()=>{closeDlg();toastCtx(onm,'ذخیره شد');await refresh();})
     .catch(e=>{document.getElementById('oErr').textContent=e;showFieldErrors(String(e));});
 }
 function ownerDelete(id){
   if(!confirm('این مسافر حذف شود؟'))return;
-  api('/crm-owner',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
+  api('/crm-owner',{action:'delete',id:id}).then(async()=>{toastCtx(ownerName(id),'حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function dlgIdent(mode,id){
   var i = id?(STATE.identities||[]).find(x=>x.id===id)||{}:{};
@@ -6469,15 +6591,17 @@ function dlgIdent(mode,id){
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveIdent(\''+(id||'')+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveIdent(id){
-  var payload={action:id?'update':'add',label:v('iLabel'),national:v('iNat'),
+  var inm=v('iLabel');
+  var payload={action:id?'update':'add',label:inm,national:v('iNat'),
     birth:v('iBirth'),mobile:v('iMob')};
   if(id)payload.id=id;
-  api('/crm-identity',payload).then(async()=>{closeDlg();toast('ذخیره شد');await refresh();})
+  api('/crm-identity',payload).then(async()=>{closeDlg();toastCtx(inm,'ذخیره شد');await refresh();})
     .catch(e=>{document.getElementById('iErr').textContent=e;showFieldErrors(String(e));});
 }
 function identDelete(id){
   if(!confirm('مشخصات از استخر حذف شود؟'))return;
-  api('/crm-identity',{action:'delete',id:id}).then(async()=>{toast('حذف شد');await refresh();}).catch(e=>toast(e,false));
+  var i=(STATE.identities||[]).find(x=>x.id===id);
+  api('/crm-identity',{action:'delete',id:id}).then(async()=>{toastCtx((i&&i.label)||'','حذف شد');await refresh();}).catch(e=>toast(e,false));
 }
 function sendTelegram(){
   api('/crm-report-telegram',{full_data:document.documentElement.dataset.full==='1'})
@@ -6558,6 +6682,7 @@ async function refresh(){
   }catch(e){ LOADFAIL=true; }
   renderTabs();
   renderView();
+  dlgCaseSync();
   if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
 renderTabs();

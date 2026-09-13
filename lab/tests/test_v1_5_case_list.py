@@ -85,8 +85,12 @@ class CaseListSourceTests(unittest.TestCase):
         self.assertTrue(body, "caseDetail not found")
         for marker in ("stageActions(d)", "stageContinueClick(", "devInquire(",
                        "dlgDeviceEdit(", "devDelete(", "railHtml(d)",
-                       "INTAKE_STAGES.includes(d.stage)",
-                       "PERIODIC_STAGES[d.stage]"):
+                       # v1.3.1 round 3: every tool lives on its own step only
+                       "d.stage==='inquiry'",
+                       "d.stage==='to_payment'",
+                       "d.stage==='handed'",
+                       "st==='problem'",
+                       "devRequeue(\\''+d.id+'\\')"):
             self.assertIn(marker, body, marker)
         # passenger block shows the passport (v1.5 owner contract)
         self.assertIn("esc(o.passport||'—')", body)
