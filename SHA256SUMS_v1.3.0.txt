@@ -1,0 +1,2 @@
+irica-v1.3.0-win64.zip  ec18d1d2fc686f94f9360392d6414b44e9d3ed268ce4d37a4fa4cd5b809d3ed4
+IRICA-Setup-v1.3.0.exe  d2a43adaed0b2abe70b9e989b1a0c9d0da06e3b81e4c397c4885b3952b54633a
