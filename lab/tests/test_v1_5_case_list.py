@@ -209,7 +209,7 @@ class PreservedMarkerTests(unittest.TestCase):
             self.assertNotIn("XMLHttpRequest", body, fn + " must not XHR")
 
     def test_payment_row_markers_survive_in_modal(self):
-        for marker in ("btn-continue", "payRow", "بستن ربات", "نمایش مرورگر",
+        for marker in ("btn-continue", "payRow", "توقف ربات پرداخت", "نمایش مرورگر",
                        "لینک پرداخت", "روبات پرداخت خودکار در جریان است",
                        "devInquire", "crmStopRun",
                        "استعلام گمرک", "استعلام همتا"):

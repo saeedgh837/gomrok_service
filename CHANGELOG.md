@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.5] - 2026-09-13
+
+### Changed
+
+- **Case-modal action area redesign (operator request):** every action
+  cluster now sits in its own framed group — «ابزار این گام» (the step's
+  tools), «پرداخت» (payment controls) and a dashed-frame «سایر اقدامات»
+  for low-frequency actions — so buttons that do similar work read as one
+  unit. Ghost buttons gained a visible border/hover tint (previously
+  frameless), and the tool/payment buttons carry inline-SVG icons from one
+  stroke language: the emoji payment buttons (🔗 🧾 💳 🙈 👁) were replaced
+  with matching SVG icons. Renames for clarity: «بستن ربات» → «توقف ربات
+  پرداخت», «ویرایش» → «ویرایش پرونده», «حذف» → «حذف پرونده» (which now
+  uses the styled confirmation dialog instead of the browser's native
+  blocking confirm).
+- **Step guide (توضیحات گام‌ها) redesigned and no longer loses the case:**
+  clicking a rail step opens a proper guide card — numbered badge, «گام n
+  از ۸» overline, mini progress dots, comfortable description — and closing
+  it (button, ×, Esc) RETURNS to the case modal instead of closing
+  everything. The red problem dot on failed cases opens a dedicated
+  «دارای اشکال در گام ۲» guide with the failure explanation.
+- **Launch page defaults to light (operator request):** the /launch card
+  that opens on service start was hardcoded dark; it now renders light
+  like every other page, with a softened shadow and the CRM brand palette.
+
 ## [1.3.4] - 2026-09-13
 
 ### Changed

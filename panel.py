@@ -3832,21 +3832,19 @@ refresh();setInterval(refresh,5000);
 
 
 LAUNCH_PAGE = r"""<!DOCTYPE html>
-<html lang="fa" dir="rtl" data-theme="dark">
+<html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IRICA — سرویس رجیستری</title>
 <link rel="icon" href="/favicon.ico">
 <style>
+  /* v1.3.5 (operator request): default skin is LIGHT, matching every other
+     page; the old hardcoded dark palette is gone. */
   :root{
-    --bg:#171a26; --card:#1f2333; --card2:#262b3f; --line:#363d57;
-    --fg:#eef1fb; --muted:#a5adc6; --brand:#6d8bff; --brand2:#9d6dff;
-    --ok:#3ba776; --danger:#e5484d; --warn:#f5a524;
-  }
-  html[data-theme="light"]{
     --bg:#f4f5f8; --card:#ffffff; --card2:#eef0f4; --line:#d9dde5;
-    --fg:#1a1d24; --muted:#5d6470;
+    --fg:#1a1d24; --muted:#5d6470; --brand:#4f6bef; --brand2:#7c5cf5;
+    --ok:#0c7d4f; --danger:#d93752; --warn:#b9770e;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
@@ -3856,7 +3854,8 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   }
   .card{
     width:100%; max-width:430px; background:var(--card); border:1px solid var(--line);
-    border-radius:18px; padding:28px 26px; box-shadow:0 18px 50px rgba(0,0,0,.22);
+    border-radius:18px; padding:28px 26px;
+    box-shadow:0 14px 40px rgba(16,20,40,.10),0 2px 8px rgba(16,20,40,.06);
   }
   .logo{width:56px; height:56px; border-radius:14px; margin:0 auto 14px;
     background:linear-gradient(135deg,var(--brand),var(--brand2));
@@ -4961,8 +4960,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.primary:hover{background:var(--brand-hover);border-color:transparent}
   .btn.danger{color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft)}
   .btn.danger:hover{border-color:var(--danger)}
-  .btn.ghost{background:transparent;border-color:transparent;color:var(--brand)}
-  .btn.ghost:hover{background:var(--brand-soft);border-color:transparent}
+  .btn.ghost{background:var(--card);border-color:var(--line-strong);color:var(--txt)}
+  .btn.ghost:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
   .btn.warn{color:var(--pill-warn-fg);border-color:var(--pill-warn-fg);background:var(--pill-warn-bg)}
   .btn.warn:hover{border-color:var(--pill-warn-fg);filter:brightness(.97)}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
@@ -5108,8 +5107,28 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .nextcard{margin:12px 0 4px;padding:12px 14px;border:1px solid var(--line);border-inline-start:4px solid var(--brand);border-radius:10px;background:var(--card2);display:flex;flex-wrap:wrap;align-items:center;gap:10px}
   .nextcard .btn{flex:1 1 auto;min-height:44px;font-size:15px}
   .nextcard .need{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  /* v1.3.5 (operator request): every action cluster sits in its own framed
+     group — tools of the step, payment controls, low-frequency actions. */
+  .grp{border:1px solid var(--line);border-radius:12px;background:var(--card2);
+    padding:10px 12px;margin:12px 0 0}
+  .grp .grp-lbl{font-size:11px;font-weight:600;color:var(--muted);margin:0 0 8px}
+  .grp-quiet{background:transparent;border-style:dashed}
+  .grp .payrow{background:transparent;border:0;padding:0}
   .tools{display:flex;flex-wrap:wrap;gap:8px}
   .quiet{display:flex;flex-wrap:wrap;gap:6px;opacity:.92}
+  /* v1.3.5 step-guide dialog: numbered header + mini progress dots */
+  .guide .ghead{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding-inline-end:34px}
+  .guide .gnum{width:44px;height:44px;border-radius:12px;flex:none;display:grid;place-items:center;
+    background:var(--brand);color:var(--on-brand);font-size:19px;font-weight:800}
+  .guide .gnum.bad{background:var(--danger)}
+  .guide .glbl{font-size:11px;color:var(--muted);font-weight:600;margin-bottom:2px}
+  .guide .ghead h3{margin:0;padding:0;font-size:15.5px}
+  .guide .grail{display:flex;gap:5px;margin:0 0 14px}
+  .guide .gdot{flex:1;height:4px;border-radius:2px;background:var(--pill-neutral-bg)}
+  .guide .gdot.done{background:var(--ok)}
+  .guide .gdot.cur{background:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .guide .gdot.bad{background:var(--danger);box-shadow:0 0 0 3px var(--danger-soft)}
+  .guide .gdesc{margin:0;color:var(--txt);font-size:13.5px;line-height:2.05}
   @media (prefers-reduced-motion:reduce){tr.flash>td,.card.flash{animation:none}}
   /* forms & dialog */
   input,select,textarea{font-family:inherit;font-size:13.5px;border:1px solid var(--line-strong);
@@ -5268,19 +5287,46 @@ function dlgCaseSync(){
 function dlgCaseRestore(id){
   if(CASE_MODAL.id===id&&!CASE_MODAL.live)caseDetail(id);
 }
-function openDlg(html){CASE_MODAL.live=false;document.getElementById('dlgBody').innerHTML=html;
+function openDlg(html){
+  /* v1.3.5: any dialog opened over a LIVE case modal arms the return —
+     dismissing it (انصراف, ×, Esc) comes back to that case. Action
+     confirms disarm via confirmYes; success callbacks restore (or close)
+     themselves. Replacing content re-arms, so a stale return cannot
+     survive an in-flight callback. */
+  DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:'';
+  CASE_MODAL.live=false;
+  document.getElementById('dlgBody').innerHTML=html;
   var dlg=document.getElementById('dlg');dlg.showModal();
   /* The modal dialog renders in the browser top layer, above every
      z-index — a toast left in the body shows dimmed underneath it. Pull
-     the toast container inside the dialog while it is open; the close
-     listener moves it back. Fixed positioning is unaffected (the dialog
-     has no transform/filter). */
+     the toast container inside the dialog while it is open; closeDlg
+     moves it back. Fixed positioning is unaffected (the dialog has no
+     transform/filter). */
   dlg.appendChild(document.getElementById('toasts'));}
-function closeDlg(){document.getElementById('dlg').close();CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;}
-/* Native Esc/cancel never passes through closeDlg — arm a close listener so
-   the sync loop can never resurrect a dialog the operator dismissed. It also
-   fires for the × and programmatic closes, where it is an idempotent no-op. */
+function closeDlg(){
+  /* v1.3.5: everything a close needs happens HERE, synchronously — the
+     dialog 'close' event only arrives asynchronously in Chromium (often
+     long after the close), so it is a safety net, not the driver. This
+     also consumes DLG_BACK so dismissed child dialogs return to their
+     case — unless the dialog being closed IS that case's own modal. */
+  var back=DLG_BACK;DLG_BACK='';
+  var self=CASE_MODAL.live&&CASE_MODAL.id===back;
+  document.getElementById('dlg').close();
+  CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
+  document.body.appendChild(document.getElementById('toasts'));
+  if(back&&!self)caseDetail(back);
+}
+/* Esc path: the native cancel never passes through closeDlg — take the
+   close over and run the same synchronous bookkeeping. */
+document.getElementById('dlg').addEventListener('cancel',function(e){
+  e.preventDefault();
+  closeDlg();
+});
+/* Safety net only, for any close that did not go through closeDlg (the
+   event can also arrive stale after a reopen — then a newer dialog is
+   already open and must be left alone). */
 document.getElementById('dlg').addEventListener('close',function(){
+  if(this.open)return;
   CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
   document.body.appendChild(document.getElementById('toasts'));
 });
@@ -5294,7 +5340,7 @@ function confirmDlg(title,text,okLabel,cb){
     +'<div class="row" style="margin-top:10px"><button class="btn danger" onclick="confirmYes()">'+esc(okLabel||'تأیید')+'</button>'
     +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
-function confirmYes(){var cb=_confirmCb;_confirmCb=null;closeDlg();if(cb)cb();}
+function confirmYes(){var cb=_confirmCb;_confirmCb=null;DLG_BACK='';closeDlg();if(cb)cb();}
 var urlTheme=new URLSearchParams(location.search).get('theme');
 var savedTheme=urlTheme||localStorage.getItem('irica-theme')||'light';
 document.documentElement.setAttribute('data-theme',savedTheme);
@@ -5330,6 +5376,16 @@ var ICONS = {
   swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
   stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
   info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11.2 12h.8v4h.8"/><path d="M11.2 12h1.6v4h1"/></svg>',
+  /* v1.3.5 button icons — one stroke language for every action button
+     (replaces the old emoji links in the payment row). */
+  link:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7.1.4l2.1-2.1a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 10a5 5 0 0 0-7.1-.4l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/></svg>',
+  receipt:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.3-1.6-2.3 1.6-2.4-1.6-2.3 1.6L5 21V3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
+  card:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>',
+  eye:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.8 0 3.4.5 4.7 1.3M22 12s-3.6 7-10 7c-1.8 0-3.4-.5-4.7-1.3"/><path d="m3 3 18 18"/></svg>',
+  send:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>',
+  alert:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
+  userplus:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3.6-6.5 8-6.5"/><path d="M19 8v6M16 11h6"/></svg>',
 };
 /* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
    / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
@@ -5385,8 +5441,8 @@ function stageContinue(d){
 function stageActions(d){
   var a=[];
   var st=d.stage;
-  if(st==='inquiry') a.push(['mark_problem','ثبت اشکال','danger']);
-  if(st==='ready_owner') a.push(['__attach','اتصال مسافر','primary']);
+  if(st==='inquiry') a.push(['mark_problem','ثبت اشکال','danger','alert']);
+  if(st==='ready_owner') a.push(['__attach','اتصال مسافر','primary','userplus']);
   return a;
 }
 var STAGE_BACK_FA = {
@@ -5548,12 +5604,37 @@ var STAGE_GUIDE = {
   'done': {n:8, name:'تأیید تحویل کد فعال‌سازی', desc:'تحویل کد فعال‌سازی به مشتری تأیید می‌شود و پرونده تکمیل می‌شود.'}
 };
 var STAGE_GUIDE_PROBLEM = 'این دستگاه در گام ۲ (استعلام ثبت‌نبودن) دارای اشکال شد — معمولاً به این معناست که دستگاه قبلاً در یکی از سامانه‌ها ثبت بوده یا سایت پاسخ رد داده است. با «بازگشت به صف» دوباره استعلام بگیرد یا پرونده بسته شود.';
+/* v1.3.5: the step guide opens OVER the case modal and returns to it on
+   every close path (button, x, Esc) — DLG_BACK holds the case to restore
+   and closeDlg consumes it. */
+var DLG_BACK='';
 function stageGuideModal(stage){
-  var g=STAGE_GUIDE[stage];
+  var isProblem=stage==='problem';
+  var g=STAGE_GUIDE[isProblem?'inquiry':stage];
   if(!g)return;
-  openDlg('<h3>'+esc('گام '+g.n+' — '+g.name)+'</h3>'
-    +'<p style="margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:2">'+esc(g.desc)+'</p>'
-    +'<div class="row" style="margin-top:10px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
+  var back=CASE_MODAL.live?CASE_MODAL.id:'';
+  /* a parked-problem case keeps its step-2 dot red even when the guide of
+     another step is open (H1 review) */
+  var dev=back?(STATE.devices||[]).find(x=>x.id===back):null;
+  var failed=!!(dev&&dev.stage==='problem');
+  var title=isProblem?'دارای اشکال در گام ۲ — استعلام ثبت‌نبودن':g.name;
+  var desc=isProblem?STAGE_GUIDE_PROBLEM:g.desc;
+  var focus=STAGE_ORDER.indexOf(isProblem?'inquiry':stage);
+  var dots=RAIL_STEPS.map(function(s){
+    var i=STAGE_ORDER.indexOf(s);
+    var cls='gdot'+(i<focus?' done':'')+(((failed||isProblem)&&s==='inquiry')?' bad':(i===focus?' cur':''));
+    return '<span class="'+cls+'"></span>';
+  }).join('');
+  openDlg('<div class="guide">'
+    +'<div class="ghead"><span class="gnum'+(isProblem?' bad':'')+'">'+(isProblem?'!':fa(g.n))+'</span>'
+    +'<div><div class="glbl">گام '+fa(g.n)+' از '+fa(RAIL_STEPS.length)+'</div>'
+    +'<h3>'+esc(title)+'</h3></div></div>'
+    +'<div class="grail">'+dots+'</div>'
+    +'<p class="gdesc">'+esc(desc)+'</p>'
+    +'<div class="row" style="margin-top:14px"><button class="btn primary" onclick="closeDlg()">'
+    +(back?'بازگشت به پرونده':'بستن')+'</button></div>'
+    +'</div>');
+  DLG_BACK=back;
 }
 function railHtml(d){
   // 8 numbered steps; 'problem' is a parking state shown as a RED step-2 dot.
@@ -5569,7 +5650,7 @@ function railHtml(d){
     var label='گام '+(g.n||'')+' — '+(STAGE_FA[st]||st);
     if(failed && st==='inquiry') label+=' — این دستگاه در همین گام دارای اشکال شد';
     return '<button type="button" class="'+cls+'" title="'+esc(label)+'" '
-      +'onclick="stageGuideModal(\''+st+'\')" '
+      +'onclick="stageGuideModal(\''+(failed&&st==='inquiry'?'problem':st)+'\')" '
       +'aria-label="'+esc(label)+'"></button>';
   }).join('');
   return '<div class="rail" role="group" aria-label="مراحل پرونده">'+steps+'</div>';
@@ -5659,7 +5740,7 @@ function caseDetail(id){
   var o=findOwner(d.owner_id)||{};
   var cont=stageContinue(d);
   var acts=stageActions(d).map(a=>a[0]?
-    '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+a[1]+'</button>':'').join('');
+    '<button class="btn mini '+(a[2]==='danger'?'danger':(a[2]==='primary'?'primary':(a[2]==='skip'?'warn':'ghost')))+'" onclick="devTick(\''+d.id+'\',\''+a[0]+'\')">'+(ICONS[a[3]]||'')+' '+a[1]+'</button>':'').join('');
   /* v1.5.x «قدم بعدی» card: the ONE primary action of the current step,
      full-width directly under the rail; unmet requirements render as warn
      chips next to the disabled button. Terminal states explain themselves;
@@ -5703,11 +5784,11 @@ function caseDetail(id){
     else
       payRow='<div class="payrow">'+autoChip
         +(busy?'<span class="pill warn">ربات پرداخت در حال اجرا</span>':'')
-        +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' بستن ربات</button>':'')
-        +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?'🙈 مخفی کردن مرورگر':'👁 نمایش مرورگر')+'</button>':'')
-        +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">🔗 لینک پرداخت</a>':'')
-        +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">🧾 رسید</a>':'')
-        +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">💳 اسکرین پرداخت</a>':'')
+        +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' توقف ربات پرداخت</button>':'')
+        +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?ICONS.eyeOff+' مخفی کردن مرورگر':ICONS.eye+' نمایش مرورگر')+'</button>':'')
+        +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">'+ICONS.link+' لینک پرداخت</a>':'')
+        +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">'+ICONS.receipt+' رسید</a>':'')
+        +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">'+ICONS.card+' اسکرین پرداخت</a>':'')
         +'</div>';
   }
   /* v1.5.x: step tools in one group; v1.3.1 round 3 (operator request):
@@ -5724,9 +5805,8 @@ function caseDetail(id){
         ?'<button class="btn mini ghost" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.search+' افزودن به استعلام دوره‌ای</button>'
         :'<button class="btn mini ghost" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.stop+' حذف از استعلام دوره‌ای</button>'):'')
     +(d.stage==='handed'
-      ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">ارسال مجدد به تلگرام</button>':'')
-    +(acts||'')
-    +(payRow?'<div style="margin:10px 0 0">'+payRow+'</div>':'');
+      ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">'+ICONS.send+' ارسال مجدد به تلگرام</button>':'')
+    +(acts||'');
   openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">'
     +'<h3 style="margin:0;padding:0">'+esc(d.name)+'</h3>'
     +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
@@ -5759,16 +5839,17 @@ function caseDetail(id){
     +'</div>'
     +(est.result?'<div class="kbd">نتیجه: '+esc(est.result)+'</div>':'')
     +'<div class="kbd">آخرین استعلام: '+esc(d.last_inquiry_at||'—')+'</div>'
-    +(toolsHtml?'<div class="dlg-lbl">ابزار این گام</div>'
-      +'<div class="dlg-sec tools">'+toolsHtml+'</div>':'')
-    +'<div class="dlg-lbl">سایر اقدامات</div>'
-    +'<div class="dlg-sec quiet">'
-    +'<button class="btn mini ghost" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
+    +(toolsHtml?'<div class="grp"><div class="grp-lbl">ابزار این گام</div>'
+      +'<div class="tools">'+toolsHtml+'</div></div>':'')
+    +(payRow?'<div class="grp"><div class="grp-lbl">پرداخت</div>'+payRow+'</div>':'')
+    +'<div class="grp grp-quiet"><div class="grp-lbl">سایر اقدامات</div>'
+    +'<div class="quiet">'
+    +'<button class="btn mini ghost" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش پرونده</button>'
     +(STAGE_BACK_FA[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__stage_back\')">↩ برگشت به «'+STAGE_BACK_FA[st]+'»</button>':'')
     +(STAGE_SKIP_WARN[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__skip\')">رد کردن این مرحله</button>':'')
     +((st==='inquiry'||st==='problem')?'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن</button>':'')
-    +'<button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف</button>'
-    +'</div>');
+    +'<button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف پرونده</button>'
+    +'</div></div>');
   /* openDlg clears CASE_MODAL.live, so (re)arm the sync state only here. */
   CASE_MODAL.id=id;CASE_MODAL.name=d.name;CASE_MODAL.live=true;CASE_MODAL.sig=dlgCaseSig(d);
 }
@@ -6449,8 +6530,8 @@ function payStop(id){
   var pid=(d&&d.pay&&d.pay.runner_pid)||0;
   var cn=(d&&d.name)||'';
   var wasModal=CASE_MODAL.live&&CASE_MODAL.id===id;
-  confirmDlg('بستن ربات پرداخت','ربات پرداخت این پرونده متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و می‌توانید دوباره شروع کنید.',
-    'بستن ربات',function(){
+  confirmDlg('توقف ربات پرداخت','ربات پرداخت این پرونده متوقف شود؟ مرورگرِ در حال اجرا بسته می‌شود و می‌توانید دوباره شروع کنید.',
+    'توقف ربات',function(){
       api('/crm-pay-stop',{device_id:id,pid:pid}).then(async r=>{
         toastCtx(cn,r.ok?'ربات پرداخت متوقف شد':'توقف انجام نشد',r.ok);await refresh();if(wasModal)caseDetail(id);})
         .catch(e=>{toastCtx(cn,String(e),false);if(wasModal)caseDetail(id);});
@@ -6473,9 +6554,11 @@ function crmStopRun(){
     });
 }
 function devDelete(id){
-  if(!confirm('این پرونده حذف شود؟ ردیف استعلام آن نیز حذف می‌شود و برگشت‌پذیر نیست.'))return;
   var nm=(STATE.devices||[]).find(x=>x.id===id); var dn=(nm?nm.name:'')||'';
-  api('/crm-device',{action:'delete',id:id}).then(async()=>{closeDlg();toastCtx(dn,'حذف شد');await refresh();}).catch(e=>toastCtx(dn,String(e),false));
+  confirmDlg('حذف پرونده','این پرونده حذف شود؟ ردیف استعلام آن نیز حذف می‌شود و برگشت‌پذیر نیست.',
+    'حذف پرونده',function(){
+      api('/crm-device',{action:'delete',id:id}).then(async()=>{closeDlg();toastCtx(dn,'حذف شد');await refresh();}).catch(e=>toastCtx(dn,String(e),false));
+    });
 }
 function dlgCustomer(mode,id){
   var c = id?findCustomer(id):{};

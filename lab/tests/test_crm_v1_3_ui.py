@@ -68,7 +68,7 @@ class TestStageGatedActions(unittest.TestCase):
 class TestPaymentRobotRow(unittest.TestCase):
     def test_page_markers(self):
         src = crm_page_src()
-        self.assertIn("بستن ربات", src)
+        self.assertIn("توقف ربات پرداخت", src)
         self.assertIn("نمایش مرورگر", src)
         self.assertIn("/browser-visibility", src)
         self.assertIn("لینک پرداخت", src)

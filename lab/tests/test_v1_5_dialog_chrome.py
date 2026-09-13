@@ -186,8 +186,8 @@ class DialogChromeTests(unittest.TestCase):
         # v1.3.2: a showModal() dialog renders in the browser top layer,
         # above every z-index — toasts left in the body show dimmed
         # underneath it. The container must move INSIDE the dialog while it
-        # is open and back to the body on every close path (the close
-        # listener covers ×, Esc and programmatic closes).
+        # is open (openDlg) and back to the body on every close — closeDlg
+        # does it synchronously; the close listener is a stale-safe net.
         open_body = fn_body(self.js, "openDlg")
         self.assertIn(
             "dlg.appendChild(document.getElementById('toasts'))", open_body)
@@ -198,6 +198,97 @@ class DialogChromeTests(unittest.TestCase):
         self.assertIn(
             "document.body.appendChild(document.getElementById('toasts'))",
             listener.group(0))
+
+
+class GuideAndGroupDesignTests(unittest.TestCase):
+    """v1.3.5 — the step guide returns to the case modal, action clusters
+    sit in framed groups, and case-modal buttons use the SVG icon language
+    (no emoji)."""
+
+    def setUp(self):
+        self.page = panel.CRM_PAGE
+        self.js = crm_js()
+        self.src = panel_src()
+
+    def test_guide_returns_to_the_case_modal(self):
+        body = fn_body(self.js, "stageGuideModal")
+        self.assertTrue(body, "stageGuideModal not found")
+        self.assertIn("DLG_BACK=back", body)
+        self.assertIn("بازگشت به پرونده", self.page)
+        # v1.3.5 fix: the 'close' event only arrives asynchronously in
+        # Chromium, so closeDlg does ALL the bookkeeping synchronously —
+        # including the DLG_BACK restore.
+        close_body = fn_body(self.js, "closeDlg")
+        self.assertIn("var back=DLG_BACK;DLG_BACK='';", close_body)
+        self.assertIn(
+            "document.body.appendChild(document.getElementById('toasts'))",
+            close_body)
+        # H1 review: any dialog replacing content disarms a stale restore
+        # (an in-flight action callback must not leave DLG_BACK armed) —
+        # and any dialog opened over a LIVE case modal arms the return,
+        # so انصراف/×/Esc on child dialogs comes back to the case.
+        open_body = fn_body(self.js, "openDlg")
+        self.assertIn("DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:'';", open_body)
+        # closing the case modal itself must NOT reopen it
+        self.assertIn("var self=CASE_MODAL.live&&CASE_MODAL.id===back;",
+                      close_body)
+        self.assertIn("if(back&&!self)caseDetail(back);", close_body)
+        # a confirmed action never auto-returns — its callback decides
+        self.assertIn(
+            "function confirmYes(){var cb=_confirmCb;_confirmCb=null;"
+            "DLG_BACK='';closeDlg();if(cb)cb();}", self.js)
+        # Esc path: native cancel is taken over and routed through closeDlg
+        self.assertRegex(
+            self.js,
+            r"addEventListener\('cancel',function\(e\)\{"
+            r"\s*e\.preventDefault\(\);\s*closeDlg\(\);\s*\}\);")
+
+    def test_problem_rail_dot_opens_the_problem_guide(self):
+        self.assertIn("(failed&&st==='inquiry'?'problem':st)", self.js)
+
+    def test_action_groups_are_framed(self):
+        body = fn_body(self.js, "caseDetail")
+        self.assertIn('<div class="grp"><div class="grp-lbl">ابزار این گام</div>',
+                      body)
+        self.assertIn('<div class="grp"><div class="grp-lbl">پرداخت</div>', body)
+        self.assertIn(
+            '<div class="grp grp-quiet"><div class="grp-lbl">سایر اقدامات</div>',
+            body)
+        self.assertIn(".grp{", self.src)
+        self.assertIn(".grp-quiet{background:transparent;border-style:dashed}",
+                      self.src)
+
+    def test_case_modal_buttons_carry_no_emoji(self):
+        for emoji in ("🔗", "🧾", "💳", "🙈", "👁"):
+            self.assertNotIn(emoji, self.page,
+                             "emoji leaked back into the CRM page")
+
+    def test_launch_page_defaults_to_light(self):
+        # v1.3.5 (operator request): the launch card is light by default
+        # like every other page — no hardcoded data-theme="dark".
+        self.assertIn('LAUNCH_PAGE = r"""<!DOCTYPE html>\n<html lang="fa" dir="rtl">',
+                      self.src)
+
+    def test_guide_problem_content_and_labels(self):
+        # the dedicated problem guide + the guide chrome labels
+        self.assertIn("STAGE_GUIDE_PROBLEM:g.desc", self.js)
+        self.assertIn("دارای اشکال در گام ۲ — استعلام ثبت‌نبودن", self.page)
+        # the button label depends on whether a case modal is behind us
+        self.assertIn("(back?'بازگشت به پرونده':'بستن')", self.js)
+        self.assertIn("گام '+fa(g.n)+' از '+fa(RAIL_STEPS.length)", self.js)
+
+    def test_quiet_row_renames(self):
+        body = fn_body(self.js, "caseDetail")
+        self.assertIn(">ویرایش پرونده</button>", body)
+        self.assertIn(">حذف پرونده</button>", body)
+        self.assertNotIn(">حذف</button>", body)
+
+    def test_dev_delete_uses_styled_confirm(self):
+        # v1.3.5 (H2 review): destructive actions use the styled
+        # confirmDlg, never the native blocking confirm()
+        body = fn_body(self.js, "devDelete")
+        self.assertIn("confirmDlg('حذف پرونده'", body)
+        self.assertNotIn("!confirm(", body)
 
 
 class TimestampSurfaceTests(unittest.TestCase):
