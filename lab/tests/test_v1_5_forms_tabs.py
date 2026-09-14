@@ -5,7 +5,7 @@ rollback.
 Two layers:
 - Source markers lock the CRM_PAGE JS contract (edit modal ids, locked
   serial1, update payload without serial1, passport field + legacy hint,
-  optional card, attach disabled options, doneRollback confirmation).
+  optional card, attach free-only options, doneRollback confirmation).
 - HTTP tests exercise the real handler end to end: the handover walk, the
   stage_back round-trip from `done` (done_at cleared), and the device update
   contract incl. the immutable-serial1 rejection.
@@ -102,12 +102,39 @@ class FormSourceMarkerTests(unittest.TestCase):
         self.assertIn("card_no:v('oCard')", body)
         self.assertNotIn("الزامی", body)
 
-    def test_dlg_attach_disables_bound_owners(self):
+    def test_dlg_attach_lists_free_owners_only(self):
         body = fn_body_js(self.js, "dlgAttach")
         self.assertTrue(body, "dlgAttach body not found")
-        self.assertIn("disabled", body)
-        self.assertIn("متصل", body)
+        # v1.5 finance round: the bound map stays, but only as the filter —
+        # no disabled options and no « — متصل» suffix anymore
+        self.assertIn("bound[d.owner_id]=true", body)
+        self.assertIn(".filter(o=>!bound[o.id])", body)
+        self.assertIn("<option", body)
+        self.assertNotRegex(body, r"<option[^>]*disabled")
+        self.assertNotIn("— متصل", body)
+        # empty state + the disabled attach button (server stays backstop)
+        self.assertIn("مسافر آزادی برای اتصال وجود ندارد.", body)
+        self.assertIn('class="btn primary" disabled', body)
         self.assertIn("owner_id", body)
+
+    def test_customers_toolbar_finance_report_button(self):
+        body = fn_body_js(self.js, "customersHtml")
+        self.assertTrue(body, "customersHtml body not found")
+        # secondary button (btn, not primary) placed before «+ مشتری جدید»
+        self.assertIn('<button class="btn" onclick="dlgFinance()">', body)
+        self.assertIn("گزارش مالی", body)
+        self.assertLess(body.find("dlgFinance()"),
+                        body.find("+ مشتری جدید"))
+
+    def test_owners_rows_offer_detach_for_bound_non_done(self):
+        body = fn_body_js(self.js, "ownersHtml")
+        self.assertTrue(body, "ownersHtml body not found")
+        self.assertIn("dlgDetach(\\'", body)
+        self.assertIn("قطع اتصال", body)
+        self.assertIn("dev.stage!=='done'", body)
+        # حذف stays free-only
+        self.assertIn("(dev?'':'<button class=\"btn mini danger\" "
+                      "onclick=\"ownerDelete(", body)
 
     def test_done_tab_rows_edit_and_rollback_buttons(self):
         self.assertIn('id="devrow-', self.page)

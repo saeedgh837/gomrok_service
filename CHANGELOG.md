@@ -3,6 +3,55 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-09-15
+
+### Added
+
+- **Customer finance reports, daily & weekly (operator request):** a
+  «گزارش مالی» button in the customers toolbar opens a report dialog
+  with a روزانه/هفتگی switch, previous/next period navigation and a
+  امروز/این هفته reset (all date labels Shamsi, computed server-side).
+  Headlines: cash receipts («دریافتی‌های نقدی (واریزی)»), new debits
+  («بدهکاری‌های جدید») and the total customer balance split into
+  بدهکار/بستانکار. Per-customer rows run ماندهٔ اول → بدهکاری /
+  بستانکاری → ماندهٔ پایان with a two-segment activity bar; weekly mode
+  adds a 7-cell شنبه..جمعه day strip, plus the period's full
+  transaction list with kind labels. Exports: چاپ (self-contained RTL
+  print document with Vazirmatn), PDF, and Telegram send — a partial
+  Telegram send is a 502 with sent/total counts, never a silent
+  success. Aggregation lives server-side only
+  (`crm.finance_report_aggregate`); totals cover ALL customers while
+  the table lists period-active ones; malformed timestamps are counted
+  and surfaced («N تراکنش با تاریخ نامعتبر نادیده‌گرفته شد»), and the
+  report notes balances are «بر اساس مشتری‌های فعلی» (deleting a
+  customer shrinks past reports).
+- **Passenger detach with double confirmation (operator request):** the
+  passengers tab shows «قطع اتصال» for every bound passenger whose case
+  is not تکمیل‌شده. The modal shows passenger, national ID, device +
+  serials, customer and current stage. Allowed stages (اتصال مسافر /
+  دارای اشکال / مختومه) get the 1:1 warning plus a second
+  confirmation; active post-handover cases get guidance instead (roll
+  back to گام ۳ or close the case) because freeing a passenger
+  mid-registration risks burning it. The server action `detach_owner`
+  clears the link AND the registration-profile link (profile kept but
+  disabled, mirroring delete_device), leaves the stage untouched,
+  refuses mid-robot, and logs one audit event carrying both device and
+  owner ids.
+
+### Changed
+
+- **Passenger connect list shows only free passengers (operator
+  request):** passengers bound to any case (active, done or closed) are
+  no longer offered as disabled options — they are hidden entirely;
+  when no free passenger remains the dialog says so and disables
+  اتصال. The server-side 1:1 guard remains the backstop.
+
+### Fixed
+
+- Passenger deletion now uses the styled confirm dialog instead of the
+  browser's native blocking `confirm()` (dialog-chrome contract, same
+  as case deletion).
+
 ## [1.4.2] - 2026-09-13
 
 ### Changed

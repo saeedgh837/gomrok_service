@@ -24,6 +24,7 @@ Entities:
 All English in code per the project contract; Persian appears only in
 user-facing error strings.
 """
+import datetime
 import jalali
 import json
 import os
@@ -64,9 +65,11 @@ ALLOWED = {
     "problem": {
         "requeue_inquiry": "inquiry",
         "close_case": "closed",           # operator terminates the case
+        "detach_owner": "problem",        # unlink passenger; stage stays
     },
     "ready_owner": {
         "attach_owner": "ready_owner",    # stays until handover tick
+        "detach_owner": "ready_owner",    # unlink passenger; stage stays
         "handover": "handed",             # tick «تحویل به مسئول سایت»
     },
     "handed": {
@@ -84,8 +87,12 @@ ALLOWED = {
     },
     "done": {},
     # Terminal like `done`: a closed (مختومه) case can no longer proceed and
-    # is intentionally NOT rollback-able via _STAGE_BACK.
-    "closed": {},
+    # is intentionally NOT rollback-able via _STAGE_BACK. The single entry is
+    # detach_owner — a LINK-mutating action (unlink the passenger), not a
+    # stage transition; the case itself stays مختومه.
+    "closed": {
+        "detach_owner": "closed",
+    },
 }
 
 # Stage rollback: for each stage, the previous MAINLINE stage a device may be
@@ -903,6 +910,22 @@ def _remove_estelam_row(device_id, disable_profile=""):
         pass
 
 
+def _disable_detached_profile(device_id, profile_id):
+    """Post-detach sync side effect: keep the site-1 registration profile but
+    disable it — exactly what delete_device does to the profile record (F13).
+    The estelam row is NOT touched (the device itself survives a detach).
+    Best-effort like _remove_estelam_row: the committed store mutation is
+    never rolled back by a sync-side failure; the miss is logged instead."""
+    if not profile_id:
+        return
+    try:
+        import panel
+        panel.set_profile_enabled(profile_id, False)
+    except Exception:
+        crm_log("warn", "profile_disable_failed",
+                device_id=device_id, profile_id=profile_id)
+
+
 def attach_owner(device_id, owner_id):
     """Bind an owner to a device (1:1 — review F9/operator decision 3)."""
     with STORE_LOCK:
@@ -989,8 +1012,45 @@ def _inquiry_gate_errors(device):
         else:
             errors.append("استعلام همتا مشکل دارد — دستگاه مجاز نیست")
     return errors
+def _detach_owner_case(device_id):
+    """v1.5 link-mutating action: unlink the passenger. The stage is
+    deliberately untouched — every allowed stage maps to itself. Mirrors
+    delete_device for everything the binding touches: the 1:1 link is
+    freed, the device's registration-profile link is cleared, and the
+    site-1 profile itself survives but is disabled (F13 handling). The
+    store write runs under the lock; the audit log and the profile
+    disable run after release (delete_device precedent) so the panel's
+    cross-process store lock is never held behind the CRM lock."""
+    with STORE_LOCK:
+        data = _store_read()
+        device = next((d for d in data.get("devices", [])
+                       if d.get("id") == device_id), None)
+        if not device:
+            return None, ["دستگاه پیدا نشد"]
+        stage = str(device.get("stage") or "new")
+        if not ALLOWED.get(stage, {}).get("detach_owner"):
+            return None, [f"این کنش در مرحلهٔ فعلی مجاز نیست ({stage})"]
+        owner_id = str(device.get("owner_id") or "").strip()
+        if not owner_id:
+            return None, ["این مسافر به پرونده‌ای متصل نیست"]
+        if _device_mid_robot(device):
+            return None, ["دستگاه در حال اجرای ربات است — ابتدا آن را متوقف کنید"]
+        profile_id = str(device.get("profile_id") or "")
+        device["owner_id"] = ""
+        device["profile_id"] = ""
+        device["updated"] = _now()
+        _store_write(data)
+    # Audit trail (plan section 12): name BOTH sides of the severed link;
+    # ids only — never personal data.
+    crm_log("info", "detach_owner", device_id=device_id, owner_id=owner_id)
+    _disable_detached_profile(device_id, profile_id)
+    return device, []
+
+
 def advance(device_id, action, **payload):
     """Apply a stage action; returns (device, errors). Persian errors."""
+    if action == "detach_owner":
+        return _detach_owner_case(device_id)
     with STORE_LOCK:
         data = _store_read()
         device = next((d for d in data.get("devices", [])
@@ -1208,6 +1268,360 @@ _STAGE_RESULT_FA = {
     "pending": "در انتظار",
     "running": "در حال استعلام",
 }
+
+
+# --------------------------------------------------------------------------
+# Finance report (v1.5): ledger aggregation over a daily/weekly period.
+# Read-only over the store dict; the panel layer serves/renders it.
+# --------------------------------------------------------------------------
+
+# Single Python source of truth for transaction-kind labels; MUST stay
+# byte-identical to the JS TX_KIND_FA map in the CRM page (pinned by
+# test_v1_5_finance_report).
+TX_KIND_LABELS = {
+    "base_fee": "هزینه ثبت رجیستری",
+    "base_fee_refund": "بازگشت هزینه ثبت رجیستری",
+    "receipt": "دریافتی",
+    "debt": "بدهی",
+    "tx": "تراکنش",
+    "": "—",
+}
+
+# Persian week (شنبه تا جمعه). Indexed by (date.weekday() + 2) % 7 under the
+# Python Mon=0..Sun=6 convention: Sat(5) -> 0 ... Fri(4) -> 6.
+WEEKDAY_FA = ("شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه",
+              "پنجشنبه", "جمعه")
+
+_TX_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def week_range(ref):
+    """(start, end) of the شنبه تا جمعه week containing `ref` (a date)."""
+    start = ref - datetime.timedelta(days=(ref.weekday() - 5) % 7)
+    return start, start + datetime.timedelta(days=6)
+
+
+def _fa_money(n):
+    """Signed int Toman -> Persian money string: «۱٬۲۳۴٬۵۶۷ تومان» /
+    «−۵۰۰٬۰۰۰ تومان» (U+066C thousands separator, U+2212 minus)."""
+    n = int(n or 0)
+    body = jalali.fa_digits(f"{abs(n):,}").replace(",", "٬")
+    return ("−" if n < 0 else "") + body + " تومان"
+
+
+def _tx_kind_label(kind):
+    return TX_KIND_LABELS.get(kind) or kind or "—"
+
+
+def finance_report_aggregate(data, mode, ref):
+    """Aggregate the per-customer ledgers over a period (read-only).
+
+    mode "daily": from = to = ref. mode "weekly": the شنبه تا جمعه week of
+    ref. Buckets key on tx["at"][:10]; an `at` that is not a str whose first
+    10 characters fullmatch YYYY-MM-DD is an anomaly — excluded from every
+    bucket, counted in "anomalies". `ref` may be a date/datetime or an ISO
+    date string. Returns the dict served as /crm-finance-report?fmt=json and
+    consumed by finance_report_html/txt.
+    """
+    if mode not in ("daily", "weekly"):
+        raise ValueError(f"unknown finance report mode: {mode!r}")
+    if isinstance(ref, str):
+        ref = datetime.date.fromisoformat(ref)
+    elif isinstance(ref, datetime.datetime):
+        ref = ref.date()
+    if mode == "weekly":
+        start, end = week_range(ref)
+    else:
+        start = end = ref
+    from_iso, to_iso = start.isoformat(), end.isoformat()
+
+    day_stats = {}
+    if mode == "weekly":
+        for offset in range(7):
+            day = start + datetime.timedelta(days=offset)
+            day_stats[day.isoformat()] = {"debits": 0, "credits": 0,
+                                          "receipts": 0, "count": 0}
+    totals = {"opening": 0, "debits": 0, "credits": 0, "receipts": 0,
+              "closing": 0, "count": 0, "debtors_total": 0,
+              "creditors_total": 0}
+    kind_stats = {}
+    customers_out = []
+    transactions = []
+    anomalies = 0
+
+    for customer in data.get("customers") or []:
+        name = str(customer.get("full_name") or "").strip()
+        opening = debits = credits = receipts = count = 0
+        for tx in customer.get("transactions") or []:
+            at = tx.get("at") if isinstance(tx, dict) else None
+            if not isinstance(at, str) or not _TX_DATE_RE.fullmatch(at[:10]):
+                anomalies += 1
+                continue
+            bucket = at[:10]
+            try:
+                amount = int(tx.get("amount") or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if bucket < from_iso:
+                opening += amount
+                continue
+            if bucket > to_iso:
+                continue
+            count += 1
+            if amount < 0:
+                debits += amount
+            elif amount > 0:
+                credits += amount
+            kind = str(tx.get("kind") or "")
+            if kind == "receipt":
+                receipts += amount
+            stat = kind_stats.get(kind)
+            if stat is None:
+                stat = kind_stats[kind] = {"kind": kind,
+                                           "label": _tx_kind_label(kind),
+                                           "count": 0, "amount": 0}
+            stat["count"] += 1
+            stat["amount"] += amount
+            day = day_stats.get(bucket)
+            if day is not None:
+                if amount < 0:
+                    day["debits"] += amount
+                elif amount > 0:
+                    day["credits"] += amount
+                if kind == "receipt":
+                    day["receipts"] += amount
+                day["count"] += 1
+            transactions.append({
+                "at": at, "customer_id": str(customer.get("id") or ""),
+                "customer": name, "kind": kind,
+                "label": _tx_kind_label(kind), "amount": amount,
+                "note": str(tx.get("note") or ""),
+                "device_id": str(tx.get("device_id") or "")})
+        closing = opening + credits + debits
+        totals["opening"] += opening
+        totals["debits"] += debits
+        totals["credits"] += credits
+        totals["receipts"] += receipts
+        totals["count"] += count
+        if closing < 0:
+            totals["debtors_total"] += closing
+        elif closing > 0:
+            totals["creditors_total"] += closing
+        if count > 0:
+            customers_out.append({
+                "id": str(customer.get("id") or ""), "name": name,
+                "opening": opening, "debits": debits, "credits": credits,
+                "receipts": receipts, "closing": closing, "count": count})
+    totals["closing"] = (totals["opening"] + totals["credits"]
+                         + totals["debits"])
+    customers_out.sort(key=lambda row: row["credits"] + abs(row["debits"]),
+                       reverse=True)
+    kinds = sorted(kind_stats.values(),
+                   key=lambda row: abs(row["amount"]), reverse=True)
+    transactions.sort(key=lambda row: row["at"], reverse=True)
+    days = []
+    if mode == "weekly":
+        for offset in range(7):
+            day = start + datetime.timedelta(days=offset)
+            stat = day_stats[day.isoformat()]
+            jy, jm, jd = jalali.gregorian_to_jalali(day.year, day.month,
+                                                    day.day)
+            days.append({
+                "date": day.isoformat(),
+                "date_fa": f"{jalali.fa_digits(jd)} {jalali.MONTHS[jm - 1]}",
+                "day_fa": WEEKDAY_FA[(day.weekday() + 2) % 7],
+                "debits": stat["debits"], "credits": stat["credits"],
+                "receipts": stat["receipts"], "count": stat["count"]})
+    return {
+        "mode": mode, "from": from_iso, "to": to_iso,
+        "from_fa": jalali.to_fa(from_iso), "to_fa": jalali.to_fa(to_iso),
+        "totals": totals, "kinds": kinds, "customers": customers_out,
+        "days": days, "transactions": transactions, "anomalies": anomalies,
+    }
+
+
+def finance_report_html(agg):
+    """Self-contained RTL print document for the finance report (v1.5)."""
+    mode = str(agg.get("mode") or "daily")
+    weekly = mode == "weekly"
+    from_fa = str(agg.get("from_fa") or "")
+    to_fa = str(agg.get("to_fa") or "")
+    title = (f"گزارش مالی مشتریان — {from_fa} تا {to_fa}" if weekly
+             else f"گزارش مالی مشتریان — {from_fa}")
+    totals = agg.get("totals") or {}
+    empty_line = "در این بازه تراکنشی ثبت نشده است."
+
+    def money(n):
+        n = int(n or 0)
+        if n < 0:
+            return f'<span class="neg">{_fa_money(n)}</span>'
+        if n > 0:
+            return f'<span class="pos">{_fa_money(n)}</span>'
+        return _fa_money(0)
+
+    def balance(n):
+        n = int(n or 0)
+        return "تسویه" if n == 0 else money(n)
+
+    out = [
+        '<!DOCTYPE html><html dir="rtl" lang="fa">',
+        '<head><meta charset="utf-8"><title>گزارش مالی مشتریان</title>',
+        "<style>",
+        "@font-face{font-family:'Vazirmatn';"
+        "src:url('/fonts/Vazirmatn-var.woff2') format('woff2');"
+        "font-weight:100 900;font-display:swap;}",
+        "body{font-family:'Vazirmatn',tahoma,sans-serif;direction:rtl;"
+        "margin:24px;color:#111;background:#fff}",
+        "h1{font-size:18px;margin:0 0 2px}h2{font-size:15px;margin:22px 0 8px}",
+        "table{border-collapse:collapse;width:100%;font-size:12.5px}",
+        "th,td{border:1px solid #999;padding:4px 8px;text-align:right}",
+        "th{background:#f2f2f2}",
+        ".sum{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}",
+        ".sum>div{border:1px solid #bbb;padding:8px 14px;min-width:150px}",
+        ".muted{color:#666}.pos{color:#0c7d4f}.neg{color:#d93752}",
+        "@media print{body{margin:8mm}}</style></head><body>",
+        f"<h1>{_esc(title)}</h1>",
+        f'<p class="muted">{"هفتگی" if weekly else "روزانه"}</p>',
+        '<div class="sum">',
+        '<div><span class="muted">دریافتی‌های نقدی (واریزی)</span><br>'
+        + money(totals.get("receipts")) + "</div>",
+        '<div><span class="muted">بدهکاری‌های جدید</span><br>'
+        + money(totals.get("debits")) + "</div>",
+        '<div><span class="muted">ماندهٔ کل مشتریان</span><br>'
+        + balance(totals.get("closing"))
+        + '<br><span class="muted">بدهکار '
+        + _fa_money(totals.get("debtors_total")) + " / بستانکار "
+        + _fa_money(totals.get("creditors_total")) + "</span></div></div>",
+        "<h2>انواع تراکنش</h2>",
+    ]
+    kinds = agg.get("kinds") or []
+    if kinds:
+        rows = "".join(
+            f"<tr><td>{_esc(k.get('label'))}</td>"
+            f"<td>{jalali.fa_digits(k.get('count') or 0)}</td>"
+            f"<td>{money(k.get('amount'))}</td></tr>" for k in kinds)
+        out.append("<table><tr><th>نوع</th><th>تعداد</th><th>مبلغ</th></tr>"
+                   + rows + "</table>")
+    else:
+        out.append(f'<p class="muted">{empty_line}</p>')
+    if weekly:
+        out.append("<h2>روزهای هفته</h2>")
+        rows = "".join(
+            f"<tr><td>{_esc(d.get('day_fa'))}</td>"
+            f"<td>{_esc(d.get('date_fa'))}</td>"
+            f"<td>{money(d.get('debits'))}</td>"
+            f"<td>{money(d.get('credits'))}</td>"
+            f"<td>{money(d.get('receipts'))}</td></tr>"
+            for d in agg.get("days") or [])
+        out.append("<table><tr><th>روز</th><th>تاریخ</th><th>بدهکاری</th>"
+                   "<th>بستانکاری</th><th>دریافتی</th></tr>"
+                   + rows + "</table>")
+    out.append("<h2>مشتریان</h2>")
+    customers = agg.get("customers") or []
+    if customers:
+        rows = "".join(
+            f"<tr><td>{_esc(c.get('name'))}</td>"
+            f"<td>{balance(c.get('opening'))}</td>"
+            f"<td>{money(c.get('debits'))}</td>"
+            f"<td>{money(c.get('credits'))}</td>"
+            f"<td>{balance(c.get('closing'))}</td></tr>" for c in customers)
+        out.append("<table><tr><th>مشتری</th><th>ماندهٔ اول</th>"
+                   "<th>بدهکاری</th><th>بستانکاری</th><th>ماندهٔ پایان</th>"
+                   "</tr>" + rows + "</table>")
+    else:
+        out.append(f'<p class="muted">{empty_line}</p>')
+    out.append("<h2>تراکنش‌های این بازه</h2>")
+    transactions = agg.get("transactions") or []
+    if transactions:
+        rows = "".join(
+            f"<tr><td>{_esc(jalali.to_fa_datetime(t.get('at')))}</td>"
+            f"<td>{_esc(t.get('customer'))}</td>"
+            f"<td>{_esc(t.get('label'))}</td>"
+            f"<td>{money(t.get('amount'))}</td>"
+            f"<td>{_esc(t.get('note'))}</td></tr>" for t in transactions)
+        out.append("<table><tr><th>زمان</th><th>مشتری</th><th>نوع</th>"
+                   "<th>مبلغ</th><th>شرح</th></tr>" + rows + "</table>")
+    else:
+        out.append(f'<p class="muted">{empty_line}</p>')
+    out.append("<p>مانده‌ها بر اساس مشتری‌های فعلی است.</p>")
+    anomalies = int(agg.get("anomalies") or 0)
+    if anomalies > 0:
+        out.append(f'<p class="muted">{jalali.fa_digits(anomalies)}'
+                   f' تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.</p>')
+    out.append("</body></html>")
+    return "".join(out)
+
+
+def finance_report_txt(agg):
+    """Plain-text finance report for Telegram/download (no markup)."""
+    mode = str(agg.get("mode") or "daily")
+    weekly = mode == "weekly"
+    from_fa = str(agg.get("from_fa") or "")
+    to_fa = str(agg.get("to_fa") or "")
+    title = (f"گزارش مالی مشتریان — {from_fa} تا {to_fa}" if weekly
+             else f"گزارش مالی مشتریان — {from_fa}")
+    totals = agg.get("totals") or {}
+    empty_line = "در این بازه تراکنشی ثبت نشده است."
+
+    def balance(n):
+        n = int(n or 0)
+        return "تسویه" if n == 0 else _fa_money(n)
+
+    lines = [title, "هفتگی" if weekly else "روزانه", "",
+             f"دریافتی‌های نقدی (واریزی): {_fa_money(totals.get('receipts'))}",
+             f"بدهکاری‌های جدید: {_fa_money(totals.get('debits'))}",
+             f"ماندهٔ کل مشتریان: {balance(totals.get('closing'))} "
+             f"(بدهکار {_fa_money(totals.get('debtors_total'))} / "
+             f"بستانکار {_fa_money(totals.get('creditors_total'))})",
+             "", "انواع تراکنش:"]
+    kinds = agg.get("kinds") or []
+    if kinds:
+        lines.extend(
+            f"- {k.get('label')}: "
+            f"{jalali.fa_digits(k.get('count') or 0)} مورد، "
+            f"{_fa_money(k.get('amount'))}" for k in kinds)
+    else:
+        lines.append(empty_line)
+    if weekly:
+        lines.append("")
+        lines.append("روزهای هفته:")
+        lines.extend(
+            f"- {d.get('day_fa')} {d.get('date_fa')}: "
+            f"بدهکاری {_fa_money(d.get('debits'))} / "
+            f"بستانکاری {_fa_money(d.get('credits'))} / "
+            f"دریافتی {_fa_money(d.get('receipts'))}"
+            for d in agg.get("days") or [])
+    lines.append("")
+    lines.append("مشتریان:")
+    customers = agg.get("customers") or []
+    if customers:
+        lines.extend(
+            f"- {c.get('name')}: ماندهٔ اول {balance(c.get('opening'))} | "
+            f"بدهکاری {_fa_money(c.get('debits'))} | "
+            f"بستانکاری {_fa_money(c.get('credits'))} | "
+            f"ماندهٔ پایان {balance(c.get('closing'))}" for c in customers)
+    else:
+        lines.append(empty_line)
+    lines.append("")
+    lines.append("تراکنش‌های این بازه:")
+    transactions = agg.get("transactions") or []
+    if transactions:
+        for t in transactions:
+            note = str(t.get("note") or "")
+            lines.append(
+                f"- {jalali.to_fa_datetime(t.get('at'))} | "
+                f"{t.get('customer')} | {t.get('label')} | "
+                f"{_fa_money(t.get('amount'))}"
+                + (f" | {note}" if note else ""))
+    else:
+        lines.append(empty_line)
+    lines.append("")
+    lines.append("مانده‌ها بر اساس مشتری‌های فعلی است.")
+    anomalies = int(agg.get("anomalies") or 0)
+    if anomalies > 0:
+        lines.append(f"{jalali.fa_digits(anomalies)} "
+                     "تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------

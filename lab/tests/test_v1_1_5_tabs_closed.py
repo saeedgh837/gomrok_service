@@ -152,7 +152,9 @@ class ClosedTerminalTests(TempStoreCase):
         return device
 
     def test_allowed_map_terminal(self):
-        self.assertEqual(crm.ALLOWED["closed"], {})
+        # v1.5: closed gains exactly one entry — detach_owner, a
+        # link-mutating action (unlink passenger), NOT a stage transition.
+        self.assertEqual(crm.ALLOWED["closed"], {"detach_owner": "closed"})
         self.assertEqual(crm.ALLOWED["problem"]["close_case"], "closed")
         self.assertEqual(crm.ALLOWED["inquiry"]["close_case"], "closed")
 
@@ -168,6 +170,15 @@ class ClosedTerminalTests(TempStoreCase):
                                     owner_id="whatever")
             self.assertTrue(errs, f"action {action} must be rejected on closed")
             self.assertIsNone(dev)
+
+    def test_detach_on_closed_ownerless_fails_for_owner_not_stage(self):
+        # v1.5: detach_owner IS allowed on closed — an ownerless closed case
+        # must fail with the owner error, not the stage-gate error (the
+        # bound-owner success path lives in test_v1_5_owner_detach).
+        device = self._closed_device()
+        dev, errs = crm.advance(device["id"], "detach_owner")
+        self.assertEqual(errs, ["این مسافر به پرونده‌ای متصل نیست"])
+        self.assertIsNone(dev)
 
     def test_stage_back_and_skip_rejected_on_closed(self):
         device = self._closed_device()

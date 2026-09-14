@@ -26,8 +26,11 @@ import panel  # noqa: E402
 
 ALL_STAGES = ["new", "inquiry", "problem", "ready_owner", "handed",
               "to_payment", "payment", "payment_done", "done", "closed"]
+# v1.5: detach_owner joined the matrix — it is allowed ONLY at
+# ready_owner/problem/closed and never moves the stage (link mutation).
 ALL_ACTIONS = ["queue_inquiry", "mark_problem", "mark_ready",
-               "requeue_inquiry", "close_case", "attach_owner", "handover",
+               "requeue_inquiry", "close_case", "attach_owner",
+               "detach_owner", "handover",
                "to_payment", "start_payment", "confirm_payment",
                "deliver_code", "stage_back", "stage_skip"]
 

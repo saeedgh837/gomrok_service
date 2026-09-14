@@ -5357,6 +5357,60 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .kpi.attention .n{color:var(--warn)}
   .kpi.k-problem .n{color:var(--danger)}
   .kpi.k-ok .n{color:var(--ok)}
+  /* v1.5 finance dialog: segmented mode switch, summary cards, weekly day
+     strip, two-segment activity bar and the collapsible transactions — one
+     token set serves light and dark, logical properties only. The report
+     body is wide (5-column money table), so its marker class widens the
+     shared dialog; without :has support it simply stays 600px. */
+  dialog:has(.findlg){width:min(760px,94vw)}
+  .seg{display:inline-flex;gap:2px;border:1px solid var(--line-strong);
+    border-radius:10px;background:var(--card2);padding:3px}
+  .seg button{border:0;background:transparent;color:var(--muted);border-radius:8px;
+    padding:4px 14px;font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;
+    min-height:0;transition:background .15s,color .15s}
+  .seg button:hover{color:var(--txt)}
+  .seg button.on{background:var(--card);color:var(--brand);box-shadow:var(--shadow-1)}
+  .seg button:focus-visible{box-shadow:var(--ring)}
+  .chev-r{transform:rotate(-90deg)}
+  .chev-l{transform:rotate(90deg)}
+  .finkpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);
+    border-radius:12px;background:var(--card);overflow:hidden;margin:2px 0 12px}
+  .finkpi{padding:10px 14px;border-inline-start:1px solid var(--line);min-width:0}
+  .finkpi:first-child{border-inline-start:none}
+  .finkpi .l{display:block;font-size:11px;color:var(--muted);font-weight:600;margin-bottom:3px}
+  .finkpi .v{display:block;font-size:16.5px;font-weight:750;font-variant-numeric:tabular-nums;
+    letter-spacing:-.2px}
+  .finkpi.ok .v{color:var(--ok)}
+  .finkpi.bad .v{color:var(--danger)}
+  .finkpi .split{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:6px}
+  .findays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin:0 0 12px}
+  .finday{border:1px solid var(--line);border-radius:10px;background:var(--card2);
+    padding:8px 10px;display:flex;flex-direction:column;gap:3px;min-width:0}
+  .finday .d{font-size:11.5px;font-weight:650}
+  .finday .dt{font-size:10.5px;color:var(--muted)}
+  .finday .r,.finday .b{font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}
+  .finday .r{color:var(--ok)}
+  .finday .b{color:var(--danger)}
+  .finday .r.zero,.finday .b.zero{color:var(--faint);font-weight:500}
+  .finnum{font-variant-numeric:tabular-nums}
+  .fin-ok{color:var(--ok)}
+  .fin-bad{color:var(--danger)}
+  .fin-zero{color:var(--muted)}
+  .finbar{display:flex;height:4px;border-radius:2px;overflow:hidden;margin-top:6px;
+    background:var(--pill-neutral-bg);min-width:52px;max-width:120px}
+  .finbar span{display:block;height:100%}
+  .finbar .g{background:var(--ok)}
+  .finbar .b{background:var(--danger);flex:1}
+  .finsec{border:1px solid var(--line);border-radius:10px;margin:12px 0 0;background:var(--card2)}
+  .finsec summary{display:flex;align-items:center;gap:8px;cursor:pointer;padding:9px 12px;
+    font-size:12.5px;font-weight:650;list-style:none;user-select:none}
+  .finsec summary::-webkit-details-marker{display:none}
+  .finsec summary:focus-visible{box-shadow:inset var(--ring)}
+  .finsec .chev{display:inline-flex;color:var(--muted);transition:transform .15s}
+  .finsec[open] .chev{transform:rotate(180deg)}
+  .finsec .finsec-body{padding:2px 12px 10px}
+  .fintx{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;font-size:12px;padding:6px 0}
+  .fintx+.fintx{border-top:1px solid var(--line)}
   /* tabs — active pill: soft brand fill + underline that covers the rail;
      flex-end + the -1px margin make the 2px tab border overlap the 1px
      container rule (the classic connected-underline tab bar) */
@@ -5939,6 +5993,14 @@ var ICONS = {
   send:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>',
   alert:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
   userplus:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3.6-6.5 8-6.5"/><path d="M19 8v6M16 11h6"/></svg>',
+  wallet:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>',
+  /* v1.5 finance dialog: the library chevron-down reused for the RTL
+     period-nav pair and the collapsible section — chev-r/chev-l only add
+     the CSS rotation (previous points right, next left; same direction
+     language as arrow-back), the path stays byte-identical. */
+  chev:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+  chevR:'<svg class="ic chev-r" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+  chevL:'<svg class="ic chev-l" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
   /* empty-state tiles (irica-icons language, 24-grid / stroke 2): the inbox
      tray marks a genuinely empty list, search-x an active search/filter with
      no hit; CSS scales them up inside the .eic tile */
@@ -6699,6 +6761,7 @@ function customersHtml(){
     +'<button class="btn mini warn" onclick="dlgDebt(\''+c.id+'\')">ثبت بدهی</button> '
     +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
+    +'<button class="btn" onclick="dlgFinance()">'+ICONS.wallet+' گزارش مالی</button>'
     +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
     +'<table><thead><tr><th>نام</th><th>موبایل</th><th>تلگرام / اینستا</th><th>آدرس</th><th>مانده</th><th></th></tr></thead>'
     +'<tbody>'+(rows||'<tr><td colspan="6">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('مشتری ثبت نشده است','مشتری‌ها را از تلگرام، اینستاگرام یا تماس تلفنی اضافه کنید.'))+'</td></tr>')+'</tbody></table></div>';
@@ -6719,6 +6782,7 @@ function ownersHtml(){
     +'<td class="kbd">'+esc(o.mobile)+'</td><td class="kbd">'+esc(o.card_no)+'</td>'
     +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span>':'<span class="pill warn">آزاد</span>')+'</td>'
     +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
+    +(dev&&dev.stage!=='done'?'<button class="btn mini warn" onclick="dlgDetach(\''+o.id+'\')">قطع اتصال</button> ':'')
     +(dev?'':'<button class="btn mini danger" onclick="ownerDelete(\''+o.id+'\')">حذف</button>')+'</td></tr>';
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
@@ -7251,17 +7315,22 @@ function gomrokGateAttrs(){
   return identityPoolReady()?'':' disabled title="'+IDENTITY_POOL_HINT+'"';
 }
 function dlgAttach(id){
-  /* An owner bound to ANY device renders as a disabled option so the operator
-     sees why it cannot be picked; the server stays the enforcer of the 1:1. */
+  /* v1.5: only FREE owners are pickable — the bound map stays purely as
+     the filter (the server remains the enforcer of the 1:1). With no free
+     owner the dialog says so and the attach button stays disabled. */
   var bound={};(STATE.devices||[]).forEach(d=>{if(d.owner_id)bound[d.owner_id]=true;});
-  var opts=(STATE.owners||[]).map(o=>{
+  var free=(STATE.owners||[]).filter(o=>!bound[o.id]);
+  var opts=free.map(o=>{
     var label=esc(o.first_name+' '+o.last_name)+' — '+esc(o.national);
-    return bound[o.id]
-      ?'<option value="'+o.id+'" disabled>'+label+' — متصل</option>'
-      :'<option value="'+o.id+'">'+label+'</option>';
+    return '<option value="'+o.id+'">'+label+'</option>';
   }).join('');
-  openDlg('<h3>اتصال مسافر به دستگاه</h3><div class="row"><select id="attOwner">'+opts+'</select>'
-    +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
+  openDlg('<h3>اتصال مسافر به دستگاه</h3>'
+    +(free.length
+      ?'<div class="row"><select id="attOwner">'+opts+'</select>'
+       +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
+      :'<p class="muted">مسافر آزادی برای اتصال وجود ندارد.</p>'
+       +'<div class="row" style="margin-top:10px"><button class="btn primary" disabled>اتصال</button>'
+       +'<button class="btn" onclick="closeDlg()">انصراف</button></div>')
     +'<p class="muted">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
 }
 function doAttach(id){
@@ -7442,8 +7511,62 @@ function doSaveOwner(id){
     .catch(e=>{document.getElementById('oErr').textContent=e;showFieldErrors(String(e));});
 }
 function ownerDelete(id){
-  if(!confirm('این مسافر حذف شود؟'))return;
-  api('/crm-owner',{action:'delete',id:id}).then(async()=>{toastCtx(ownerName(id),'حذف شد');await refresh();}).catch(e=>toast(e,false));
+  /* v1.5: destructive actions use the styled confirmDlg (never the native
+     blocking confirm) — same shape as devDelete. */
+  var onm=ownerName(id);
+  confirmDlg('حذف مسافر','این مسافر حذف شود؟','حذف مسافر',function(){
+    api('/crm-owner',{action:'delete',id:id}).then(async()=>{closeDlg();toastCtx(onm,'حذف شد');await refresh();}).catch(e=>toastCtx(onm,String(e),false));
+    });
+}
+/* v1.5: detaching a passenger (owners tab). The server allows the tick
+   only from اتصال مسافر / دارای اشکال / مختومه; past the handover the
+   modal guides instead of confirming (the tick would be rejected). */
+function dlgDetach(ownerId){
+  var dev=(STATE.devices||[]).find(d=>d.owner_id===ownerId);
+  if(!dev){toast('پرونده پیدا نشد',false);return;}
+  var owner=findOwner(ownerId)||{};
+  var serials=[dev.serial1,dev.serial2].filter(Boolean).join(' / ');
+  var info=[
+    ['مسافر', esc(ownerName(ownerId))],
+    ['کد ملی', '<span class="kbd">'+esc(owner.national||'—')+'</span>'],
+    ['دستگاه', esc(dev.name)+(serials?' <span class="kbd" dir="ltr">'+esc(serials)+'</span>':'')],
+    ['مشتری', esc(custName(dev.customer_id))],
+    ['گام فعلی', '<span class="pill '+(STAGE_TONE[dev.stage]||'n')+'">'+(STAGE_FA[dev.stage]||esc(dev.stage))+'</span>']
+  ].map(r=>'<tr><td class="muted" style="white-space:nowrap">'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+  var actions;
+  if(['ready_owner','problem','closed'].includes(dev.stage)){
+    actions='<p style="margin:12px 0 0;color:var(--txt);font-size:13px;line-height:1.9">هشدار: هر مسافر فقط به یک پرونده متصل می‌ماند. با قطع اتصال، مسافر برای اتصال به پروندهٔ دیگری آزاد می‌شود و پروفایل ثبت‌نام او از این پرونده جدا می‌شود.</p>'
+      +'<div class="row" style="margin-top:12px"><button class="btn danger" onclick="doDetach(\''+dev.id+'\',this)">قطع اتصال</button>'
+      +'<button class="btn" onclick="closeDlg()">انصراف</button></div>';
+  }else{
+    /* handed..payment_done, or a case rolled back before step 3 (the owner
+       link survives stage_back): same remedy sentence, minus the claim
+       about the handover which only holds for the blocked stages. */
+    var guide=['handed','to_payment','payment','payment_done'].includes(dev.stage)
+      ?'این پرونده به مسئول ثبت تحویل شده است. برای قطع اتصال، ابتدا پرونده را به گام ۳ (اتصال مسافر) برگردانید یا آن را مختومه کنید.'
+      :'برای قطع اتصال، ابتدا پرونده را به گام ۳ (اتصال مسافر) برگردانید یا آن را مختومه کنید.';
+    actions='<p style="margin:12px 0 0;color:var(--muted);font-size:13px;line-height:1.9">'+guide+'</p>'
+      +'<div class="row" style="margin-top:12px"><button class="btn" onclick="closeDlg()">بستن</button></div>';
+  }
+  openDlg('<h3>قطع اتصال مسافر</h3>'
+    +'<table style="width:100%;font-size:13.5px">'+info+'</table>'+actions);
+}
+function doDetach(id,btn){
+  /* Double-click guard (same shape as stageContinueClick): a second click
+     before the POST lands produced the old stage-mismatch errors. */
+  if(btn){if(btn.disabled)return;btn.disabled=true;
+    setTimeout(function(){btn.disabled=false;},1500);}
+  var dev=(STATE.devices||[]).find(x=>x.id===id);
+  var onm=dev?ownerName(dev.owner_id):'—';
+  var dnm=(dev&&dev.name)||'';
+  confirmDlg('تأیید قطع اتصال','مسافر '+onm+' از پروندهٔ '+dnm+' قطع شود؟ مرحلهٔ پرونده تغییری نمی‌کند.','بله، قطع اتصال کن',function(){
+    api('/crm-tick',{device_id:id,action:'detach_owner'}).then(async()=>{
+      toastCtx(onm,'اتصال مسافر قطع شد.');
+      await refresh();
+      renderView();
+      closeDlg();
+    }).catch(e=>toastCtx(onm,String(e),false));
+  });
 }
 function dlgIdent(mode,id){
   var i = id?(STATE.identities||[]).find(x=>x.id===id)||{}:{};
@@ -7471,6 +7594,156 @@ function identDelete(id){
 function sendTelegram(){
   api('/crm-report-telegram',{full_data:document.documentElement.dataset.full==='1'})
     .then(r=>toast('ارسال شد ('+fa(r.chunks)+' بخش)')).catch(e=>toast(e,false));
+}
+
+/* ================= finance report dialog (v1.5) ================= */
+/* Period state is session-scoped: FIN_MODE persists across opens; FIN_REF
+   resets to "today" on EVERY open — implemented by fetching without ref and
+   adopting the server-returned from. No date beyond ±day/±week arithmetic
+   on that anchor is ever computed here; all labels (from_fa/to_fa/day_fa)
+   come from the response. FIN_SEQ drops stale responses that race a newer
+   fetch (fast period navigation). */
+var FIN_MODE='daily',FIN_REF='',FIN_DATA=null,FIN_ERR='',FIN_SEQ=0;
+function finIso(d){
+  var p=function(n){return (n<10?'0':'')+n;};
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+}
+function finUrl(){
+  return '/crm-finance-report?mode='+FIN_MODE+(FIN_REF?'&ref='+FIN_REF:'')+'&fmt=json';
+}
+function dlgFinance(){
+  FIN_REF='';FIN_DATA=null;FIN_ERR='';FIN_SEQ++;
+  openDlg('<div class="findlg"><h3>گزارش مالی مشتریان</h3>'
+    +'<div class="row" style="margin-bottom:10px">'
+    +'<div class="seg" id="finSeg">'
+    +'<button type="button" class="'+(FIN_MODE==='daily'?'on':'')+'" data-m="daily" aria-pressed="'+(FIN_MODE==='daily'?'true':'false')+'" onclick="finMode(\'daily\')">روزانه</button>'
+    +'<button type="button" class="'+(FIN_MODE==='weekly'?'on':'')+'" data-m="weekly" aria-pressed="'+(FIN_MODE==='weekly'?'true':'false')+'" onclick="finMode(\'weekly\')">هفتگی</button></div>'
+    +'<button type="button" class="btn mini" title="بازهٔ قبلی" aria-label="بازهٔ قبلی" onclick="finShift(-1)">'+ICONS.chevR+'</button>'
+    +'<span class="chip" id="finLabel">…</span>'
+    +'<button type="button" class="btn mini" title="بازهٔ بعدی" aria-label="بازهٔ بعدی" onclick="finShift(1)">'+ICONS.chevL+'</button>'
+    +'<button type="button" class="btn mini" id="finReset" onclick="finReset()">'+(FIN_MODE==='daily'?'امروز':'این هفته')+'</button></div>'
+    +'<div id="finBody"><div class="muted">در حال دریافت گزارش…</div></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button type="button" class="btn" id="finPrint" disabled onclick="finOpen(\'html\')">چاپ</button>'
+    +'<button type="button" class="btn" id="finPdf" disabled onclick="finOpen(\'pdf\')">PDF</button>'
+    +'<button type="button" class="btn primary" id="finTg" disabled onclick="finTelegram()">ارسال به تلگرام</button>'
+    +'<button type="button" class="btn" onclick="closeDlg()">بستن</button></div></div>');
+  finLoad();
+}
+function finMode(m){
+  if(FIN_MODE===m)return;
+  FIN_MODE=m;
+  var seg=document.querySelectorAll('#finSeg button');
+  for(var i=0;i<seg.length;i++){
+    var on=seg[i].getAttribute('data-m')===m;
+    seg[i].classList.toggle('on',on);
+    seg[i].setAttribute('aria-pressed',on?'true':'false');
+  }
+  var rst=document.getElementById('finReset');
+  if(rst)rst.textContent=FIN_MODE==='daily'?'امروز':'این هفته';
+  finLoad();
+}
+function finShift(dir){
+  var d=new Date(String(FIN_REF||'')+'T00:00:00');
+  if(!FIN_REF||isNaN(d)){finReset();return;}
+  d.setDate(d.getDate()+(FIN_MODE==='weekly'?7:1)*dir);
+  FIN_REF=finIso(d);
+  finLoad();
+}
+function finReset(){
+  FIN_REF='';FIN_DATA=null;FIN_ERR='';finLoad();
+}
+function finLoad(){
+  var seq=++FIN_SEQ;
+  FIN_ERR='';FIN_DATA=null;
+  finPaint();
+  api(finUrl()).then(function(r){
+    if(seq!==FIN_SEQ)return;
+    FIN_DATA=r;
+    if(r&&r.from)FIN_REF=String(r.from);
+    finPaint();
+  }).catch(function(e){
+    if(seq!==FIN_SEQ)return;
+    FIN_ERR=String(e);
+    finPaint();
+  });
+}
+function finPaint(){
+  var body=document.getElementById('finBody');
+  if(body)body.innerHTML=finBodyHtml();
+  var lbl=document.getElementById('finLabel');
+  if(lbl)lbl.innerHTML=finLabelHtml();
+  var has=!!FIN_DATA;
+  ['finPrint','finPdf','finTg'].forEach(function(bid){
+    var b=document.getElementById(bid);
+    if(b)b.disabled=!has;
+  });
+}
+function finLabelHtml(){
+  if(!FIN_DATA)return '…';
+  return FIN_MODE==='daily'?esc(FIN_DATA.from_fa||'')
+    :'از '+esc(FIN_DATA.from_fa||'')+' تا '+esc(FIN_DATA.to_fa||'');
+}
+function finBal(n){
+  n=Number(n||0);
+  if(n<0)return '<span class="fin-bad">'+money(n)+'</span>';
+  if(n>0)return '<span class="fin-ok">'+money(n)+'</span>';
+  return '<span class="fin-zero">تسویه</span>';
+}
+function finBodyHtml(){
+  if(FIN_ERR)return '<div class="err">'+esc(FIN_ERR)+'</div>';
+  if(!FIN_DATA)return '<div class="muted">در حال دریافت گزارش…</div>';
+  var r=FIN_DATA,t=r.totals||{};
+  var split=(Number(t.closing)||0)===0
+    ?'<span class="pill n">تسویه</span>'
+    :'<span class="pill bad">بدهکار '+money(t.debtors_total)+'</span> / <span class="pill ok">بستانکار '+money(t.creditors_total)+'</span>';
+  var html='<div class="finkpis">'
+    +'<div class="finkpi ok"><span class="l">دریافتی‌های نقدی (واریزی)</span><span class="v">'+money(t.receipts)+'</span></div>'
+    +'<div class="finkpi bad"><span class="l">بدهکاری‌های جدید</span><span class="v">'+money(t.debits)+'</span></div>'
+    +'<div class="finkpi '+(t.closing>0?'ok':(t.closing<0?'bad':''))+'"><span class="l">ماندهٔ کل مشتریان</span><span class="v">'+money(t.closing)+'</span>'
+    +'<span class="split">'+split+'</span></div></div>';
+  if(FIN_MODE==='weekly'&&(r.days||[]).length){
+    html+='<div class="findays">'+r.days.map(function(day){
+      var rc=Number(day.receipts||0),db=Number(day.debits||0);
+      return '<div class="finday"><span class="d">'+esc(day.day_fa)+'</span>'
+        +'<span class="dt">'+esc(day.date_fa)+'</span>'
+        +'<span class="r'+(rc?'':' zero')+'" title="دریافتی">'+money(rc)+'</span>'
+        +'<span class="b'+(db?'':' zero')+'" title="بدهکاری">'+money(db)+'</span></div>';
+    }).join('')+'</div>';
+  }
+  var rows=(r.customers||[]).map(function(c){
+    var cr=Number(c.credits||0),db=Math.abs(Number(c.debits||0));
+    var bar=(cr+db)>0?'<div class="finbar"><span class="g" style="width:'+Math.round(cr*100/(cr+db))+'%"></span><span class="b"></span></div>':'';
+    return '<tr><td><b>'+esc(c.name)+'</b>'+bar+'</td>'
+      +'<td class="finnum">'+finBal(c.opening)+'</td>'
+      +'<td class="finnum fin-bad">'+money(c.debits)+'</td>'
+      +'<td class="finnum fin-ok">'+money(c.credits)+'</td>'
+      +'<td class="finnum">'+finBal(c.closing)+'</td></tr>';
+  }).join('');
+  html+='<table><thead><tr><th>مشتری</th><th>ماندهٔ اول</th><th>بدهکاری</th><th>بستانکاری</th><th>ماندهٔ پایان</th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="5" class="muted" style="padding:16px 8px">در این بازه تراکنشی ثبت نشده است.</td></tr>')+'</tbody></table>';
+  var txs=r.transactions||[];
+  var txRows=txs.map(function(x){
+    return '<div class="fintx"><span class="kbd">'+esc(faDateTime(x.at))+'</span>'
+      +'<b>'+esc(x.customer)+'</b><span>'+esc(x.label)+'</span>'
+      +(Number(x.amount)<0?'<span class="pill bad">'+money(x.amount)+'</span>':'<span class="pill ok">'+money(x.amount)+'</span>')
+      +(x.note?'<span class="muted">'+esc(x.note)+'</span>':'')+'</div>';
+  }).join('');
+  html+='<details class="finsec"><summary><span class="chev">'+ICONS.chev+'</span> تراکنش‌های این بازه '
+    +'<span class="chip">'+fa(txs.length)+'</span></summary>'
+    +'<div class="finsec-body">'+(txRows||'<div class="muted">در این بازه تراکنشی ثبت نشده است.</div>')+'</div></details>';
+  html+='<div class="muted" style="font-size:11.5px;margin-top:8px">مانده‌ها بر اساس مشتری‌های فعلی است.</div>';
+  if(Number(r.anomalies||0)>0)html+='<div class="muted" style="font-size:11.5px;margin-top:4px">'+fa(r.anomalies)+' تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.</div>';
+  return html;
+}
+function finOpen(fmt){
+  if(!FIN_REF)return;
+  window.open('/crm-finance-report?mode='+FIN_MODE+'&ref='+FIN_REF+'&fmt='+fmt,'_blank');
+}
+function finTelegram(){
+  if(!FIN_REF)return;
+  api('/crm-finance-report-telegram',{mode:FIN_MODE,ref:FIN_REF})
+    .then(r=>toast('ارسال شد ('+fa(r.sent)+' بخش)')).catch(e=>toast(String(e),false));
 }
 
 /* ================= render ================= */
@@ -7649,6 +7922,35 @@ def _tx_artifact(self, query):
     except OSError:
         self._send(404, b"not found", "text/plain")
 
+
+
+def crm_finance_report_params(mode, ref, fmt):
+    """Validate /crm-finance-report query values (v1.5).
+
+    Returns (mode, ref_date, fmt, errors); errors is a Persian list (empty =
+    valid). `ref` must be a non-empty YYYY-MM-DD string — callers substitute
+    today before calling. Calendar-invalid dates (e.g. 2026-02-30) are
+    rejected too.
+    """
+    import datetime
+    errors = []
+    mode = str(mode or "").strip()
+    if mode not in ("daily", "weekly"):
+        errors.append("مقدار mode نامعتبر است")
+    ref_text = str(ref or "").strip()
+    ref_date = None
+    if not ref_text or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref_text):
+        errors.append("تاریخ ref نامعتبر است؛ قالب درست: YYYY-MM-DD")
+    else:
+        try:
+            parts = [int(p) for p in ref_text.split("-")]
+            ref_date = datetime.date(*parts)
+        except ValueError:
+            errors.append("تاریخ ref نامعتبر است؛ قالب درست: YYYY-MM-DD")
+    fmt = str(fmt or "").strip()
+    if fmt not in ("json", "html", "pdf", "txt"):
+        errors.append("مقدار fmt نامعتبر است")
+    return mode, ref_date, fmt, errors
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -7956,6 +8258,89 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _crm_finance_report(self, query):
+        """Finance report (v1.5); mode=daily|weekly, ref=YYYY-MM-DD,
+        fmt=json (aggregate) | html (printable) | pdf (Edge, HTML fallback) |
+        txt (attachment download). Mirrors _crm_report's serving patterns."""
+        import crm as crm_mod
+        mode = (query.get("mode") or ["daily"])[0]
+        ref = (query.get("ref") or [""])[0] or time.strftime("%Y-%m-%d")
+        fmt = (query.get("fmt") or ["json"])[0]
+        mode, ref, fmt, errors = crm_finance_report_params(mode, ref, fmt)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        agg = crm_mod.finance_report_aggregate(crm_mod.store_read(), mode, ref)
+        if fmt == "json":
+            payload = {"ok": True}
+            payload.update(agg)
+            self._json(payload)
+            return
+        if fmt == "txt":
+            report = crm_mod.finance_report_txt(agg)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="crm-finance-report.txt"')
+            self.end_headers()
+            self.wfile.write(report.encode("utf-8"))
+            return
+        report = crm_mod.finance_report_html(agg)
+        if fmt == "pdf":
+            pdf_bytes = crm_html_to_pdf(report)
+            if pdf_bytes:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition",
+                                 'inline; filename="crm-finance-report.pdf"')
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+                return
+            report = report.replace(
+                "</body>",
+                "<script>window.onload=()=>setTimeout(()=>window.print(),300)"
+                "</script></body>")
+            self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _crm_finance_report_telegram(self, data):
+        """Finance report to Telegram (v1.5): plain text, chunks of <=3900
+        chars; every chunk must land or the route 502s (a partial financial
+        digest must never report success)."""
+        import crm as crm_mod
+        mode = str(data.get("mode") or "daily")
+        ref = str(data.get("ref") or "") or time.strftime("%Y-%m-%d")
+        mode, ref, _fmt, errors = crm_finance_report_params(mode, ref, "json")
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        agg = crm_mod.finance_report_aggregate(crm_mod.store_read(), mode, ref)
+        text = crm_mod.finance_report_txt(agg)
+        chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
+        sent = 0
+        try:
+            import telegram_notify as tg
+            for chunk in chunks:
+                if tg.send_message(chunk, timeout=20, actor=self.actor):
+                    sent += 1
+        except Exception as exc:
+            crm_mod.crm_log("error", "report_finance_failed", detail=str(exc))
+            self._json({"ok": False, "errors": ["ارسال تلگرام ناموفق بود"]}, 502)
+            return
+        if sent < len(chunks):
+            crm_mod.crm_log("error", "report_finance_failed",
+                            detail="%d/%d" % (sent, len(chunks)))
+            import jalali
+            self._json({"ok": False, "errors": [
+                "ارسال تلگرام کامل نشد: " + jalali.fa_digits(sent) + " از "
+                + jalali.fa_digits(len(chunks)) + " بخش ارسال شد"]}, 502)
+            return
+        crm_mod.crm_log("info", "report_finance_sent",
+                        mode=mode, chunks=sent)
+        self._json({"ok": True, "sent": sent})
+
     def _state_json(self, code=200):
         """load_store-e amn baraye route-haye read: agar file lahze-i kharab bood,
         be jaye 500/khali, akharin store-e salem barmigardanad (UI khali nashavad)."""
@@ -8185,6 +8570,10 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             self._crm_report(query)
+        elif route == "/crm-finance-report":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._crm_finance_report(query)
         elif route == "/tx-artifact":
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
@@ -8597,6 +8986,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-report-telegram":
             self._crm_report_telegram(bool(self._read_json().get("full_data")))
+
+        elif self.path == "/crm-finance-report-telegram":
+            self._crm_finance_report_telegram(self._read_json())
 
         else:
             self._send(404, b"not found", "text/plain")

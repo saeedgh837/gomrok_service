@@ -56,6 +56,7 @@ DEFAULT = [
     "test_v1_5_profile_ready",
     "test_v1_5_review_fixes",
     "test_v1_5_handoff",
+    "test_v1_5_finance_ui",
     "test_periodic_inquiry_tab",
     # Domain A contract modules (owner passport, ledger, stage machine).
     "test_crm_stage_transitions",
@@ -63,6 +64,9 @@ DEFAULT = [
     "test_crm_watch_identity",
     "test_crm_owner_passport",
     "test_crm_ledger_integrity",
+    # v1.5 backend slice (W1): finance report + owner detach.
+    "test_v1_5_finance_report",
+    "test_v1_5_owner_detach",
 ]
 
 names = sys.argv[1:] or DEFAULT

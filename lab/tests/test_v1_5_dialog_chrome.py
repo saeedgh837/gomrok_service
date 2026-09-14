@@ -17,6 +17,9 @@
 - Restores the lost id="quickBox" marker on the quick-links box so the
   v1.3 UI module is fully green again.
 - TX_KIND_FA labels the automatic registry-fee reversal (base_fee_refund).
+- v1.5 finance round: ownerDelete joins the styled-confirm family (no
+  native confirm), and the new detach / finance dialogs follow the shared
+  chrome contract (own dismiss buttons, no embedded x).
 """
 import os
 import re
@@ -289,6 +292,34 @@ class GuideAndGroupDesignTests(unittest.TestCase):
         body = fn_body(self.js, "devDelete")
         self.assertIn("confirmDlg('حذف پرونده'", body)
         self.assertNotIn("!confirm(", body)
+
+
+class OwnerDialogChromeTests(unittest.TestCase):
+    """v1.5 finance round: owner delete uses the styled confirm; the detach
+    and finance dialogs follow the shared dialog chrome contract."""
+
+    def setUp(self):
+        self.page = panel.CRM_PAGE
+        self.js = crm_js()
+
+    def test_owner_delete_uses_styled_confirm(self):
+        body = fn_body(self.js, "ownerDelete")
+        self.assertTrue(body, "ownerDelete not found")
+        self.assertIn("confirmDlg('حذف مسافر'", body)
+        # the pre-existing warning text stays byte-exact
+        self.assertIn("'این مسافر حذف شود؟'", body)
+        self.assertNotIn("!confirm(", body)
+        self.assertNotIn("confirm('", body)
+
+    def test_detach_and_finance_modals_follow_chrome_contract(self):
+        for fn in ("dlgDetach", "dlgFinance"):
+            body = fn_body(self.js, fn)
+            self.assertTrue(body, fn + " not found")
+            # one shared chrome x only — bodies never embed their own
+            self.assertNotIn("dlg-x", body, fn + " must not embed a chrome x")
+            # every body carries its own dismiss affordance
+            self.assertIn("closeDlg()", body, fn + " must offer a dismiss button")
+            self.assertNotIn("!confirm(", body)
 
 
 class TimestampSurfaceTests(unittest.TestCase):
