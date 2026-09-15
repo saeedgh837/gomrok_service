@@ -128,6 +128,21 @@ class TestPeriodicTabPage(unittest.TestCase):
         self.assertIn("periodicInterval", src)
         self.assertIn("/crm-settings", src)
 
+    def test_scheduler_toggle_switch(self):
+        # v1.6.1: the tab itself carries the scheduler kill-switch (the
+        # server beat already no-ops while scheduler_enabled is false);
+        # the off state shows a banner and a "زمان‌بند خاموش" due pill.
+        src = self._page()
+        self.assertIn("function periodicToggle(", src)
+        self.assertIn("scheduler_enabled:!(STATE.settings||{}).scheduler_enabled",
+                      src)
+        self.assertIn("استعلام دوره‌ای: ", src)
+        self.assertIn("غیرفعال کردن", src)
+        self.assertIn("فعال کردن", src)
+        self.assertIn("زمان‌بند خاموش", src)
+        self.assertIn("استعلام دوره‌ای غیرفعال است؛ زمان‌بند به‌صورت خودکار "
+                      "استعلام نمی‌گیرد.", src)
+
     def test_remove_and_history_buttons(self):
         src = self._page()
         self.assertIn("periodicRemove", src)

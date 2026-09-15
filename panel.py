@@ -6850,6 +6850,14 @@ function periodicSaveInterval(){
     toast('بازهٔ استعلام ذخیره شد: هر '+fa(r.settings.watch_interval_hours)+' ساعت');await refresh();})
     .catch(e=>toast(e,false));
 }
+function periodicToggle(){
+  /* v1.6.1: the tab-level kill-switch for the periodic scheduler. The
+     server beat (crm_periodic_scan) already no-ops while
+     settings.scheduler_enabled is false; manual runs stay available. */
+  api('/crm-settings',{scheduler_enabled:!(STATE.settings||{}).scheduler_enabled}).then(async r=>{
+    toast(r.settings.scheduler_enabled?'استعلام دوره‌ای فعال شد.':'استعلام دوره‌ای غیرفعال شد.');await refresh();})
+    .catch(e=>toast(e,false));
+}
 function periodicSelIds(){
   return (STATE.devices||[]).filter(d=>d.id &&
     document.getElementById('periodicSel'+d.id) &&
@@ -7015,6 +7023,7 @@ function periodicHistory(id){
 }
 function periodicHtml(){
   var settings=(STATE.settings||{});
+  var schedOn=!!settings.scheduler_enabled;
   var hours=settings.watch_interval_hours||2;
   var full=periodicDevices();
   var all=filterDevRows(full);
@@ -7027,7 +7036,9 @@ function periodicHtml(){
     // payment/payment_done are NEVER auto-inquired (the scheduler watch set is
     // handed/to_payment only): show a manual-only badge instead of a due
     // countdown that would imply a scheduled run (v1.5 review item 3).
-    var due=(d.stage==='payment'||d.stage==='payment_done')
+    var due=!schedOn
+      ?'<span class="pill n">زمان‌بند خاموش</span>'
+      :(d.stage==='payment'||d.stage==='payment_done')
       ?'<span class="pill n">فقط دستی</span>':dueIn(d,hours);
     return '<tr'+(opt?' style="opacity:.55"':'')+'><td><input type="checkbox" id="periodicSel'+d.id+'" class="periodicSel"></td>'+
       '<td><b>'+esc(d.name)+'</b>'+
@@ -7050,6 +7061,9 @@ function periodicHtml(){
     '<td class="muted">'+esc(l.message||'')+'</td></tr>').join('');
   var activeCount=full.filter(d=>!d.periodic_opt_out).length;
   return '<div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">'+
+    '<span class="pill '+(schedOn?'ok':'bad')+'">استعلام دوره‌ای: '+(schedOn?'فعال':'غیرفعال')+'</span>'+
+    (schedOn?'<button class="btn warn" onclick="periodicToggle()">غیرفعال کردن</button>'
+            :'<button class="btn primary" onclick="periodicToggle()">فعال کردن</button>')+
     '<label class="f" style="flex-direction:row;align-items:center;gap:6px">بازهٔ استعلام دوره‌ای (ساعت): '+
     '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
     '</label><button class="btn" onclick="periodicSaveInterval()">ذخیره بازه</button>'+
@@ -7059,6 +7073,7 @@ function periodicHtml(){
     '<button class="btn" onclick="periodicAddModal()">+ افزودن پرونده</button>'+
     '<span class="muted">'+fa(activeCount)+' دستگاه فعال از '+fa(full.length)+' دستگاه در این مرحله'+(STATE.estelam_running?' — <b>'+fa(STATE.estelam_runs?STATE.estelam_runs.length:1)+' اجرا در جریان است</b>':'')+'</span>'+
     '<span class="muted">استعلام خودکار فقط برای مراحل «تحویل به مسئول ثبت» و «استعلام ثبت‌بودن» اجرا می‌شود؛ مراحل پرداخت فقط دستی‌اند.</span></div>'+
+    (schedOn?'':'<p class="muted" style="margin:0 0 10px">استعلام دوره‌ای غیرفعال است؛ زمان‌بند به‌صورت خودکار استعلام نمی‌گیرد. اجرای فوری و استعلام‌های دستی همچنان کار می‌کنند.</p>')+
     '<table><thead><tr><th><input type="checkbox" id="periodicSelAll" onchange="periodicSelAll(this)"></th><th>دستگاه</th><th>مرحله</th><th>وضعیت استعلام</th><th>همتا</th><th>آخرین استعلام</th><th>استعلام بعدی</th><th></th></tr></thead>'+
     '<tbody>'+(rows||'<tr><td colspan="8">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('دستگاهی در لیست نیست','با رسیدن پرونده به «تحویل به مسئول سایت» به‌صورت خودکار در استعلام دوره‌ای گمرک قرار می‌گیرد.'))+'</td></tr>')+'</tbody></table></div>'+
     '<div class="card"><h3>لاگ استعلام‌های قبلی (کلی)</h3><div id="periodicLog" class="logbox">'+

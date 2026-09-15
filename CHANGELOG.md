@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-09-15
+
+### Added
+
+- **Periodic-inquiry kill-switch in the tab itself (operator request):**
+  the «استعلام دوره‌ای گمرک» tab now carries its own فعال/غیرفعال
+  switch — a status pill plus a toggle button in the toolbar. While off,
+  the scheduler starts no automatic inquiry (the pre-existing
+  `scheduler_enabled` gate the server beat already honors), the tab
+  shows a banner explaining the state, and the «استعلام بعدی» column
+  reads «زمان‌بند خاموش» instead of a misleading countdown. Manual runs
+  («شروع فوری استعلام», per-device buttons) keep working, and the
+  settings-tab checkbox stays in sync.
+
 ## [1.6.0] - 2026-09-15
 
 ### Added
