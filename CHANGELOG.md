@@ -3,6 +3,63 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-09-15
+
+### Added
+
+- **Amount received on case creation (operator request):** the new-case
+  dialog (گام ۱) gains «مبلغ دریافتی (تومان)», default 0. A value above
+  zero books a «دریافتی» transaction («دریافتی هنگام ثبت پرونده») on the
+  linked customer in the same atomic store write as the auto registry
+  fee, tagged to the case. Raw input is validated before digit
+  normalization (a typed "-500" or "1.5" can no longer silently book
+  500/15), and the submit button double-click-guarded.
+- **Customer statement — «صورت‌حساب» (operator request):** a per-customer
+  dialog with the classic تاریخ | شرح | بدهکار | بستانکار | مانده layout,
+  a running balance after every row, range chips (همه / ۳۰ روز اخیر /
+  ۹۰ روز اخیر), voided rows struck through, and چاپ/PDF/Telegram exports
+  (self-contained RTL Vazirmatn document; partial Telegram send = 502,
+  never a silent success). GET /crm-statement + POST
+  /crm-statement-telegram.
+- **Per-case invoice — «فاکتور» (operator request):** a button in the
+  case modal opens a printable invoice: business header, شمارهٔ فاکتور =
+  شناسهٔ پرونده, issue/creation dates (Shamsi), customer + device
+  blocks, this case's debits and receipts, «ماندهٔ این پرونده» vs
+  «ماندهٔ کل حساب مشتری», and a voided-rows note. GET /crm-invoice.
+- **Transaction void — «ابطال» (operator request):** wrong entries are
+  voided with a mandatory reason and a second confirmation; the original
+  row is struck and a mirrored reversal row («ابطال، دلیل: …») is
+  appended — history is never deleted. Voided pairs are excluded from
+  EVERY balance and aggregate (JS bal(), customer_balance, finance
+  report, statement, invoice) and a live fee/refund pair cannot be
+  half-voided (phantom-credit guard). POST /crm-customer action=void_tx.
+- **Business identity on printouts:** optional «نام کسب‌وکار» and
+  «شمارهٔ تماس کسب‌وکار» in settings, printed atop the statement,
+  invoice, and finance report documents when set.
+
+### Fixed
+
+- **Production (coworker report):** «شروع ربات پرداخت» failing with
+  «پروفایل ثبت‌نام برای این دستگاه ساخته نشده است» while passengers
+  were attached. Root cause: the profiles-store write fails on Windows
+  while another process holds profiles.json open, and both error paths
+  (attach hook, payment self-heal) swallowed the exception silently.
+  Now: the atomic write retries with backoff, the heal retries the
+  ensure three times, the 400 error carries the actual «علت: …», and
+  profile_ensure_failed log events carry the exception detail. The dead
+  national-code dedupe clause in crm_ensure_registration_profile was
+  removed (serial-only by design — national matching would link profiles
+  whose IMEIs belong to a different device).
+- **Production:** voiding a customer's FIRST transaction (index 0) was
+  impossible — the panel dispatcher fed the index through a normalizer
+  that turns falsy input into an empty string.
+- Deleting a device whose fee was already voided no longer books a
+  duplicate refund (double-credit guard).
+- The printed statement now shows the «ماندهٔ اول» VALUE (was
+  label-only), and rows with unparseable dates are excluded consistently
+  by every surface with a visible «N تراکنش با تاریخ نامعتبر
+  نادیده‌گرفته شد» note.
+
 ## [1.5.0] - 2026-09-15
 
 ### Added

@@ -48,9 +48,14 @@ DEFAULT_SETTINGS = {
     "registry_fee_amount": 24_000_000,  # هزینه ثبت رجیستری (تومان)
     # Default only — the panel domain owns validation and use.
     "registration_chat_id": "",
+    # v1.6: business identity for the statement/invoice/finance headers.
+    # Empty string = header line omitted (same optional pattern as above).
+    "business_name": "",
+    "business_phone": "",
 }
 
 REGISTRY_FEE_NOTE = "هزینهٔ ثبت رجیستری"
+RECEIVED_ON_REGISTER_NOTE = "دریافتی هنگام ثبت پرونده"
 
 # Stage machine: stage -> {action -> next stage}. Single source of truth (F12).
 ALLOWED = {
@@ -561,8 +566,29 @@ def _device_mid_robot(device):
     return False
 
 
+def _tx_active(tx):
+    """v1.6 accounting rule: a ledger row counts toward balances/aggregates
+    iff it is NOT a voided original (voided_at stamped) and NOT a `void`
+    reversal. Applied by every Python-side consumer; the CRM page's JS bal()
+    mirrors the same predicate."""
+    return not (tx.get("voided_at") or tx.get("kind") == "void")
+
+
+def _tx_countable(tx):
+    """Production hardening (v1.6.0): a row moves balances only when it is
+    active AND its `at` carries the fixed-width date shape — the exact rows
+    the statement and the finance report already exclude, so every surface
+    (JS bal(), customer_balance, statement, invoice, finance report) now
+    agrees on the same number. Such rows only exist in hand-corrupted
+    stores: add_transaction and every booker stamp a valid `at`."""
+    at = tx.get("at")
+    return (_tx_active(tx) and isinstance(at, str)
+            and _TX_DATE_RE.fullmatch(at[:10] or "") is not None)
+
+
 def customer_balance(customer):
-    return sum(int(t.get("amount") or 0) for t in customer.get("transactions", []))
+    return sum(int(t.get("amount") or 0) for t in customer.get("transactions", [])
+               if _tx_countable(t))
 
 
 def add_transaction(customer_id, amount, note="", kind="", image="",
@@ -584,6 +610,72 @@ def add_transaction(customer_id, amount, note="", kind="", image="",
         record["updated"] = _now()
         _store_write(data)
         return entry, []
+
+
+def void_transaction(customer_id, tx_index, reason):
+    """Void one ledger row (v1.6).
+
+    Marks the original with `voided_at` + `void_reason` and appends a `void`
+    reversal mirroring its amount (and device_id), so every active-only
+    balance nets the pair out while the rows stay visible on the statement.
+    The whole resolve-check-write runs under STORE_LOCK: the ledger list is
+    append-only, so an index resolved by the caller stays valid, but the
+    row is re-checked inside the lock (a concurrent void of the same row
+    must fail with «این تراکنش قبلاً ابطال شده است», never double-reverse).
+    Returns (reversal_entry, errors); Persian errors mirror add_transaction.
+    """
+    reason = str(reason or "").strip()
+    with STORE_LOCK:
+        data = _store_read()
+        customer = next((c for c in data.get("customers", [])
+                         if c.get("id") == customer_id), None)
+        if not customer:
+            return None, ["مشتری پیدا نشد"]
+        txs = customer.setdefault("transactions", [])
+        if (isinstance(tx_index, bool) or not isinstance(tx_index, int)
+                or tx_index < 0 or tx_index >= len(txs)):
+            return None, ["تراکنش پیدا نشد"]
+        tx = txs[tx_index]
+        if tx.get("voided_at"):
+            return None, ["این تراکنش قبلاً ابطال شده است"]
+        if tx.get("kind") == "void":
+            return None, ["ردیف ابطال قابل ابطال مجدد نیست"]
+        kind = str(tx.get("kind") or "")
+        device_ref = str(tx.get("device_id") or "")
+        if kind in ("base_fee", "base_fee_refund") and device_ref:
+            # H1 review guard (v1.6.0): voiding ONE side of a live
+            # fee/refund pair mints a phantom credit/debit (the refund and
+            # the void-reversal would both stay active). Voiding both sides
+            # in sequence is fine — the guard only blocks the half-pair.
+            counterpart = ("base_fee_refund" if kind == "base_fee"
+                           else "base_fee")
+            if any(_tx_active(t) and str(t.get("kind") or "") == counterpart
+                   and str(t.get("device_id") or "") == device_ref
+                   for t in txs):
+                label = ("بازگشت هزینه ثبت رجیستری" if kind == "base_fee"
+                         else "هزینه ثبت رجیستری")
+                return None, ["این ردیف با «" + label + "» همین پرونده جفت "
+                              "است — ابتدا ردیف مقابل را ابطال کنید"]
+        if not reason:
+            return None, ["ثبت دلیل برای ابطال الزامی است"]
+        try:
+            amount = int(tx.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0
+        tx["voided_at"] = _now()
+        tx["void_reason"] = reason
+        reversal = {"at": _now(), "amount": -amount, "kind": "void",
+                    "note": "ابطال، دلیل: " + reason, "image": "",
+                    "device_id": str(tx.get("device_id") or "")}
+        txs.append(reversal)
+        customer["updated"] = _now()
+        _store_write(data)
+    # Audit trail after the lock release (delete_device precedent): ids and
+    # the index only — never the free-text reason (plan section 12). The
+    # index rides as a string so 0 survives crm_log's falsy-value filter.
+    crm_log("info", "void_tx", customer_id=customer_id,
+            tx_index=str(tx_index))
+    return reversal, []
 
 
 def _charge_registry_fee(data, customer_id, device_id):
@@ -640,7 +732,10 @@ def _refund_registry_fee(data, device):
     for customer in data.get("customers", []):
         fees = [t for t in customer.get("transactions", [])
                 if t.get("device_id") == device_id
-                and t.get("kind") == "base_fee"]
+                and t.get("kind") == "base_fee"
+                # v1.6: a voided fee already carries its own reversal row —
+                # refunding it again would double-credit the customer.
+                and not t.get("voided_at")]
         if not fees:
             continue
         for fee in fees:
@@ -783,11 +878,46 @@ def delete_identity(identity_id):
         return True, []
 
 
+def _parse_received_amount(value):
+    """Parse the optional received-on-register amount (v1.6).
+
+    Missing/None/blank -> 0 (no row booked). Accepts int or a digit string
+    (Persian digits, thousands separators tolerated — same leniency as the
+    registry-fee setting). Anything else, or a negative value, is invalid.
+    Returns (amount, error) with the canonical Persian error on failure.
+    """
+    if value is None:
+        return 0, ""
+    if isinstance(value, bool):
+        return 0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)"
+    if isinstance(value, int):
+        return (value, "") if value >= 0 else (
+            0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)")
+    text = str(normalize_digits(value)).strip()
+    for sep in (",", "،", " "):
+        text = text.replace(sep, "")
+    if not text:
+        return 0, ""
+    try:
+        amount = int(text)
+    except ValueError:
+        return 0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)"
+    if amount < 0:
+        return 0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)"
+    return amount, ""
+
+
 def add_device(fields, customer=None):
-    """Add a device. `customer` is an optional inline new-customer dict."""
+    """Add a device. `customer` is an optional inline new-customer dict.
+    `received_amount` (v1.6) books an optional receipt on the linked
+    customer's ledger in the same store write as the registry fee."""
     errs = validate_device(fields)
     if errs:
         return None, errs
+    received_amount, received_error = _parse_received_amount(
+        fields.get("received_amount"))
+    if received_error:
+        return None, [received_error]
     with STORE_LOCK:
         data = _store_read()
         if customer:
@@ -829,6 +959,18 @@ def add_device(fields, customer=None):
         }
         _collection(data, "devices").append(record)
         _charge_registry_fee(data, customer_id, record["id"])
+        if received_amount > 0 and customer_id:
+            # v1.6: cash handed over at intake time — a plain receipt row on
+            # the SAME store write as the fee, marked with the device id so
+            # the per-case invoice picks it up.
+            linked = next((c for c in data.get("customers", [])
+                           if c.get("id") == customer_id), None)
+            if linked:
+                linked.setdefault("transactions", []).append({
+                    "at": _now(), "amount": received_amount,
+                    "kind": "receipt", "note": RECEIVED_ON_REGISTER_NOTE,
+                    "image": "", "device_id": record["id"]})
+                linked["updated"] = _now()
         _store_write(data)
         return record, []
 
@@ -1284,6 +1426,7 @@ TX_KIND_LABELS = {
     "receipt": "دریافتی",
     "debt": "بدهی",
     "tx": "تراکنش",
+    "void": "ابطال",
     "": "—",
 }
 
@@ -1311,6 +1454,14 @@ def _fa_money(n):
 
 def _tx_kind_label(kind):
     return TX_KIND_LABELS.get(kind) or kind or "—"
+
+
+def _business_header(business):
+    """One-line business identity for report headers (v1.6): name — phone.
+    Empty string when neither is set (the header line is then omitted)."""
+    name = str((business or {}).get("name") or "").strip()
+    phone = str((business or {}).get("phone") or "").strip()
+    return "؛ ".join(part for part in (name, phone) if part)
 
 
 def finance_report_aggregate(data, mode, ref):
@@ -1356,6 +1507,10 @@ def finance_report_aggregate(data, mode, ref):
             at = tx.get("at") if isinstance(tx, dict) else None
             if not isinstance(at, str) or not _TX_DATE_RE.fullmatch(at[:10]):
                 anomalies += 1
+                continue
+            if tx.get("voided_at") or tx.get("kind") == "void":
+                # v1.6: inactive pairs (voided original + reversal) leave
+                # every bucket — the finance report is the real-money view.
                 continue
             bucket = at[:10]
             try:
@@ -1432,11 +1587,14 @@ def finance_report_aggregate(data, mode, ref):
                 "day_fa": WEEKDAY_FA[(day.weekday() + 2) % 7],
                 "debits": stat["debits"], "credits": stat["credits"],
                 "receipts": stat["receipts"], "count": stat["count"]})
+    settings = data.get("settings") or {}
     return {
         "mode": mode, "from": from_iso, "to": to_iso,
         "from_fa": jalali.to_fa(from_iso), "to_fa": jalali.to_fa(to_iso),
         "totals": totals, "kinds": kinds, "customers": customers_out,
         "days": days, "transactions": transactions, "anomalies": anomalies,
+        "business": {"name": str(settings.get("business_name") or "").strip(),
+                     "phone": str(settings.get("business_phone") or "").strip()},
     }
 
 
@@ -1482,6 +1640,11 @@ def finance_report_html(agg):
         "@media print{body{margin:8mm}}</style></head><body>",
         f"<h1>{_esc(title)}</h1>",
         f'<p class="muted">{"هفتگی" if weekly else "روزانه"}</p>',
+    ]
+    business_line = _business_header(agg.get("business"))
+    if business_line:
+        out.append(f'<p class="muted">{_esc(business_line)}</p>')
+    out.extend([
         '<div class="sum">',
         '<div><span class="muted">دریافتی‌های نقدی (واریزی)</span><br>'
         + money(totals.get("receipts")) + "</div>",
@@ -1493,7 +1656,7 @@ def finance_report_html(agg):
         + _fa_money(totals.get("debtors_total")) + " / بستانکار "
         + _fa_money(totals.get("creditors_total")) + "</span></div></div>",
         "<h2>انواع تراکنش</h2>",
-    ]
+    ])
     kinds = agg.get("kinds") or []
     if kinds:
         rows = "".join(
@@ -1567,7 +1730,11 @@ def finance_report_txt(agg):
         n = int(n or 0)
         return "تسویه" if n == 0 else _fa_money(n)
 
-    lines = [title, "هفتگی" if weekly else "روزانه", "",
+    lines = [title, "هفتگی" if weekly else "روزانه"]
+    business_line = _business_header(agg.get("business"))
+    if business_line:
+        lines.append(business_line)
+    lines += ["",
              f"دریافتی‌های نقدی (واریزی): {_fa_money(totals.get('receipts'))}",
              f"بدهکاری‌های جدید: {_fa_money(totals.get('debits'))}",
              f"ماندهٔ کل مشتریان: {balance(totals.get('closing'))} "
@@ -1622,6 +1789,394 @@ def finance_report_txt(agg):
         lines.append(f"{jalali.fa_digits(anomalies)} "
                      "تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Customer statement + per-case invoice (v1.6). Read-only over the store
+# dict; the panel layer validates params and serves/renders them.
+# --------------------------------------------------------------------------
+
+def _statement_row(tx):
+    """One statement row: magnitudes for the debit/credit columns, the kind
+    label, and the voided flag. Reversal rows carry their «ابطال» label;
+    voided originals keep their own kind's label."""
+    try:
+        amount = int(tx.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    kind = str(tx.get("kind") or "")
+    return {
+        "at": str(tx.get("at") or ""),
+        "at_fa": jalali.to_fa_datetime(tx.get("at")),
+        "label": _tx_kind_label(kind),
+        "note": str(tx.get("note") or ""),
+        "debit": -amount if amount < 0 else 0,
+        "credit": amount if amount > 0 else 0,
+        "voided": not _tx_active(tx),
+        "kind": kind,
+    }
+
+
+def customer_statement(data, customer_id, from_date=None, to_date=None):
+    """Build one customer's period statement (read-only, v1.6).
+
+    `from_date`/`to_date` are optional datetime.date bounds (each unbounded
+    when None). ACTIVE transactions drive every number (the v1.6 accounting
+    rule); inactive rows (voided original + `void` reversal) still appear in
+    `rows` with voided=True so the document stays a faithful ledger, but get
+    a null balance and never move a total. `totals.debits`/`credits` are
+    magnitudes (non-negative); closing = opening + credits - debits.
+    Returns (statement_dict, errors) — («مشتری پیدا نشد» on a bad id).
+    """
+    customer = next((c for c in data.get("customers", [])
+                     if c.get("id") == customer_id), None)
+    if not customer:
+        return None, ["مشتری پیدا نشد"]
+    from_iso = from_date.isoformat() if from_date else ""
+    to_iso = to_date.isoformat() if to_date else ""
+    opening = 0
+    rows = []
+    balances = []
+    debits = credits = voided_count = anomalies = 0
+    running = 0
+    for tx in customer.get("transactions") or []:
+        at = tx.get("at") if isinstance(tx, dict) else None
+        if not isinstance(at, str) or not _TX_DATE_RE.fullmatch(at[:10]):
+            anomalies += 1
+            continue                      # unplaceable rows never render
+        bucket = at[:10]
+        if from_iso and bucket < from_iso:
+            if _tx_active(tx):
+                try:
+                    opening += int(tx.get("amount") or 0)
+                except (TypeError, ValueError):
+                    pass
+            continue
+        if to_iso and bucket > to_iso:
+            continue
+        active = _tx_active(tx)
+        row = _statement_row(tx)
+        if active:
+            running += row["credit"] - row["debit"]
+            debits += row["debit"]
+            credits += row["credit"]
+        else:
+            voided_count += 1
+        rows.append(row)
+        balances.append(opening + running if active else None)
+    closing = opening + credits - debits
+    settings = data.get("settings") or {}
+    generated_at = _now()
+    return {
+        "customer": {
+            "id": str(customer.get("id") or ""),
+            "name": str(customer.get("full_name") or "").strip(),
+            "mobile": str(customer.get("mobile") or ""),
+            "address": str(customer.get("address") or ""),
+        },
+        "from": from_iso, "to": to_iso,
+        "from_fa": jalali.to_fa(from_iso) if from_iso else "",
+        "to_fa": jalali.to_fa(to_iso) if to_iso else "",
+        "generated_at": generated_at,
+        "generated_at_fa": jalali.to_fa_datetime(generated_at),
+        "business": {"name": str(settings.get("business_name") or "").strip(),
+                     "phone": str(settings.get("business_phone") or "").strip()},
+        "opening": opening, "rows": rows, "balances": balances,
+        "totals": {"debits": debits, "credits": credits,
+                   "opening": opening, "closing": closing},
+        "voided_count": voided_count,
+        "anomalies": anomalies,
+    }, []
+
+
+def _statement_period_fa(stmt):
+    """«از …» / «تا …» / «از … تا …» period line; empty when unbounded."""
+    from_fa = str(stmt.get("from_fa") or "")
+    to_fa = str(stmt.get("to_fa") or "")
+    if from_fa and to_fa:
+        return f"از {from_fa} تا {to_fa}"
+    if from_fa:
+        return f"از {from_fa}"
+    if to_fa:
+        return f"تا {to_fa}"
+    return ""
+
+
+def _balance_fa(n):
+    n = int(n or 0)
+    return "تسویه" if n == 0 else _fa_money(n)
+
+
+def customer_statement_html(stmt):
+    """Self-contained RTL print document for the customer statement (v1.6),
+    on the finance report scaffold: Vazirmatn, escaped fields, _fa_money.
+    Voided/reversal rows render struck through with an empty balance."""
+    customer = stmt.get("customer") or {}
+    totals = stmt.get("totals") or {}
+    rows = stmt.get("rows") or []
+    balances = stmt.get("balances") or []
+
+    def money(n):
+        n = int(n or 0)
+        if n < 0:
+            return f'<span class="neg">{_fa_money(n)}</span>'
+        if n > 0:
+            return f'<span class="pos">{_fa_money(n)}</span>'
+        return _fa_money(0)
+
+    out = [
+        '<!DOCTYPE html><html dir="rtl" lang="fa">',
+        '<head><meta charset="utf-8"><title>صورت‌حساب مشتری</title>',
+        "<style>",
+        "@font-face{font-family:'Vazirmatn';"
+        "src:url('/fonts/Vazirmatn-var.woff2') format('woff2');"
+        "font-weight:100 900;font-display:swap;}",
+        "body{font-family:'Vazirmatn',tahoma,sans-serif;direction:rtl;"
+        "margin:24px;color:#111;background:#fff}",
+        "h1{font-size:18px;margin:0 0 2px}",
+        "table{border-collapse:collapse;width:100%;font-size:12.5px}",
+        "th,td{border:1px solid #999;padding:4px 8px;text-align:right}",
+        "th{background:#f2f2f2}",
+        ".muted{color:#666}.pos{color:#0c7d4f}.neg{color:#d93752}",
+        "tr.void td{text-decoration:line-through;color:#666}",
+        "@media print{body{margin:8mm}}</style></head><body>",
+        "<h1>صورت‌حساب مشتری</h1>",
+    ]
+    business_line = _business_header(stmt.get("business"))
+    if business_line:
+        out.append(f'<p class="muted">{_esc(business_line)}</p>')
+    out.append(f"<p>نام: {_esc(customer.get('name'))}</p>")
+    out.append(f'<p class="muted">موبایل: {_esc(customer.get("mobile"))}</p>')
+    out.append(f'<p class="muted">آدرس: {_esc(customer.get("address"))}</p>')
+    period = _statement_period_fa(stmt)
+    if period:
+        out.append(f'<p class="muted">{_esc(period)}</p>')
+    body_rows = []
+    for row, balance in zip(rows, balances):
+        note = str(row.get("note") or "")
+        label = str(row.get("label") or "")
+        # شرح: the note is written self-describing (fee/void notes embed
+        # their label); it leads when present, the label is the fallback.
+        desc = note or label
+        debit = int(row.get("debit") or 0)
+        credit = int(row.get("credit") or 0)
+        voided = bool(row.get("voided"))
+        row_class = ' class="void"' if voided else ""
+        body_rows.append(
+            f"<tr{row_class}>"
+            f"<td>{_esc(row.get('at_fa'))}</td>"
+            f"<td>{_esc(desc)}</td>"
+            f"<td>{money(debit) if debit else ''}</td>"
+            f"<td>{money(credit) if credit else ''}</td>"
+            f"<td>{money(balance) if balance is not None else ''}</td></tr>")
+    out.append("<table><tr><th>تاریخ</th><th>شرح</th><th>بدهکار</th>"
+               "<th>بستانکار</th><th>مانده</th></tr>")
+    out.extend(body_rows)
+    out.append(
+        "<tfoot>"
+        '<tr><td colspan="2"></td><td>جمع بدهکاری</td><td>جمع دریافتی</td>'
+        "<td>ماندهٔ پایان</td></tr>"
+        f'<tr><td colspan="2">ماندهٔ اول: {_balance_fa(totals.get("opening"))}</td>'
+        f"<td>{money(totals.get('debits'))}</td>"
+        f"<td>{money(totals.get('credits'))}</td>"
+        f"<td>{_balance_fa(totals.get('closing'))}</td></tr></tfoot></table>")
+    anomalies = int(stmt.get("anomalies") or 0)
+    if anomalies > 0:
+        out.append(f'<p class="muted">{jalali.fa_digits(anomalies)} '
+                   f'تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.</p>')
+    out.append(f"<p>تاریخ صدور: {_esc(stmt.get('generated_at_fa'))}</p>")
+    out.append("</body></html>")
+    return "".join(out)
+
+
+def customer_statement_txt(stmt):
+    """Plain-text customer statement for Telegram/download (no markup)."""
+    customer = stmt.get("customer") or {}
+    totals = stmt.get("totals") or {}
+    rows = stmt.get("rows") or []
+    balances = stmt.get("balances") or []
+    lines = ["صورت‌حساب مشتری"]
+    business_line = _business_header(stmt.get("business"))
+    if business_line:
+        lines.append(business_line)
+    lines.append(f"نام: {customer.get('name') or '—'}")
+    lines.append(f"موبایل: {customer.get('mobile') or '—'}")
+    address = str(customer.get("address") or "").strip()
+    if address:
+        lines.append(f"آدرس: {address}")
+    period = _statement_period_fa(stmt)
+    if period:
+        lines.append(period)
+    lines.append("")
+    for row, balance in zip(rows, balances):
+        note = str(row.get("note") or "")
+        desc = note or str(row.get("label") or "")
+        if row.get("voided"):
+            desc += " (ابطال‌شده)"
+        debit = int(row.get("debit") or 0)
+        credit = int(row.get("credit") or 0)
+        parts = [f"- {row.get('at_fa')}", desc]
+        parts.append(_fa_money(debit) if debit else "—")
+        parts.append(_fa_money(credit) if credit else "—")
+        parts.append(_balance_fa(balance) if balance is not None else "—")
+        lines.append(" | ".join(parts))
+    lines.append("")
+    lines.append(f"ماندهٔ اول: {_balance_fa(totals.get('opening'))}")
+    lines.append(f"جمع بدهکاری: {_fa_money(totals.get('debits'))}")
+    lines.append(f"جمع دریافتی: {_fa_money(totals.get('credits'))}")
+    lines.append(f"ماندهٔ پایان: {_balance_fa(totals.get('closing'))}")
+    anomalies = int(stmt.get("anomalies") or 0)
+    if anomalies > 0:
+        lines.append(f"{jalali.fa_digits(anomalies)} "
+                     "تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.")
+    lines.append(f"تاریخ صدور: {stmt.get('generated_at_fa')}")
+    return "\n".join(lines)
+
+
+def device_invoice(data, device_id):
+    """Build the per-case invoice model (read-only, v1.6).
+
+    Sections list the ACTIVE ledger rows whose device_id marks this case;
+    «ماندهٔ این پرونده» nets exactly those rows while «ماندهٔ کل حساب
+    مشتری» is the customer's active balance across every case. Inactive
+    rows linked to the device are counted (not summed) for the muted note.
+    Returns (invoice_dict, errors) — («دستگاه پیدا نشد» on a bad id).
+    """
+    device = next((d for d in data.get("devices", [])
+                   if str(d.get("id")) == str(device_id or "")), None)
+    if not device:
+        return None, ["دستگاه پیدا نشد"]
+    customer = next((c for c in data.get("customers", [])
+                     if c.get("id") == device.get("customer_id")), None)
+    debits = []
+    credits = []
+    inactive_count = 0
+    for tx in (customer or {}).get("transactions") or []:
+        if not isinstance(tx, dict) or \
+                str(tx.get("device_id") or "") != str(device_id):
+            continue
+        if not _tx_countable(tx):
+            inactive_count += 1
+            continue
+        try:
+            amount = int(tx.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0
+        if amount < 0:
+            debits.append(_statement_row(tx))
+        elif amount > 0:
+            credits.append(_statement_row(tx))
+    total_debits = sum(int(row["debit"]) for row in debits)
+    total_credits = sum(int(row["credit"]) for row in credits)
+    settings = data.get("settings") or {}
+    return {
+        "device": {
+            "id": str(device.get("id") or ""),
+            "name": str(device.get("name") or ""),
+            "serial1": str(device.get("serial1") or ""),
+            "serial2": str(device.get("serial2") or ""),
+            "created": str(device.get("created") or ""),
+        },
+        "customer": (None if customer is None else {
+            "id": str(customer.get("id") or ""),
+            "name": str(customer.get("full_name") or "").strip(),
+            "mobile": str(customer.get("mobile") or ""),
+            "address": str(customer.get("address") or ""),
+        }),
+        "business": {"name": str(settings.get("business_name") or "").strip(),
+                     "phone": str(settings.get("business_phone") or "").strip()},
+        "today_fa": jalali.to_fa(_now()),
+        "created_fa": jalali.to_fa(device.get("created")),
+        "debits": debits, "credits": credits,
+        "total_debits": total_debits, "total_credits": total_credits,
+        "case_balance": total_credits - total_debits,
+        "customer_balance": (customer_balance(customer)
+                             if customer is not None else 0),
+        "inactive_count": inactive_count,
+    }, []
+
+
+def _invoice_section_html(title, rows):
+    out = [f"<h2>{_esc(title)}</h2>"]
+    if not rows:
+        out.append('<p class="muted">—</p>')
+        return out
+    out.append("<table><tr><th>تاریخ</th><th>شرح</th><th>مبلغ</th></tr>")
+    for row in rows:
+        note = str(row.get("note") or "")
+        desc = note or str(row.get("label") or "")
+        amount = int(row.get("debit") or row.get("credit") or 0)
+        out.append(
+            f"<tr><td>{_esc(row.get('at_fa'))}</td>"
+            f"<td>{_esc(desc)}</td>"
+            f"<td>{_fa_money(amount)}</td></tr>")
+    out.append("</table>")
+    return out
+
+
+def device_invoice_html(invoice):
+    """Self-contained RTL print document for the per-case invoice (v1.6),
+    on the statement scaffold: Vazirmatn, escaped fields, _fa_money."""
+    device = invoice.get("device") or {}
+    customer = invoice.get("customer") or {}
+
+    out = [
+        '<!DOCTYPE html><html dir="rtl" lang="fa">',
+        '<head><meta charset="utf-8"><title>فاکتور پرونده</title>',
+        "<style>",
+        "@font-face{font-family:'Vazirmatn';"
+        "src:url('/fonts/Vazirmatn-var.woff2') format('woff2');"
+        "font-weight:100 900;font-display:swap;}",
+        "body{font-family:'Vazirmatn',tahoma,sans-serif;direction:rtl;"
+        "margin:24px;color:#111;background:#fff}",
+        "h1{font-size:18px;margin:0 0 2px}h2{font-size:15px;margin:22px 0 8px}",
+        "table{border-collapse:collapse;width:100%;font-size:12.5px}",
+        "th,td{border:1px solid #999;padding:4px 8px;text-align:right}",
+        "th{background:#f2f2f2}",
+        ".sum{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}",
+        ".sum>div{border:1px solid #bbb;padding:8px 14px;min-width:150px}",
+        ".muted{color:#666}",
+        "@media print{body{margin:8mm}}</style></head><body>",
+        "<h1>فاکتور پرونده</h1>",
+    ]
+    business_line = _business_header(invoice.get("business"))
+    if business_line:
+        out.append(f'<p class="muted">{_esc(business_line)}</p>')
+    out.append(f"<p>شمارهٔ فاکتور: {_esc(device.get('id'))}</p>")
+    out.append(f"<p>تاریخ صدور: {_esc(invoice.get('today_fa'))}</p>")
+    out.append(f"<p>تاریخ ثبت پرونده: {_esc(invoice.get('created_fa'))}</p>")
+    if customer:
+        out.append(f"<p>نام: {_esc(customer.get('name'))}</p>")
+        out.append(f'<p class="muted">موبایل: '
+                   f'{_esc(customer.get("mobile"))}</p>')
+        out.append(f'<p class="muted">آدرس: '
+                   f'{_esc(customer.get("address"))}</p>')
+    out.append(f"<p>نام دستگاه: {_esc(device.get('name'))}</p>")
+    serials = str(device.get("serial1") or "")
+    if str(device.get("serial2") or "").strip():
+        serials += " / " + str(device.get("serial2"))
+    out.append(f"<p>سریال‌ها: {_esc(serials)}</p>")
+    out.extend(_invoice_section_html("بدهکاری‌های این پرونده",
+                                     invoice.get("debits") or []))
+    out.extend(_invoice_section_html("دریافتی‌های این پرونده",
+                                     invoice.get("credits") or []))
+    out.append('<div class="sum">')
+    out.append(f'<div><span class="muted">جمع بدهکاری</span><br>'
+               f"{_fa_money(invoice.get('total_debits'))}</div>")
+    out.append(f'<div><span class="muted">جمع دریافتی</span><br>'
+               f"{_fa_money(invoice.get('total_credits'))}</div>")
+    out.append(f'<div><span class="muted">ماندهٔ این پرونده</span><br>'
+               f"{_balance_fa(invoice.get('case_balance'))}</div>")
+    if customer:
+        out.append(f'<div><span class="muted">ماندهٔ کل حساب مشتری</span><br>'
+                   f"{_balance_fa(invoice.get('customer_balance'))}</div>")
+    out.append("</div>")
+    inactive_count = int(invoice.get("inactive_count") or 0)
+    if inactive_count > 0:
+        out.append(f'<p class="muted">{jalali.fa_digits(inactive_count)} '
+                   "ردیف ابطال‌شده در محاسبه‌ها لحاظ نشده است.</p>")
+    out.append("</body></html>")
+    return "".join(out)
 
 
 # --------------------------------------------------------------------------

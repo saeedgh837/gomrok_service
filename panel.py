@@ -476,21 +476,36 @@ def save_store(store):
 
     directory = os.path.dirname(os.path.abspath(PROFILES_PATH)) or "."
     os.makedirs(directory, exist_ok=True)
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(prefix=".profiles-", suffix=".tmp", dir=directory)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, PROFILES_PATH)
+    # Bounded retry (production fix 2026-09-15): on Windows, os.replace fails
+    # with PermissionError while ANY other process holds profiles.json open
+    # (editor/backup/antivirus). A short retry absorbs transient overlaps;
+    # persistent contention still raises and surfaces to the caller.
+    last_exc = None
+    for attempt in range(3):
         tmp_path = None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=".profiles-",
+                                            suffix=".tmp", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, PROFILES_PATH)
+            tmp_path = None
+            last_exc = None
+            break
+        except OSError as exc:
+            last_exc = exc
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        if attempt < 2:
+            time.sleep(0.35 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
 
     _LAST_GOOD_STORE[PROFILES_PATH] = clean
     sync_active_to_inputs(clean)
@@ -1560,11 +1575,16 @@ def crm_ensure_registration_profile(device_id):
     serial1 = str(device.get("serial1") or "").strip()
     store = load_store()
     profile = None
-    if serial1 or (owner and owner.get("national")):
+    # Dedupe is SERIAL-ONLY by design (production fix 2026-09-15): matching a
+    # profile by the passenger's national code could link a profile whose
+    # imeis belong to a DIFFERENT device — the robot would then register the
+    # wrong IMEI. The same passenger on a new device intentionally gets a
+    # fresh profile. (The old national clause here was dead code — a
+    # misplaced parenthesis made the generator always truthy — and was
+    # removed rather than activated.)
+    if serial1:
         profile = next((p for p in store.get("profiles", [])
-                        if serial1 and serial1 in (p.get("imeis") or []))
-                       or (owner and str(p.get("national") or "") ==
-                           str(owner.get("national") or "")), None)
+                        if serial1 in (p.get("imeis") or [])), None)
     if profile is None:
         profile = {
             "id": uuid.uuid4().hex[:12],
@@ -1926,6 +1946,16 @@ def crm_update_settings(fields):
             settings["registration_chat_id"] = raw
         else:
             errors.append("شناسهٔ تلگرام باید عددی باشد (مثلاً -1001234567890)")
+    # v1.6: optional business identity for the statement/invoice/finance
+    # headers. Trimmed free text, max 80 chars; empty clears the header.
+    for key, label in (("business_name", "نام کسب‌وکار"),
+                       ("business_phone", "شمارهٔ تماس کسب‌وکار")):
+        if key in fields:
+            value = str(fields.get(key) or "").strip()
+            if len(value) > 80:
+                errors.append(f"{label} حداکثر ۸۰ کاراکتر باشد")
+            else:
+                settings[key] = value
     if errors:
         return None, errors
     data["settings"] = settings
@@ -5411,6 +5441,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .finsec .finsec-body{padding:2px 12px 10px}
   .fintx{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;font-size:12px;padding:6px 0}
   .fintx+.fintx{border-top:1px solid var(--line)}
+  /* v1.6 accounting round: the voided-transaction strike (ledger + statement
+     rows, one token set for both themes), the statement identity row and its
+     compact 4-cell totals strip — the finance KPI grid re-tokened smaller. */
+  .voidedtx td{color:var(--muted);text-decoration:line-through}
+  .stmthead{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px}
+  .stmthead b{font-size:14px}
+  .stmt-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .stmt-kpis .finkpi .v{font-size:14px}
   /* tabs — active pill: soft brand fill + underline that covers the rail;
      flex-end + the -1px margin make the 2px tab border overlap the 1px
      container rule (the classic connected-underline tab bar) */
@@ -5970,7 +6008,11 @@ function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)
 function findOwner(id){return (STATE&&STATE.owners||[]).find(o=>o.id===id)||null;}
 function custName(id){var c=findCustomer(id);return c?c.full_name:'—';}
 function ownerName(id){var o=findOwner(id);return o?(o.first_name+' '+o.last_name):'—';}
-function bal(id){var c=findCustomer(id);if(!c)return 0;return (c.transactions||[]).reduce((s,t)=>s+Number(t.amount||0),0);}
+/* v1.6: voided transactions and their 'void' reversal rows never count
+   toward any balance — the same skip predicate the server applies to its
+   aggregates; every balance surface (table pills, KPIs, debtor rail) flows
+   through here, so one predicate covers all of them. */
+function bal(id){var c=findCustomer(id);if(!c)return 0;return (c.transactions||[]).reduce((s,t)=>(t.voided_at||t.kind==='void'||!/^\d{4}-\d{2}-\d{2}/.test(String(t.at||'')))?s:s+Number(t.amount||0),0);}
 function v(id){return document.getElementById(id).value.trim();}
 
 /* ================= stage actions (server contract) ================= */
@@ -6006,6 +6048,9 @@ var ICONS = {
      no hit; CSS scales them up inside the .eic tile */
   inbox:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
   searchx:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M8.5 8.5l5 5M13.5 8.5l-5 5"/></svg>',
+  /* v1.6 accounting round: printable document (page + text lines) for the
+     invoice action — same 24-grid stroke-2 rounded language as the rest. */
+  doc:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>',
 };
 /* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
    / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
@@ -6651,6 +6696,7 @@ function caseDetail(id){
     +'<div class="grp grp-quiet"><div class="grp-lbl">سایر اقدامات</div>'
     +'<div class="quiet">'
     +'<button class="btn mini ghost" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش پرونده</button>'
+    +'<button class="btn mini ghost" onclick="window.open(\'/crm-invoice?device_id='+d.id+'&fmt=html\',\'_blank\')">'+ICONS.doc+' فاکتور</button>'
     +(STAGE_BACK_FA[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__stage_back\')">↩ برگشت به «'+STAGE_BACK_FA[st]+'»</button>':'')
     +(STAGE_SKIP_WARN[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__skip\')">رد کردن این مرحله</button>':'')
     +((st==='inquiry'||st==='problem')?'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن</button>':'')
@@ -6757,6 +6803,7 @@ function customersHtml(){
     +'<td>'+(bal(c.id)<0?'<span class="pill bad">بدهکار '+money(bal(c.id))+'</span>'
              :(bal(c.id)>0?'<span class="pill ok">'+money(bal(c.id))+'</span>':'<span class="pill n">تسویه</span>'))+'</td>'
     +'<td><button class="btn mini" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">ویرایش</button> '
+    +'<button class="btn mini" onclick="dlgStatement(\''+c.id+'\')">صورت‌حساب</button> '
     +'<button class="btn mini ok" onclick="dlgReceipt(\''+c.id+'\')">ثبت دریافتی</button> '
     +'<button class="btn mini warn" onclick="dlgDebt(\''+c.id+'\')">ثبت بدهی</button> '
     +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
@@ -7050,6 +7097,13 @@ function settingsHtml(){
   +'<input id="stFee" class="ltr" inputmode="numeric" style="width:150px" value="'+fa(settings.registry_fee_amount||0)+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveFee()">ذخیره مبلغ</button></div>'
   +'<p class="muted">این مبلغ هنگام ثبت هر دستگاه برای مشتریِ آن دستگاه به‌صورت خودکار بدهکار می‌شود.</p></div>'
+  +'<div class="card"><h3>کسب‌وکار</h3>'
+  +'<div class="row"><label class="f">نام کسب‌وکار'
+  +'<input id="stBizName" style="flex:1" value="'+esc(settings.business_name||'')+'"></label>'
+  +'<label class="f">شمارهٔ تماس کسب‌وکار'
+  +'<input id="stBizPhone" dir="ltr" inputmode="tel" style="width:170px" value="'+esc(settings.business_phone||'')+'"></label>'
+  +'<button class="btn primary" onclick="settingsSaveBiz()">ذخیره</button></div>'
+  +'<p class="muted">نام و شمارهٔ تماس کسب‌وکار در سربرگ صورت‌حساب مشتری و فاکتور چاپی درج می‌شود.</p></div>'
   +'<div class="card"><h3>تحویل اطلاعات ثبت به تلگرام</h3>'
   +'<div class="row"><label class="f">شناسهٔ عددی کانال/گروه ثبت مسافری'
   +'<input id="stRegChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.registration_chat_id||'')+'"></label>'
@@ -7076,6 +7130,13 @@ function settingsSaveFee(){
   var raw=document.getElementById('stFee').value;
   api('/crm-settings',{registry_fee_amount:raw}).then(async r=>{
     toast('هزینه ثبت رجیستری ذخیره شد: '+money(r.settings.registry_fee_amount));await refresh();})
+    .catch(e=>toast(e,false));
+}
+/* v1.6: optional business identity for the statement/invoice headers —
+   same per-card save shape as the fee field above. */
+function settingsSaveBiz(){
+  api('/crm-settings',{business_name:v('stBizName'),business_phone:v('stBizPhone')})
+    .then(async r=>{toast('تنظیمات ذخیره شد');await refresh();})
     .catch(e=>toast(e,false));
 }
 function settingsSaveRegChat(){
@@ -7154,7 +7215,10 @@ function ledgerHtml(){
       // sides of the match). idx stays the true transaction index.
       if(!tabSearchMatches([c.full_name,t.note,String(t.amount==null?'':t.amount)].join(' '),q))continue;
       count++;
-      rows+='<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(faDateTime(t.at))+'</td>'
+      /* v1.6: voided transactions and their reversal rows stay visible for
+         the audit trail but render struck-through and muted. */
+      var dead=t.voided_at||t.kind==='void';
+      rows+='<tr'+(dead?' class="voidedtx"':'')+'><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(faDateTime(t.at))+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
       +'<td class="kbd">'+esc(t.note||'—')+'</td>'
       +'<td><button class="btn mini ghost" title="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+' جزئیات</button></td></tr>';
@@ -7164,7 +7228,7 @@ function ledgerHtml(){
   return '<div class="card"><table><thead><tr><th>مشتری</th><th>زمان</th><th>مبلغ</th><th>شرح</th><th></th></tr></thead>'
     +'<tbody>'+(rows||'<tr><td colspan="5">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('تراکنشی ثبت نشده است','از تب مشتریان روی «تراکنش» بزنید.'))+'</td></tr>')+'</tbody></table></div>';
 }
-var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','base_fee_refund':'بازگشت هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','':'—'};
+var TX_KIND_FA={'base_fee':'هزینه ثبت رجیستری','base_fee_refund':'بازگشت هزینه ثبت رجیستری','receipt':'دریافتی','debt':'بدهی','tx':'تراکنش','void':'ابطال','':'—'};
 function txDetailModal(cid, idx){
   var c=(STATE.customers||[]).find(x=>x.id===cid);
   if(!c)return;
@@ -7182,9 +7246,20 @@ function txDetailModal(cid, idx){
     ['پرونده', d?esc(d.name):'<span class="muted">—</span>'],
     ['سریال دستگاه', serials?'<span class="kbd">'+esc(serials)+'</span>':'<span class="muted">—</span>'],
     ['پیوست', t.image?'<a target="_blank" href="/tx-artifact?name='+encodeURIComponent(t.image)+'">مشاهده تصویر</a>':'<span class="muted">—</span>']
-  ].map(r=>'<tr><td class="muted" style="white-space:nowrap">'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
-  openDlg('<h3>جزئیات تراکنش</h3><table style="width:100%;font-size:13.5px">'+rows+'</table>'
-    +'<div class="row" style="margin-top:10px"><button class="btn" onclick="closeDlg()">بستن</button></div>');
+  ];
+  /* v1.6: a voided transaction shows when and why it was voided instead of
+     the void action; a 'void' reversal row never offers the button (an
+     already-voided reversal must not be voided again). */
+  if(t.voided_at){
+    rows.push(['تاریخ ابطال','<span class="kbd">'+esc(faDateTime(t.voided_at))+'</span>']);
+    rows.push(['دلیل ابطال',esc(t.void_reason||'—')]);
+  }
+  var rowsHtml=rows.map(r=>'<tr><td class="muted" style="white-space:nowrap">'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+  var voidBtn=(!t.voided_at&&t.kind!=='void')
+    ?'<button class="btn danger" onclick="dlgVoidTx(\''+cid+'\','+idx+')">ابطال</button>':'';
+  openDlg('<h3>جزئیات تراکنش</h3><table style="width:100%;font-size:13.5px">'+rowsHtml+'</table>'
+    +'<div class="row" style="margin-top:10px">'+voidBtn
+    +'<button class="btn" onclick="closeDlg()">بستن</button></div>');
 }
 
 /* ================= reports ================= */
@@ -7221,11 +7296,12 @@ function showFieldErrors(errText){
 function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
-    +'<p class="muted">با ثبت دستگاه، «هزینهٔ ثبت رجیستری» (مبلغ قابل تنظیم در تب تنظیمات) به‌صورت خودکار به حساب مشتری بدهکار می‌شود.</p>'
+    +'<p class="muted">با ثبت دستگاه، «هزینهٔ ثبت رجیستری» (مبلغ قابل تنظیم در تب تنظیمات) به‌صورت خودکار به حساب مشتری بدهکار می‌شود. مبلغ واردشده نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.</p>'
     +'<div class="grid" style="margin-bottom:8px">'
     +'<label class="f">نام دستگاه *<input id="dvName" placeholder="iPhone 13"></label>'
     +'<label class="f">سریال اول * (IMEI ۱۵ رقمی)<input id="dvS1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></label>'
     +'<label class="f">سریال دوم (اختیاری)<input id="dvS2" inputmode="numeric" maxlength="15" placeholder=""></label>'
+    +'<label class="f">مبلغ دریافتی (تومان)<input id="dvRecv" class="ltr" inputmode="numeric" value="0"></label>'
     +'</div>'
     +'<div class="row"><label class="f">مشتری *<select id="dvCust" onchange="document.getElementById(\'dvNewCustRow\').style.display=this.value?\'none\':\'block\'">'+custOpts+'</select></label>'
     +'<label class="f check"><input type="checkbox" id="dvAuto"><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پس از ثبت در گمرک</span></label></div>'
@@ -7248,8 +7324,29 @@ function doAddDevice(){
     return;
   }
   var el=document.getElementById('dvCm');if(el)el.removeAttribute('aria-invalid');
+  /* v1.6: amount paid up front — books as «دریافتی» on the customer's
+     account (server stays the authority; 0 means no transaction). The RAW
+     input is validated first: digitsFa strips '-' and '.', so a typed
+     "-500" or "1.5" would otherwise silently book 500/15 (H1 review). */
+  var recvRaw=v('dvRecv');
+  if(!/^[\d۰-۹,، ]*$/.test(recvRaw)){
+    document.getElementById('dvErr').textContent='مبلغ دریافتی باید عدد نامنفی باشد (تومان)';
+    var rEl=document.getElementById('dvRecv');if(rEl)rEl.setAttribute('aria-invalid','true');
+    return;
+  }
+  var recv=parseInt(digitsFa(recvRaw)||'0',10);
+  if(isNaN(recv)||recv<0){
+    document.getElementById('dvErr').textContent='مبلغ دریافتی باید عدد نامنفی باشد (تومان)';
+    var rEl0=document.getElementById('dvRecv');if(rEl0)rEl0.setAttribute('aria-invalid','true');
+    return;
+  }
+  var rEl=document.getElementById('dvRecv');if(rEl)rEl.removeAttribute('aria-invalid');
+  var addBtn=document.querySelector('#dlg button[onclick="doAddDevice()"]');
+  if(addBtn){if(addBtn.disabled)return;addBtn.disabled=true;
+    setTimeout(function(){addBtn.disabled=false;},1500);}
   var payload={action:'add',name:v('dvName'),serial1:v('dvS1'),serial2:v('dvS2'),
-    notes:v('dvNotes'),auto_advance:document.getElementById('dvAuto').checked};
+    notes:v('dvNotes'),auto_advance:document.getElementById('dvAuto').checked,
+    received_amount:recv};
   var custSel=v('dvCust');
   if(custSel){payload.customer_id=custSel;}
   else payload.customer={full_name:v('dvCn'),mobile:mobile,telegram_id:v('dvTg'),
@@ -7483,6 +7580,48 @@ function doTx(cid,kind){
   api('/crm-customer',payload)
     .then(async()=>{TX_IMAGE_B64='';TX_IMAGE_MIME='';closeDlg();toast('ثبت شد');await refresh();})
     .catch(e=>{document.getElementById('txErr').textContent=e;showFieldErrors(String(e));});
+}
+/* ================= void transaction (v1.6) ================= */
+/* Voiding is bookkeeping-sensitive: the original row stays (history is
+   never rewritten), a mirrored reversal row is appended, and both drop out
+   of every balance. The reason is captured first, then the styled confirm —
+   the same two-step shape as closeCaseDialog. */
+function dlgVoidTx(cid, idx){
+  var c=(STATE.customers||[]).find(x=>x.id===cid);
+  if(!c){toast('مشتری پیدا نشد',false);return;}
+  var t=(c.transactions||[])[idx];
+  if(!t){toast('تراکنش پیدا نشد',false);return;}
+  var info=[
+    ['نوع', esc(TX_KIND_FA[t.kind]||t.kind||'—')],
+    ['مبلغ', t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>'
+                       :'<span class="pill ok">'+money(t.amount)+'</span>'],
+    ['شرح', esc(t.note||'—')],
+    ['زمان', '<span class="kbd">'+esc(faDateTime(t.at))+'</span>']
+  ].map(r=>'<tr><td class="muted" style="white-space:nowrap">'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+  openDlg('<h3>ابطال تراکنش</h3>'
+    +'<table style="width:100%;font-size:13.5px">'+info+'</table>'
+    +'<p style="margin:12px 0 0;color:var(--txt);font-size:13px;line-height:1.9">هشدار: ابطال، تراکنش را از محاسبه‌ها خارج می‌کند و یک ردیف اصلاحیهٔ قرینه ثبت می‌شود؛ تاریخچه پاک نمی‌شود.</p>'
+    +'<label class="f" style="margin-top:8px">دلیل ابطال *<textarea id="vtReason" rows="3" style="width:100%"></textarea></label>'
+    +'<div class="row" style="margin-top:10px"><button class="btn danger" onclick="doVoidTx(\''+cid+'\','+idx+',this)">ابطال</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function doVoidTx(cid, idx, btn){
+  /* The reason must exist before the confirm replaces this dialog; the
+     message is the canonical one the server also answers with. */
+  var reason=v('vtReason');
+  if(!reason){toast('ثبت دلیل برای ابطال الزامی است',false);return;}
+  /* Double-click guard (same shape as doDetach/stageContinueClick). */
+  if(btn){if(btn.disabled)return;btn.disabled=true;
+    setTimeout(function(){btn.disabled=false;},1500);}
+  var cn=custName(cid);
+  confirmDlg('تأیید ابطال','این تراکنش ابطال شود؟ این کار قابل بازگشت نیست.','بله، ابطال کن',function(){
+    api('/crm-customer',{action:'void_tx',id:cid,tx_index:idx,reason:reason}).then(async()=>{
+      toastCtx(cn,'تراکنش ابطال شد.');
+      await refresh();
+      renderView();
+      closeDlg();
+    }).catch(e=>toast(e,false));
+  });
 }
 function dlgOwner(mode,id){
   var o = id?findOwner(id):{};
@@ -7746,6 +7885,131 @@ function finTelegram(){
     .then(r=>toast('ارسال شد ('+fa(r.sent)+' بخش)')).catch(e=>toast(String(e),false));
 }
 
+/* ================= customer statement dialog (v1.6) ================= */
+/* Per-customer ledger statement with a selectable date range. STMT resets
+   on every open (unlike FIN_* nothing persists): cid pins the customer,
+   from/to the inclusive ISO bounds (empty = unbounded «همه»), range the
+   active chip. The 30/90-day chips anchor on local midnight — new
+   Date(iso+'T00:00:00'), the same arithmetic finShift uses. The server
+   alone computes rows, running balances and totals; STMT_SEQ drops
+   responses that race a newer fetch. */
+var STMT={cid:'',from:'',to:'',range:'all'};
+var STMT_DATA=null,STMT_ERR='',STMT_SEQ=0;
+function stmtQuery(){
+  return 'customer_id='+STMT.cid+(STMT.from?'&from='+STMT.from:'')+(STMT.to?'&to='+STMT.to:'');
+}
+function stmtUrl(){
+  return '/crm-statement?'+stmtQuery()+'&fmt=json';
+}
+function dlgStatement(cid){
+  var c=findCustomer(cid);
+  if(!c){toast('مشتری پیدا نشد',false);return;}
+  STMT={cid:cid,from:'',to:'',range:'all'};STMT_DATA=null;STMT_ERR='';STMT_SEQ++;
+  openDlg('<div class="findlg"><h3>صورت‌حساب مشتری</h3>'
+    +'<div class="row" style="margin-bottom:10px">'
+    +'<div class="seg" id="stmtSeg">'
+    +'<button type="button" class="on" data-r="all" aria-pressed="true" onclick="stmtRange(\'all\')">همه</button>'
+    +'<button type="button" data-r="30" aria-pressed="false" onclick="stmtRange(30)">۳۰ روز اخیر</button>'
+    +'<button type="button" data-r="90" aria-pressed="false" onclick="stmtRange(90)">۹۰ روز اخیر</button></div></div>'
+    +'<div id="stmtBody"><div class="muted">در حال دریافت صورت‌حساب…</div></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button type="button" class="btn" id="stmtPrint" disabled onclick="stmtOpen(\'html\')">چاپ</button>'
+    +'<button type="button" class="btn" id="stmtPdf" disabled onclick="stmtOpen(\'pdf\')">PDF</button>'
+    +'<button type="button" class="btn primary" id="stmtTg" disabled onclick="stmtTelegram()">ارسال به تلگرام</button>'
+    +'<button type="button" class="btn" onclick="closeDlg()">بستن</button></div></div>');
+  stmtLoad();
+}
+function stmtRange(r){
+  r=String(r);
+  if(r==='all'){STMT.from='';STMT.to='';}
+  else{
+    /* local-midnight anchor: today minus 29/89 days = the chip's window */
+    var to=new Date();
+    var from=new Date(finIso(to)+'T00:00:00');
+    from.setDate(from.getDate()-(Number(r)-1));
+    STMT.from=finIso(from);STMT.to=finIso(to);
+  }
+  STMT.range=r;
+  var seg=document.querySelectorAll('#stmtSeg button');
+  for(var i=0;i<seg.length;i++){
+    var on=seg[i].getAttribute('data-r')===r;
+    seg[i].classList.toggle('on',on);
+    seg[i].setAttribute('aria-pressed',on?'true':'false');
+  }
+  stmtLoad();
+}
+function stmtLoad(){
+  var seq=++STMT_SEQ;
+  STMT_ERR='';STMT_DATA=null;
+  stmtPaint();
+  api(stmtUrl()).then(function(r){
+    if(seq!==STMT_SEQ)return;
+    STMT_DATA=r;
+    stmtPaint();
+  }).catch(function(e){
+    if(seq!==STMT_SEQ)return;
+    STMT_ERR=String(e);
+    stmtPaint();
+  });
+}
+function stmtPaint(){
+  var body=document.getElementById('stmtBody');
+  if(body)body.innerHTML=stmtBodyHtml();
+  var has=!!STMT_DATA;
+  ['stmtPrint','stmtPdf','stmtTg'].forEach(function(bid){
+    var b=document.getElementById(bid);
+    if(b)b.disabled=!has;
+  });
+}
+function stmtBodyHtml(){
+  if(STMT_ERR)return '<div class="err">'+esc(STMT_ERR)+'</div>';
+  if(!STMT_DATA)return '<div class="muted">در حال دریافت صورت‌حساب…</div>';
+  var r=STMT_DATA,t=r.totals||{};
+  /* identity row: the live client-side balance (bal() skips voided rows),
+     so the pill is the customer's true current balance on every range */
+  var b=bal(STMT.cid);
+  var balPill=b<0?'<span class="pill bad">بدهکار '+money(b)+'</span>'
+    :(b>0?'<span class="pill ok">بستانکار '+money(b)+'</span>':'<span class="pill n">تسویه</span>');
+  var cu=r.customer||{};
+  var head='<div class="stmthead"><b>'+esc(cu.name||custName(STMT.cid))+'</b>'
+    +(cu.mobile?'<span class="kbd">'+esc(cu.mobile)+'</span>':'')+balPill+'</div>';
+  var kpis='<div class="finkpis stmt-kpis">'
+    +'<div class="finkpi"><span class="l">ماندهٔ اول</span><span class="v">'+finBal(t.opening)+'</span></div>'
+    +'<div class="finkpi bad"><span class="l">بدهکاری</span><span class="v">'+money(t.debits)+'</span></div>'
+    +'<div class="finkpi ok"><span class="l">بستانکاری</span><span class="v">'+money(t.credits)+'</span></div>'
+    +'<div class="finkpi '+(Number(t.closing)>0?'ok':(Number(t.closing)<0?'bad':''))+'"><span class="l">ماندهٔ پایان</span><span class="v">'+finBal(t.closing)+'</span></div>'
+    +'</div>';
+  var rows=(r.rows||[]).map(function(x,i){
+    /* voided rows and 'void' reversal rows: struck through and out of the
+       running balances (balances[i] is null for exactly those rows) */
+    var dead=!!x.voided||x.kind==='void';
+    var rb=(r.balances||[])[i];
+    return '<tr'+(dead?' class="voidedtx"':'')+'>'
+      +'<td class="kbd">'+esc(x.at_fa||'—')+'</td>'
+      +'<td>'+esc(x.label||'—')+(x.note?' <span class="muted">'+esc(x.note)+'</span>':'')+'</td>'
+      +(Number(x.debit)?'<td class="finnum fin-bad">'+money(x.debit)+'</td>':'<td class="muted">—</td>')
+      +(Number(x.credit)?'<td class="finnum fin-ok">'+money(x.credit)+'</td>':'<td class="muted">—</td>')
+      +'<td class="finnum">'+(dead||rb==null?'—':finBal(rb))+'</td></tr>';
+  }).join('');
+  var html=head+kpis
+    +'<table><thead><tr><th>تاریخ</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="5" class="muted" style="padding:16px 8px">در این بازه تراکنشی ثبت نشده است.</td></tr>')+'</tbody></table>';
+  if(Number(r.voided_count||0)>0)
+    html+='<div class="muted" style="font-size:11.5px;margin-top:8px">'+fa(r.voided_count)+' ردیف ابطال‌شده در محاسبه‌ها لحاظ نشده است.</div>';
+  if(Number(r.anomalies||0)>0)
+    html+='<div class="muted" style="font-size:11.5px;margin-top:4px">'+fa(r.anomalies)+' تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.</div>';
+  return html;
+}
+function stmtOpen(fmt){
+  if(!STMT.cid)return;
+  window.open('/crm-statement?'+stmtQuery()+'&fmt='+fmt,'_blank');
+}
+function stmtTelegram(){
+  if(!STMT.cid)return;
+  api('/crm-statement-telegram',{customer_id:STMT.cid,from:STMT.from,to:STMT.to})
+    .then(r=>toast('ارسال شد ('+fa(r.sent)+' بخش)')).catch(e=>toast(String(e),false));
+}
+
 /* ================= render ================= */
 var HISTORY_EVENT_KEYS = {
   devices:['device_id','entity_id'],
@@ -7953,6 +8217,44 @@ def crm_finance_report_params(mode, ref, fmt):
     return mode, ref_date, fmt, errors
 
 
+def _crm_optional_date(text, label, errors):
+    """Parse an optional YYYY-MM-DD bound (v1.6); None when absent/blank.
+    Mirrors crm_finance_report_params' ref parsing, including the calendar
+    check (2026-02-30 is rejected)."""
+    import datetime
+    text = str(text or "").strip()
+    if not text:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        errors.append(f"تاریخ {label} نامعتبر است؛ قالب درست: YYYY-MM-DD")
+        return None
+    try:
+        parts = [int(p) for p in text.split("-")]
+        return datetime.date(*parts)
+    except ValueError:
+        errors.append(f"تاریخ {label} نامعتبر است؛ قالب درست: YYYY-MM-DD")
+        return None
+
+
+def crm_statement_params(customer_id, from_text, to_text, fmt):
+    """Validate /crm-statement query/body values (v1.6).
+
+    Returns (customer_id, from_date, to_date, fmt, errors); errors is a
+    Persian list (empty = valid). customer_id is required; from/to are
+    optional YYYY-MM-DD bounds (each unbounded when blank).
+    """
+    errors = []
+    customer_id = str(customer_id or "").strip()
+    if not customer_id:
+        errors.append("مشتری پیدا نشد")
+    from_date = _crm_optional_date(from_text, "from", errors)
+    to_date = _crm_optional_date(to_text, "to", errors)
+    fmt = str(fmt or "").strip() or "json"
+    if fmt not in ("json", "html", "pdf", "txt"):
+        errors.append("مقدار fmt نامعتبر است")
+    return customer_id, from_date, to_date, fmt, errors
+
+
 class Handler(BaseHTTPRequestHandler):
     actor = "system"  # set by the login gate for authenticated requests
 
@@ -8093,6 +8395,24 @@ class Handler(BaseHTTPRequestHandler):
                     record, errors = crm_mod.add_transaction(
                         record_id, tx_amount, data.get("note") or "",
                         kind=kind, image=image_name)
+            elif action == "void_tx":
+                # v1.6: void one ledger row. The index resolves inside
+                # crm.void_transaction under STORE_LOCK (re-checked there —
+                # the append-only list keeps a caller-resolved index valid,
+                # but a concurrent void of the same row must still fail).
+                # str() before normalize_digits: index 0 is falsy, and
+                # normalize_digits turns falsy input into "" — without the
+                # str() the FIRST transaction of every customer could never
+                # be voided (regression-tested).
+                reason = str(data.get("reason") or "").strip()
+                raw_index = data.get("tx_index")
+                try:
+                    tx_index = int(crm_mod.normalize_digits(
+                        "" if raw_index is None else str(raw_index)))
+                except (TypeError, ValueError):
+                    tx_index = -1        # resolves to «تراکنش پیدا نشد»
+                record, errors = crm_mod.void_transaction(
+                    record_id, tx_index, reason)
             elif action == "delete":
                 ok, errors = crm_mod.delete_customer(record_id, force=bool(data.get("force")))
                 record = {"ok": ok} if ok else None
@@ -8166,23 +8486,43 @@ class Handler(BaseHTTPRequestHandler):
         if not profile_id:
             # Self-heal (v1.5 item 11): cases that skipped past handover
             # (stage_skip) or lost their linked profile reach payment without
-            # a registration profile. ONE ensure attempt — only with a
-            # passenger attached: without an owner the ensure could mint
-            # nothing but a national-less profile the robot rejects anyway,
-            # so the actionable 400 below names the real recovery. F5 stays
-            # intact: the heal produces an EXPLICIT device link; there is
-            # still no pool claim and no auto-advance semantics change.
+            # a registration profile. Bounded retries + a surfaced reason
+            # (production fix 2026-09-15): the old code swallowed the
+            # exception, so a persistent cause (e.g. profiles.json held open
+            # by another process) was indistinguishable from a missing
+            # passenger. Only with a passenger attached: without an owner the
+            # ensure could mint nothing but a national-less profile the robot
+            # rejects anyway, so the actionable 400 below names the real
+            # recovery. F5 stays intact: the heal produces an EXPLICIT device
+            # link; there is still no pool claim and no auto-advance
+            # semantics change.
             healed = ""
+            ensure_exc = None
             if str(device.get("owner_id") or "").strip():
-                try:
-                    healed = str(crm_ensure_registration_profile(device_id) or "").strip()
-                except Exception:
-                    healed = ""
+                for attempt in range(3):
+                    try:
+                        healed = str(
+                            crm_ensure_registration_profile(device_id)
+                            or "").strip()
+                        ensure_exc = None
+                        break
+                    except Exception as exc:
+                        ensure_exc = exc
+                    if attempt < 2:
+                        time.sleep(0.5 * (attempt + 1))
             if not healed:
+                if ensure_exc is not None:
+                    crm_mod.crm_log("error", "profile_ensure_failed",
+                                    device_id=device_id, phase="payment",
+                                    detail=repr(ensure_exc)[:300])
+                reason = ""
+                if ensure_exc is not None:
+                    reason = " — علت: " + str(ensure_exc)[:160]
                 self._json({"ok": False,
                             "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است — "
                                        "ابتدا مسافر را به پرونده متصل کنید "
-                                       "(در صورت نیاز پرونده را به گام «اتصال مسافر» برگردانید)"]}, 400)
+                                       "(در صورت نیاز پرونده را به گام «اتصال مسافر» برگردانید)"
+                                       + reason]}, 400)
                 return
             profile_id = healed
         status, payload = start_profile(profile_id, actor=self.actor)
@@ -8340,6 +8680,140 @@ class Handler(BaseHTTPRequestHandler):
         crm_mod.crm_log("info", "report_finance_sent",
                         mode=mode, chunks=sent)
         self._json({"ok": True, "sent": sent})
+
+    def _crm_statement(self, query):
+        """Customer statement (v1.6); customer_id required, from/to optional
+        YYYY-MM-DD bounds, fmt=json (default) | html (printable) | pdf (Edge,
+        HTML fallback) | txt (attachment download). Mirrors the finance
+        report's serving patterns."""
+        import crm as crm_mod
+        customer_id = (query.get("customer_id") or [""])[0]
+        from_text = (query.get("from") or [""])[0]
+        to_text = (query.get("to") or [""])[0]
+        fmt = (query.get("fmt") or ["json"])[0]
+        customer_id, from_date, to_date, fmt, errors = crm_statement_params(
+            customer_id, from_text, to_text, fmt)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        stmt, errors = crm_mod.customer_statement(
+            crm_mod.store_read(), customer_id, from_date, to_date)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        if fmt == "json":
+            payload = {"ok": True}
+            payload.update(stmt)
+            self._json(payload)
+            return
+        if fmt == "txt":
+            text = crm_mod.customer_statement_txt(stmt)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="crm-statement.txt"')
+            self.end_headers()
+            self.wfile.write(text.encode("utf-8"))
+            return
+        report = crm_mod.customer_statement_html(stmt)
+        if fmt == "pdf":
+            pdf_bytes = crm_html_to_pdf(report)
+            if pdf_bytes:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition",
+                                 'inline; filename="crm-statement.pdf"')
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+                return
+            report = report.replace(
+                "</body>",
+                "<script>window.onload=()=>setTimeout(()=>window.print(),300)"
+                "</script></body>")
+            self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _crm_statement_telegram(self, data):
+        """Customer statement to Telegram (v1.6): plain text, chunks of
+        <=3900 chars; every chunk must land or the route 502s (mirrors
+        _crm_finance_report_telegram exactly, error strings included)."""
+        import crm as crm_mod
+        customer_id, from_date, to_date, _fmt, errors = crm_statement_params(
+            data.get("customer_id"), data.get("from"), data.get("to"), "json")
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        stmt, errors = crm_mod.customer_statement(
+            crm_mod.store_read(), customer_id, from_date, to_date)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        text = crm_mod.customer_statement_txt(stmt)
+        chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
+        sent = 0
+        try:
+            import telegram_notify as tg
+            for chunk in chunks:
+                if tg.send_message(chunk, timeout=20, actor=self.actor):
+                    sent += 1
+        except Exception as exc:
+            crm_mod.crm_log("error", "report_statement_failed",
+                            detail=str(exc))
+            self._json({"ok": False, "errors": ["ارسال تلگرام ناموفق بود"]}, 502)
+            return
+        if sent < len(chunks):
+            crm_mod.crm_log("error", "report_statement_failed",
+                            detail="%d/%d" % (sent, len(chunks)))
+            import jalali
+            self._json({"ok": False, "errors": [
+                "ارسال تلگرام کامل نشد: " + jalali.fa_digits(sent) + " از "
+                + jalali.fa_digits(len(chunks)) + " بخش ارسال شد"]}, 502)
+            return
+        crm_mod.crm_log("info", "report_statement_sent",
+                        customer_id=customer_id, chunks=sent)
+        self._json({"ok": True, "sent": sent})
+
+    def _crm_invoice(self, query):
+        """Per-case invoice (v1.6); device_id required, fmt=html (default) |
+        pdf (Edge, HTML fallback). Mirrors the finance report's serving
+        patterns."""
+        import crm as crm_mod
+        device_id = str((query.get("device_id") or [""])[0]).strip()
+        fmt = str((query.get("fmt") or ["html"])[0]).strip() or "html"
+        errors = []
+        if not device_id:
+            errors.append("دستگاه پیدا نشد")
+        if fmt not in ("html", "pdf"):
+            errors.append("مقدار fmt نامعتبر است")
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        invoice, errors = crm_mod.device_invoice(crm_mod.store_read(),
+                                                 device_id)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        report = crm_mod.device_invoice_html(invoice)
+        if fmt == "pdf":
+            pdf_bytes = crm_html_to_pdf(report)
+            if pdf_bytes:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition",
+                                 'inline; filename="crm-invoice.pdf"')
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+                return
+            report = report.replace(
+                "</body>",
+                "<script>window.onload=()=>setTimeout(()=>window.print(),300)"
+                "</script></body>")
+            self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 
     def _state_json(self, code=200):
         """load_store-e amn baraye route-haye read: agar file lahze-i kharab bood,
@@ -8574,6 +9048,14 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             self._crm_finance_report(query)
+        elif route == "/crm-statement":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._crm_statement(query)
+        elif route == "/crm-invoice":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._crm_invoice(query)
         elif route == "/tx-artifact":
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
@@ -8888,13 +9370,25 @@ class Handler(BaseHTTPRequestHandler):
                     # as the backstop for shapes that skipped the attach
                     # (stage_skip, legacy stores, a failed ensure here).
                     # Nothing may 500 the route: on failure/empty return the
-                    # owner binding is KEPT, the operator gets profile_notice,
+                    # owner binding is KEPT, the operator gets profile_notice
+                    # (with the surfaced reason — production fix 2026-09-15),
                     # and the backstop retries at handover/auto-advance time.
                     try:
                         profile_id = crm_ensure_registration_profile(tick_device_id)
-                    except Exception:
+                    except Exception as exc:
                         profile_id = ""
-                    if not profile_id:
+                        import crm as crm_mod
+                        # device_id + phase + error text only — never
+                        # personal data (plan §12).
+                        crm_mod.crm_log("error", "profile_ensure_failed",
+                                        device_id=tick_device_id,
+                                        phase="attach",
+                                        detail=repr(exc)[:300])
+                        payload["profile_notice"] = (
+                            "مسافر متصل شد اما ساخت پروفایل ثبت‌نام ناموفق بود "
+                            "(علت: " + str(exc)[:120] + ") — "
+                            "هنگام تحویل دوباره تلاش می‌شود")
+                    if not profile_id and "profile_notice" not in payload:
                         import crm as crm_mod
                         # device_id only — never personal data (plan §12).
                         crm_mod.crm_log("warn", "profile_ensure_failed",
@@ -8989,6 +9483,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-finance-report-telegram":
             self._crm_finance_report_telegram(self._read_json())
+
+        elif self.path == "/crm-statement-telegram":
+            self._crm_statement_telegram(self._read_json())
 
         else:
             self._send(404, b"not found", "text/plain")

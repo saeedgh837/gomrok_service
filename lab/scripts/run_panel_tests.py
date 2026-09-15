@@ -67,6 +67,12 @@ DEFAULT = [
     # v1.5 backend slice (W1): finance report + owner detach.
     "test_v1_5_finance_report",
     "test_v1_5_owner_detach",
+    # v1.6 accounting round (W2 frontend): statement / void / invoice UI.
+    "test_v1_6_accounting_ui",
+    "test_v1_6_profile_ensure_fix",
+    # v1.6 accounting round (W1 backend): void-aware ledger + statement +
+    # invoice + business settings.
+    "test_v1_6_accounting",
 ]
 
 names = sys.argv[1:] or DEFAULT
