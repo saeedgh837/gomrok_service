@@ -159,7 +159,7 @@ class FeeReversalTests(LedgerStoreCase):
         self.assertEqual(int(refunds[0]["amount"]), FEE)
         self.assertEqual(refunds[0]["device_id"], device["id"])
         self.assertEqual(refunds[0]["note"],
-                         "بازگشت " + crm.REGISTRY_FEE_NOTE + " — Device 1")
+                         "بازگشت " + crm.REGISTRY_FEE_NOTE + "، Device 1")
         self.assertEqual(self.balance(customer["id"]), balance + FEE)
         # Re-add with the corrected serial: a fresh fee, balance back to B.
         replacement = self.add_device(2, serial1=fixed_serial,

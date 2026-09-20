@@ -67,8 +67,11 @@ class SystemDebugTests(unittest.TestCase):
         for marker in ("Debug log سیستمی", "system-debug-toggle", "system-log-list",
                        "system-log-viewer", "/system-debug-config", "/system-logs", "/system-log"):
             self.assertIn(marker, html)
-        self.assertIn("/system-logs", panel.Handler.do_GET.__code__.co_consts)
-        self.assertIn("/system-debug-config", panel.Handler.do_POST.__code__.co_consts)
+        # v1.7: both dispatchers moved behind do_GET/do_POST exception safety
+        # nets, so the route literals live in the *_body functions.
+        self.assertIn("/system-logs", panel.Handler._do_get_body.__code__.co_consts)
+        self.assertIn("/system-debug-config",
+                      panel.Handler._do_post_body.__code__.co_consts)
 
     def test_all_panel_robot_spawns_use_launcher_and_debug_env(self):
         source = open(panel.__file__, encoding="utf-8").read()

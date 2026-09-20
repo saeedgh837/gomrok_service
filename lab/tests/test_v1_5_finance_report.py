@@ -244,7 +244,7 @@ class FinanceAggregateTests(unittest.TestCase):
     def test_transactions_newest_first_with_fields(self):
         data = _store([_customer("c1", "مشتری تست", [
             _tx("2026-09-15 08:00:00", -24000000, "base_fee",
-                "هزینهٔ ثبت رجیستری — گوشی", "dev01"),
+                "هزینه ثبت رجیستری، گوشی", "dev01"),
             _tx("2026-09-15 09:00:00", 500000, "receipt", "واریز نقدی"),
             _tx("2026-09-15 07:00:00", -1000, "debt"),
         ])])
@@ -335,7 +335,7 @@ class FinanceRendererTests(unittest.TestCase):
         self.assertIn('class="pos"', html)
         self.assertIn('class="neg"', html)
         # canonical daily title with the full Jalali date
-        self.assertIn("گزارش مالی مشتریان — " + jalali.to_fa("2026-09-15"),
+        self.assertIn("گزارش مالی مشتریان: " + jalali.to_fa("2026-09-15"),
                       html)
         self.assertIn("روزانه", html)
         self.assertIn("دریافتی‌های نقدی (واریزی)", html)
@@ -358,7 +358,7 @@ class FinanceRendererTests(unittest.TestCase):
     def test_html_weekly_title_and_days_section(self):
         html = crm.finance_report_html(self._agg("weekly"))
         self.assertIn("هفتگی", html)
-        self.assertIn("گزارش مالی مشتریان — " + jalali.to_fa("2026-09-12")
+        self.assertIn("گزارش مالی مشتریان: " + jalali.to_fa("2026-09-12")
                       + " تا " + jalali.to_fa("2026-09-18"), html)
         self.assertIn("روزهای هفته", html)
         self.assertIn("شنبه", html)
@@ -397,7 +397,7 @@ class FinanceRendererTests(unittest.TestCase):
 
     def test_txt_sections(self):
         text = crm.finance_report_txt(self._agg())
-        self.assertTrue(text.startswith("گزارش مالی مشتریان — "))
+        self.assertTrue(text.startswith("گزارش مالی مشتریان: "))
         self.assertIn("روزانه", text)
         self.assertIn("دریافتی‌های نقدی (واریزی): ", text)
         self.assertIn("بدهکاری‌های جدید: ", text)
@@ -580,7 +580,7 @@ class FinanceApiTests(unittest.TestCase):
         self.assertIn('dir="rtl"', html)
         self.assertIn("@font-face", html)
         self.assertIn("Vazirmatn", html)
-        self.assertIn("گزارش مالی مشتریان — " + jalali.to_fa("2026-09-15"),
+        self.assertIn("گزارش مالی مشتریان: " + jalali.to_fa("2026-09-15"),
                       html)
 
     def test_txt_fmt_is_attachment_download(self):
@@ -592,7 +592,7 @@ class FinanceApiTests(unittest.TestCase):
         self.assertIn("crm-finance-report.txt",
                       headers.get("Content-Disposition", ""))
         text = raw.decode("utf-8")
-        self.assertTrue(text.startswith("گزارش مالی مشتریان — "))
+        self.assertTrue(text.startswith("گزارش مالی مشتریان: "))
         self.assertIn("مانده‌ها بر اساس مشتری‌های فعلی است.", text)
 
     def test_pdf_fmt_serves_pdf_or_html_fallback(self):

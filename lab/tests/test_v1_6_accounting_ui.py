@@ -55,16 +55,42 @@ class DeviceReceivedTests(unittest.TestCase):
 
     def test_note_appends_received_sentence_after_fee_sentence(self):
         body = fn_body(self.js, "dlgDevice")
-        # the v1.0 fee sentence stays byte-exact...
+        # v1.7: the note names the field «هزینه ثبت رجیستری» (one name for
+        # one charge, matching the ledger) and states that the default is
+        # read from settings and is editable per case.
+        self.assertIn("«هزینه ثبت رجیستری»", body)
+        self.assertIn("مبلغ پیش‌فرض از تب تنظیمات خوانده می‌شود و قابل تغییر است",
+                      body)
+        # the received-amount sentence still follows it in the same <p>
         self.assertIn(
-            "با ثبت دستگاه، «هزینهٔ ثبت رجیستری» (مبلغ قابل تنظیم در تب تنظیمات)"
-            " به‌صورت خودکار به حساب مشتری بدهکار می‌شود.",
+            "مبلغ دریافتی نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.",
             body)
-        # ...and exactly one new sentence follows it in the same <p>
-        self.assertIn(
-            "بدهکار می‌شود. مبلغ واردشده نیز به‌صورت «دریافتی»"
-            " در حساب همان مشتری ثبت می‌شود.",
-            body)
+
+    def test_fee_field_defaults_to_configured_amount(self):
+        """v1.7: the new-case dialog carries an editable per-case fee whose
+        default is the configured registry_fee_amount."""
+        body = fn_body(self.js, "dlgDevice")
+        self.assertIn("هزینه ثبت رجیستری (تومان)", body)
+        self.assertIn('id="dvFee"', body)
+        # the default value is wired to settings, not hard-coded
+        self.assertIn("(STATE.settings||{}).registry_fee_amount", body)
+
+    def test_do_add_device_parses_and_guards_fee(self):
+        """v1.7: the per-case fee is parsed like the received amount — raw
+        input validated first, then digitsFa; the server is the authority."""
+        body = fn_body(self.js, "doAddDevice")
+        self.assertTrue(body, "doAddDevice not found")
+        self.assertIn("isNaN(fee)||fee<0", body)
+        self.assertIn("هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)", body)
+        # an EMPTY field means "no override" (the configured amount applies),
+        # so the payload only carries the key when the operator typed digits;
+        # a field holding separators only (the «٬» left behind after clearing
+        # the pre-filled default) counts as empty, never as a silent zero.
+        self.assertIn("var fee=null;", body)
+        self.assertIn("var feeDigits=digitsFa(feeRaw);", body)
+        self.assertIn("if(feeRaw!==''&&feeDigits!==''){fee=parseInt(feeDigits,10);}",
+                      body)
+        self.assertIn("if(fee!==null)payload.registry_fee_override=fee;", body)
 
     def test_do_add_device_parses_and_guards_received_amount(self):
         body = fn_body(self.js, "doAddDevice")

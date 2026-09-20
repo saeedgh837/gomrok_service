@@ -52,9 +52,18 @@ DEFAULT_SETTINGS = {
     # Empty string = header line omitted (same optional pattern as above).
     "business_name": "",
     "business_phone": "",
+    # v1.7: periods group cases into operator-closed batches for reporting.
+    # Empty current_period means devices register into the implicit open
+    # period (backfill safety for stores written before v1.7).
+    "current_period_id": "",
 }
 
-REGISTRY_FEE_NOTE = "هزینهٔ ثبت رجیستری"
+# Ledger note for the per-case registry charge. v1.7: the plain form is the
+# ONE operator-facing name for this charge — the same words the panel's
+# case dialog, its settings field, TX_KIND_FA and the "بازگشت" refund label all
+# use — and the device name is joined with a Persian comma, never an em dash
+# (an em dash is not Persian prose punctuation; review F1/F2).
+REGISTRY_FEE_NOTE = "هزینه ثبت رجیستری"
 RECEIVED_ON_REGISTER_NOTE = "دریافتی هنگام ثبت پرونده"
 
 # Stage machine: stage -> {action -> next stage}. Single source of truth (F12).
@@ -233,8 +242,17 @@ def validate_owner(data):
     if not str(data.get("last_name") or "").strip():
         errors.append("نام خانوادگی مسافر الزامی است")
     national = normalize_digits(data.get("national")).strip()
-    if not national_checksum_ok(national):
-        errors.append("کد ملی نامعتبر است")
+    if not re.fullmatch(NATIONAL_RE, national):
+        # v1.7: be specific — a generic «نامعتبر است» hid the real cause from
+        # the operator (the unsavable-passenger report was a bad check digit).
+        if len(national) > 10:
+            errors.append("کد ملی باید دقیقاً ۱۰ رقم باشد (بیشتر وارد شده است)")
+        elif national and not national.isdigit():
+            errors.append("کد ملی باید فقط شامل اعداد باشد")
+        else:
+            errors.append("کد ملی باید دقیقاً ۱۰ رقم باشد")
+    elif not national_checksum_ok(national):
+        errors.append("رقم کنترلی کد ملی اشتباه است؛ رقم دهم را بررسی کنید")
     birth = normalize_digits(data.get("birth")).strip()
     if not re.fullmatch(BIRTH_RE, birth):
         errors.append("تاریخ تولد باید به شکل ۱۳۷۵/۰۴/۲۹ یا ۱۳۷۵/۴/۲۹ باشد")
@@ -367,7 +385,7 @@ def _default_store_path():
 
 def _empty_store():
     return {"version": 1, "customers": [], "owners": [], "identities": [],
-            "devices": [], "settings": dict(DEFAULT_SETTINGS)}
+            "devices": [], "periods": [], "settings": dict(DEFAULT_SETTINGS)}
 
 
 def reset_cache():
@@ -394,7 +412,8 @@ def _store_read():
         else:
             loaded = {}
     data = _empty_store()
-    for key in ("version", "customers", "owners", "identities", "devices"):
+    for key in ("version", "customers", "owners", "identities", "devices",
+                "periods"):
         if key in loaded:
             data[key] = loaded[key]
     settings = dict(DEFAULT_SETTINGS)
@@ -678,7 +697,7 @@ def void_transaction(customer_id, tx_index, reason):
     return reversal, []
 
 
-def _charge_registry_fee(data, customer_id, device_id):
+def _charge_registry_fee(data, customer_id, device_id, fee_amount=None):
     """Book the base registry fee for a newly registered device.
 
     Caller holds STORE_LOCK. Reads the configured amount from settings
@@ -686,8 +705,11 @@ def _charge_registry_fee(data, customer_id, device_id):
     the fee is configured to 0 or the customer is unknown. The entry is
     idempotent per device via the device_id marker on the transaction.
     """
-    amount = int((data.get("settings") or {}).get("registry_fee_amount",
-                                                  24_000_000) or 0)
+    configured = int((data.get("settings") or {}).get("registry_fee_amount",
+                                                       24_000_000) or 0)
+    # v1.7: the new-case dialog may pass an explicit per-case fee that
+    # overrides the configured default (empty/None falls back to it).
+    amount = configured if fee_amount is None else int(fee_amount or 0)
     if amount <= 0 or not customer_id:
         return None
     customer = next((c for c in data.get("customers", [])
@@ -702,7 +724,7 @@ def _charge_registry_fee(data, customer_id, device_id):
     device = next((d for d in data.get("devices", [])
                    if str(d.get("id")) == str(device_id or "")), None)
     device_name = str((device or {}).get("name") or "").strip()
-    note = (REGISTRY_FEE_NOTE + (" — " + device_name if device_name else ""))
+    note = (REGISTRY_FEE_NOTE + ("، " + device_name if device_name else ""))
     entry = {"at": _now(), "amount": -amount,
              "note": note, "kind": "base_fee",
              "image": "", "device_id": str(device_id or "").strip()}
@@ -741,7 +763,7 @@ def _refund_registry_fee(data, device):
         for fee in fees:
             entry = {"at": _now(), "amount": -int(fee.get("amount") or 0),
                      "note": ("بازگشت " + REGISTRY_FEE_NOTE +
-                              (" — " + device_name if device_name else "")),
+                              ("، " + device_name if device_name else "")),
                      "kind": "base_fee_refund", "image": "",
                      "device_id": device_id}
             customer.setdefault("transactions", []).append(entry)
@@ -817,6 +839,191 @@ def delete_owner(owner_id):
         return True, []
 
 
+def _next_period_number(data):
+    """Next period sequence: 1 for an empty store, else max+1 (v1.7)."""
+    nums = [int(p.get("number") or 0) for p in data.get("periods", [])
+            if isinstance(p, dict)]
+    return (max(nums) + 1) if nums else 1
+
+
+def open_period(label="", actor=""):
+    """Start a new reporting period (v1.7).
+
+    Creates the period record and marks it current in settings. Devices
+    registered afterwards carry its id. A label is optional; the default is
+    the Persian ordinal («دورهٔ پنجم»). Returns (period, errors).
+
+    An unclosed period always stays the operator's open period: if the store
+    already carries one whose pointer was lost (a restored or hand-edited
+    file), that period is re-adopted rather than opening a second one — two
+    overlapping open periods would let a manual receipt be counted in both
+    of their reports.
+    """
+    with STORE_LOCK:
+        data = _store_read()
+        if current_period(data) is not None:
+            return None, ["یک دورهٔ باز از قبل وجود دارد؛ ابتدا آن را ببندید"]
+        orphans = [p for p in data.get("periods", [])
+                   if not p.get("closed_at")]
+        if orphans:
+            adopted = max(orphans,
+                          key=lambda p: str(p.get("opened_at") or ""))
+            (data.setdefault("settings", {}))["current_period_id"] = (
+                adopted["id"])
+            _store_write(data)
+            crm_log("info", "period_reopened", period_id=adopted["id"],
+                    number=str(adopted.get("number") or ""))
+            return adopted, []
+        number = _next_period_number(data)
+        pid = _new_id()
+        period = {
+            "id": pid,
+            "number": number,
+            "label": str(label or "").strip() or f"دورهٔ {_fa_ordinal(number)}",
+            "opened_at": _now(),
+            "opened_by": str(actor or "system"),
+            "closed_at": "",
+            "closed_by": "",
+            "closed_reason": "",
+        }
+        data.setdefault("periods", []).append(period)
+        (data.setdefault("settings", {}))["current_period_id"] = pid
+        _store_write(data)
+        crm_log("info", "period_opened", period_id=pid, number=number)
+        return period, []
+
+
+def _fa_ordinal(n):
+    """1 -> اول، 2 -> دوم … 10 -> دهم; beyond that the plain number."""
+    words = ("اول", "دوم", "سوم", "چهارم", "پنجم", "ششم", "هفتم", "هشتم",
+             "نهم", "دهم")
+    n = int(n or 0)
+    if 1 <= n <= 10:
+        return words[n - 1]
+    return jalali.fa_digits(str(n))
+
+
+def close_period(period_id, actor="", reason=""):
+    """Close an open period (v1.7): no new devices may join it afterwards.
+
+    Cases still open inside the period are reported back as a warning list —
+    the operator decides; closure is NOT blocked (a stuck case must not hold
+    the books hostage), but the unclosed count is surfaced in the report.
+    Returns (summary, errors).
+    """
+    with STORE_LOCK:
+        data = _store_read()
+        period = next((p for p in data.get("periods", [])
+                       if p.get("id") == period_id), None)
+        if not period:
+            return None, ["دوره پیدا نشد"]
+        if period.get("closed_at"):
+            return None, ["این دوره قبلاً بسته شده است"]
+        devices = [d for d in data.get("devices", [])
+                   if d.get("period_id") == period_id]
+        open_cases = [d for d in devices
+                      if str(d.get("stage") or "new") not in ("done", "closed")]
+        period["closed_at"] = _now()
+        period["closed_by"] = str(actor or "system")
+        period["closed_reason"] = str(reason or "").strip()
+        settings = data.setdefault("settings", {})
+        if str(settings.get("current_period_id") or "") == period_id:
+            settings["current_period_id"] = ""
+        _store_write(data)
+        crm_log("info", "period_closed", period_id=period_id,
+                devices=len(devices), open_cases=str(len(open_cases)))
+        return {
+            "period": period,
+            "devices": len(devices),
+            "open_cases": len(open_cases),
+        }, []
+
+
+def current_period(data):
+    """The open period devices register into, or None when none is open
+    (legacy/implicit mode: devices carry an empty period_id).
+
+    v1.7: a stale current_period_id pointing at an already-closed period
+    resolves to None — a closed period must never take new registrations,
+    even if the pointer was restored by hand.
+    """
+    pid = str((data.get("settings") or {}).get("current_period_id") or "")
+    if not pid:
+        return None
+    period = next((p for p in data.get("periods", []) if p.get("id") == pid),
+                  None)
+    if period is None or period.get("closed_at"):
+        return None
+    return period
+
+
+def period_device_ids(data, period_id):
+    """Device ids registered in a period (v1.7)."""
+    return [str(d.get("id")) for d in data.get("devices", [])
+            if d.get("period_id") == period_id]
+
+
+def period_open_warning(data, period):
+    """The 'not yet closed' banner text for reports (v1.7), or empty.
+
+    A missing period yields "" — the caller passed no period to warn about,
+    and a warning banner there would be a lie in a printed report.
+    """
+    if not period or period.get("closed_at"):
+        return ""
+    return ("این دوره هنوز بسته نشده است؛ ارقام نهایی نیستند و ممکن "
+            "است تغییر کنند.")
+
+
+def archived_owner_ids(data):
+    """Owner ids whose case reached a terminal, delivered state (v1.7).
+
+    An owner is archived when its bound device is `done` (code delivered) —
+    computed, never stored, so a stage rollback (`stage_back` from done)
+    immediately returns the passenger to the active list. Owners of `closed`
+    (مختومه) cases are NOT archived: closure is an operator termination, not
+    a completed registration, and those cases stay visible in the closed tab.
+    """
+    return {str(o.get("owner_id")) for o in data.get("devices", [])
+            if str(o.get("stage") or "") == "done" and o.get("owner_id")}
+
+
+def archived_owners(data):
+    """The archive rows: owner + its completed case, newest first (v1.7).
+
+    Membership comes from archived_owner_ids so the archive tab and the
+    active-passenger filter can never disagree about what «بایگانی» means.
+    """
+    ids = archived_owner_ids(data)
+    rows_by_owner = {}
+    for device in data.get("devices", []):
+        owner_id = str(device.get("owner_id") or "")
+        if owner_id not in ids:
+            continue
+        owner = next((o for o in data.get("owners", [])
+                      if o.get("id") == owner_id), None)
+        if not owner:
+            continue
+        customer = next((c for c in data.get("customers", [])
+                         if c.get("id") == device.get("customer_id")), None)
+        row = {
+            "owner": owner,
+            "device": device,
+            "customer_name": (customer or {}).get("full_name") or "",
+            "done_at": str(device.get("done_at") or ""),
+            "code_delivered_at": str(device.get("code_delivered_at") or ""),
+        }
+        # v1.7: one row per passenger. A legacy store can carry the same
+        # owner on two delivered cases; the badge counts owners, so the list
+        # must not show that passenger twice (the newest case wins).
+        previous = rows_by_owner.get(owner_id)
+        if previous is None or row["done_at"] > previous["done_at"]:
+            rows_by_owner[owner_id] = row
+    rows = list(rows_by_owner.values())
+    rows.sort(key=lambda r: str(r["done_at"] or ""), reverse=True)
+    return rows
+
+
 def owner_bound_device_id(owner_id):
     with STORE_LOCK:
         data = _store_read()
@@ -878,6 +1085,33 @@ def delete_identity(identity_id):
         return True, []
 
 
+# Thousands separators a browser or a paste can put inside a typed amount.
+# U+066C is the important one: the panel's own number formatter
+# (toLocaleString('fa-IR')) emits it, so a field the panel pre-filled comes
+# back carrying it and must round-trip through these parsers.
+# ٬ (Persian thousands), ، (Arabic comma), NBSP, thin space and
+# narrow NBSP are all group separators a paste can carry.
+_AMOUNT_SEPARATORS = ("٬", ",", "،", " ", " ", " ", " ")
+
+
+def _amount_digits(value):
+    """A human-typed amount as ASCII text with the group separators removed.
+
+    Persian/Arabic digits are normalized first, then every separator the
+    panel can emit is stripped: U+066C «٬» (the fa-IR grouping that
+    toLocaleString produces and that the settings/create-case fields arrive
+    pre-filled with), ASCII comma, Arabic comma, space and nbsp.
+
+    Nothing else is removed — a sign or a letter is left for the caller to
+    reject. Filtering to digits here would turn "-500" into "500" and book a
+    charge the operator never asked for.
+    """
+    text = str(normalize_digits(value)).strip()
+    for sep in _AMOUNT_SEPARATORS:
+        text = text.replace(sep, "")
+    return text
+
+
 def _parse_received_amount(value):
     """Parse the optional received-on-register amount (v1.6).
 
@@ -893,9 +1127,7 @@ def _parse_received_amount(value):
     if isinstance(value, int):
         return (value, "") if value >= 0 else (
             0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)")
-    text = str(normalize_digits(value)).strip()
-    for sep in (",", "،", " "):
-        text = text.replace(sep, "")
+    text = _amount_digits(value)
     if not text:
         return 0, ""
     try:
@@ -904,6 +1136,33 @@ def _parse_received_amount(value):
         return 0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)"
     if amount < 0:
         return 0, "مبلغ دریافتی باید عدد نامنفی باشد (تومان)"
+    return amount, ""
+
+
+def _parse_fee_amount(value):
+    """Parse the per-case registry-fee override (v1.7).
+
+    None/blank -> None, which means "no override, charge the configured
+    amount". `0` is a real, explicit override meaning "charge nothing" — it
+    is deliberately NOT the same as blank. A negative value is invalid.
+    Returns (amount_or_None, error).
+    """
+    if value is None:
+        return None, ""
+    if isinstance(value, bool):
+        return None, "هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)"
+    if isinstance(value, int):
+        return (value, "") if value >= 0 else (
+            None, "هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)")
+    text = _amount_digits(value)
+    if not text:
+        return None, ""
+    try:
+        amount = int(text)
+    except ValueError:
+        return None, "هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)"
+    if amount < 0:
+        return None, "هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)"
     return amount, ""
 
 
@@ -918,6 +1177,9 @@ def add_device(fields, customer=None):
         fields.get("received_amount"))
     if received_error:
         return None, [received_error]
+    fee_amount, fee_error = _parse_fee_amount(fields.get("registry_fee_override"))
+    if fee_error:
+        return None, [fee_error]
     with STORE_LOCK:
         data = _store_read()
         if customer:
@@ -955,10 +1217,15 @@ def add_device(fields, customer=None):
             "code_delivered_at": "", "done_at": "",
             "last_inquiry_at": "", "notes": str(fields.get("notes") or "").strip(),
             "advance_attempts": 0,
+            # v1.7: the reporting period this case was registered in. Empty
+            # when no period is open (legacy mode) — the finance report then
+            # treats the device as ungrouped rather than failing.
+            "period_id": str((current_period(data) or {}).get("id") or ""),
             "created": _now(), "updated": _now(),
         }
         _collection(data, "devices").append(record)
-        _charge_registry_fee(data, customer_id, record["id"])
+        _charge_registry_fee(data, customer_id, record["id"],
+                             fee_amount=fee_amount)
         if received_amount > 0 and customer_id:
             # v1.6: cash handed over at intake time — a plain receipt row on
             # the SAME store write as the fee, marked with the device id so
@@ -1438,6 +1705,16 @@ WEEKDAY_FA = ("شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چ
 _TX_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+class ReportRefError(ValueError):
+    """A report request names a mode or a period that does not exist (v1.7).
+
+    Subclasses ValueError so existing callers and tests keep working; the
+    panel maps exactly this class to a 400 «read the list again», so a period
+    whose *record* is unreadable is answered as a server error instead of
+    being reported as missing.
+    """
+
+
 def week_range(ref):
     """(start, end) of the شنبه تا جمعه week containing `ref` (a date)."""
     start = ref - datetime.timedelta(days=(ref.weekday() - 5) % 7)
@@ -1474,15 +1751,29 @@ def finance_report_aggregate(data, mode, ref):
     date string. Returns the dict served as /crm-finance-report?fmt=json and
     consumed by finance_report_html/txt.
     """
-    if mode not in ("daily", "weekly"):
-        raise ValueError(f"unknown finance report mode: {mode!r}")
-    if isinstance(ref, str):
+    if mode not in ("daily", "weekly", "period"):
+        raise ReportRefError(f"unknown finance report mode: {mode!r}")
+    # v1.7: "period" mode aggregates the ledger rows linked to the devices of
+    # one reporting period — a date range is derived from the period's open
+    # and close times (open-ended while unclosed).
+    period = None
+    if mode == "period":
+        period = next((p for p in data.get("periods", [])
+                       if str(p.get("id")) == str(ref or "")), None)
+        if period is None:
+            raise ReportRefError("unknown period id for period mode")
+        start = datetime.date.fromisoformat(period["opened_at"][:10])
+        close = str(period.get("closed_at") or "")
+        end = (datetime.date.fromisoformat(close[:10]) if close
+               else datetime.date.today())
+        ref = start
+    elif isinstance(ref, str):
         ref = datetime.date.fromisoformat(ref)
     elif isinstance(ref, datetime.datetime):
         ref = ref.date()
     if mode == "weekly":
         start, end = week_range(ref)
-    else:
+    elif mode == "daily":
         start = end = ref
     from_iso, to_iso = start.isoformat(), end.isoformat()
 
@@ -1499,6 +1790,12 @@ def finance_report_aggregate(data, mode, ref):
     customers_out = []
     transactions = []
     anomalies = 0
+    # v1.7: period mode is case-scoped — a ledger row linked to a case of
+    # this period counts, and an unlinked row (a manual receipt/debt) counts
+    # only inside the period's own window. See the filter in the loop below.
+    period_devices = None
+    if mode == "period":
+        period_devices = set(period_device_ids(data, period["id"]))
 
     for customer in data.get("customers") or []:
         name = str(customer.get("full_name") or "").strip()
@@ -1506,13 +1803,36 @@ def finance_report_aggregate(data, mode, ref):
         for tx in customer.get("transactions") or []:
             at = tx.get("at") if isinstance(tx, dict) else None
             if not isinstance(at, str) or not _TX_DATE_RE.fullmatch(at[:10]):
-                anomalies += 1
+                # v1.7: the counter is scoped like the report itself — a
+                # malformed row that belongs to another cycle's case must not
+                # inflate this period's warning. In daily/weekly mode every
+                # row is in scope, so that count is unchanged.
+                if period_devices is None or (
+                        str(tx.get("device_id") if isinstance(tx, dict)
+                            else "") in period_devices):
+                    anomalies += 1
                 continue
             if tx.get("voided_at") or tx.get("kind") == "void":
                 # v1.6: inactive pairs (voided original + reversal) leave
                 # every bucket — the finance report is the real-money view.
                 continue
             bucket = at[:10]
+            linked = False
+            if period_devices is not None:
+                device_id = str(tx.get("device_id") or "")
+                if device_id:
+                    if device_id not in period_devices:
+                        # v1.7: a case outside this reporting period.
+                        continue
+                    linked = True
+                elif not (from_iso <= bucket <= to_iso):
+                    # v1.7: a row with no case link (a manual receipt/debt/tx
+                    # booked from the customer ledger) belongs to the period
+                    # whose window contains its date — otherwise the cycle's
+                    # manually-recorded cash would silently vanish from its
+                    # own report. Case-linked rows are counted by linkage, so
+                    # a late payment on an old case stays in its own period.
+                    continue
             try:
                 amount = int(tx.get("amount") or 0)
             except (TypeError, ValueError):
@@ -1521,7 +1841,14 @@ def finance_report_aggregate(data, mode, ref):
                 opening += amount
                 continue
             if bucket > to_iso:
-                continue
+                # v1.7: a case of this period paid after the books were closed
+                # still belongs to the cycle that owns the case — dropping it
+                # made closing a period retroactively remove money its own
+                # report had already shown. Only rows scoped by their own date
+                # are cut off at the period's edge (windowed by the filter
+                # above).
+                if not linked:
+                    continue
             count += 1
             if amount < 0:
                 debits += amount
@@ -1588,6 +1915,22 @@ def finance_report_aggregate(data, mode, ref):
                 "debits": stat["debits"], "credits": stat["credits"],
                 "receipts": stat["receipts"], "count": stat["count"]})
     settings = data.get("settings") or {}
+    period_info = None
+    open_warning = ""
+    if mode == "period":
+        # v1.7: the report carries the period identity and, while it is still
+        # open, an explicit warning that the numbers are not final — the
+        # operator must close the period to lock the books.
+        period_info = {
+            "id": str(period.get("id") or ""),
+            "number": int(period.get("number") or 0),
+            "label": str(period.get("label") or ""),
+            "opened_at": str(period.get("opened_at") or ""),
+            "closed_at": str(period.get("closed_at") or ""),
+            "closed_by": str(period.get("closed_by") or ""),
+            "devices": len(period_devices or []),
+        }
+        open_warning = period_open_warning(data, period)
     return {
         "mode": mode, "from": from_iso, "to": to_iso,
         "from_fa": jalali.to_fa(from_iso), "to_fa": jalali.to_fa(to_iso),
@@ -1595,6 +1938,7 @@ def finance_report_aggregate(data, mode, ref):
         "days": days, "transactions": transactions, "anomalies": anomalies,
         "business": {"name": str(settings.get("business_name") or "").strip(),
                      "phone": str(settings.get("business_phone") or "").strip()},
+        "period": period_info, "open_warning": open_warning,
     }
 
 
@@ -1604,8 +1948,17 @@ def finance_report_html(agg):
     weekly = mode == "weekly"
     from_fa = str(agg.get("from_fa") or "")
     to_fa = str(agg.get("to_fa") or "")
-    title = (f"گزارش مالی مشتریان — {from_fa} تا {to_fa}" if weekly
-             else f"گزارش مالی مشتریان — {from_fa}")
+    period = agg.get("period") or {}
+    # v1.7: a period report names its own cycle in the heading and moves the
+    # date range to the sub-line, which would otherwise still claim «روزانه».
+    if mode == "period":
+        title = (f"گزارش مالی مشتریان: {period.get('label') or 'دوره'}"
+                 + (" (باز)" if not period.get("closed_at") else " (بسته)"))
+        sub_line = f"{from_fa} تا {to_fa}"
+    else:
+        title = (f"گزارش مالی مشتریان: {from_fa} تا {to_fa}" if weekly
+                 else f"گزارش مالی مشتریان: {from_fa}")
+        sub_line = "هفتگی" if weekly else "روزانه"
     totals = agg.get("totals") or {}
     empty_line = "در این بازه تراکنشی ثبت نشده است."
 
@@ -1639,11 +1992,17 @@ def finance_report_html(agg):
         ".muted{color:#666}.pos{color:#0c7d4f}.neg{color:#d93752}",
         "@media print{body{margin:8mm}}</style></head><body>",
         f"<h1>{_esc(title)}</h1>",
-        f'<p class="muted">{"هفتگی" if weekly else "روزانه"}</p>',
+        f'<p class="muted">{_esc(sub_line)}</p>',
     ]
     business_line = _business_header(agg.get("business"))
     if business_line:
         out.append(f'<p class="muted">{_esc(business_line)}</p>')
+    # v1.7: an open period warns the reader the figures are not final.
+    open_warning = str(agg.get("open_warning") or "")
+    if open_warning:
+        out.append(f'<p style="border:1px solid #c9a227;background:#fdf6e3;'
+                   f'padding:8px 12px;border-radius:6px;color:#7a5a00">'
+                   f'{_esc(open_warning)}</p>')
     out.extend([
         '<div class="sum">',
         '<div><span class="muted">دریافتی‌های نقدی (واریزی)</span><br>'
@@ -1707,6 +2066,12 @@ def finance_report_html(agg):
     else:
         out.append(f'<p class="muted">{empty_line}</p>')
     out.append("<p>مانده‌ها بر اساس مشتری‌های فعلی است.</p>")
+    if mode == "period":
+        # v1.7: state the period's counting rule so the operator can trust
+        # (or challenge) the totals of a cycle.
+        out.append("<p class='muted'>تراکنش‌های پرونده‌ای بر اساس پرونده‌های "
+                   "همین دوره و تراکنش‌های بدون پرونده بر اساس تاریخ شمرده "
+                   "شده‌اند.</p>")
     anomalies = int(agg.get("anomalies") or 0)
     if anomalies > 0:
         out.append(f'<p class="muted">{jalali.fa_digits(anomalies)}'
@@ -1721,8 +2086,17 @@ def finance_report_txt(agg):
     weekly = mode == "weekly"
     from_fa = str(agg.get("from_fa") or "")
     to_fa = str(agg.get("to_fa") or "")
-    title = (f"گزارش مالی مشتریان — {from_fa} تا {to_fa}" if weekly
-             else f"گزارش مالی مشتریان — {from_fa}")
+    period = agg.get("period") or {}
+    # v1.7: the period report names its cycle and, while open, warns that
+    # the numbers are not final (Telegram chunks carry the same banner).
+    if mode == "period":
+        title = (f"گزارش مالی مشتریان: {period.get('label') or 'دوره'}"
+                 + (" (باز)" if not period.get("closed_at") else " (بسته)"))
+        sub_line = f"{from_fa} تا {to_fa}"
+    else:
+        title = (f"گزارش مالی مشتریان: {from_fa} تا {to_fa}" if weekly
+                 else f"گزارش مالی مشتریان: {from_fa}")
+        sub_line = "هفتگی" if weekly else "روزانه"
     totals = agg.get("totals") or {}
     empty_line = "در این بازه تراکنشی ثبت نشده است."
 
@@ -1730,7 +2104,8 @@ def finance_report_txt(agg):
         n = int(n or 0)
         return "تسویه" if n == 0 else _fa_money(n)
 
-    lines = [title, "هفتگی" if weekly else "روزانه"]
+    warning = str(agg.get("open_warning") or "")
+    lines = [title, sub_line]
     business_line = _business_header(agg.get("business"))
     if business_line:
         lines.append(business_line)
@@ -1784,10 +2159,17 @@ def finance_report_txt(agg):
         lines.append(empty_line)
     lines.append("")
     lines.append("مانده‌ها بر اساس مشتری‌های فعلی است.")
+    if mode == "period":
+        # v1.7: state the period's counting rule (mirrors the HTML report).
+        lines.append("تراکنش‌های پرونده‌ای بر اساس پرونده‌های همین دوره و "
+                     "تراکنش‌های بدون پرونده بر اساس تاریخ شمرده شده‌اند.")
     anomalies = int(agg.get("anomalies") or 0)
     if anomalies > 0:
         lines.append(f"{jalali.fa_digits(anomalies)} "
                      "تراکنش با تاریخ نامعتبر نادیده‌گرفته شد.")
+    if warning:
+        lines.append("")
+        lines.append("هشدار: " + warning)
     return "\n".join(lines)
 
 

@@ -564,7 +564,7 @@ class StatementBuildTests(unittest.TestCase):
     LEDGER = [
         _tx("2026-09-10 08:00:00", -500000, "debt"),
         _tx("2026-09-12 09:00:00", -FEE, "base_fee",
-            "هزینهٔ ثبت رجیستری — گوشی", "d1"),
+            "هزینه ثبت رجیستری، گوشی", "d1"),
         _tx("2026-09-13 10:00:00", 10000000, "receipt", "واریز", "d1"),
         _tx("2026-09-14 09:00:00", 2000000, "receipt", "واریز تکراری",
             voided_at="2026-09-14 09:30:00", void_reason="تکراری"),
@@ -667,7 +667,7 @@ class StatementRendererTests(unittest.TestCase):
         return crm.customer_statement(
             _store([_customer("c1", "مشتری <یک>", [
                 _tx("2026-09-14 09:00:00", -FEE, "base_fee",
-                    "هزینهٔ ثبت رجیستری — گوشی", "d1"),
+                    "هزینه ثبت رجیستری، گوشی", "d1"),
                 _tx("2026-09-15 09:00:00", 10000000, "receipt", "واریز"),
                 _tx("2026-09-15 10:00:00", 2000000, "receipt", "تکراری",
                     voided_at="2026-09-15 11:00:00", void_reason="تکراری"),

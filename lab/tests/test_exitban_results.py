@@ -116,7 +116,9 @@ class ExitbanResultTests(unittest.TestCase):
         ):
             haystack = panel.PAGE_HEAD + source if marker.startswith("exitban-result-card.") else source
             if marker == "/exitban-result":
-                haystack = panel.Handler.do_POST.__code__.co_consts
+                # v1.7: the POST dispatcher moved into _do_post_body, behind
+                # do_POST's exception safety net.
+                haystack = panel.Handler._do_post_body.__code__.co_consts
             self.assertIn(marker, haystack)
         self.assertIn("Date.now()-startedAt<130000", source)
 

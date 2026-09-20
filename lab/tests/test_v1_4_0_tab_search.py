@@ -66,7 +66,7 @@ class TabSearchStateTests(unittest.TestCase):
         # the nine list tabs (settings/reports excluded) and their units
         for marker in ("devices:{ph:'جستجو در پرونده‌ها…',unit:'پرونده'}",
                        "customers:{ph:'جستجو در مشتری‌ها…',unit:'مشتری'}",
-                       "owners:{ph:'جستجو در مسافرها…',unit:'مسافر'}",
+                       "owners:{ph:'جستجو در مسافر‌ها…',unit:'مسافر'}",
                        "identities:{ph:'جستجو در استخر هویت…',unit:'مشخصات'}",
                        "periodic:{ph:'جستجو در استعلام دوره‌ای…',unit:'دستگاه'}",
                        "ledger:{ph:'جستجو در تراکنش‌ها…',unit:'تراکنش'}",

@@ -1427,12 +1427,21 @@ def crm_state_payload():
     live_runs = estelam_live_runs()
     out["estelam_running"] = bool(live_runs)
     out["estelam_runs"] = live_runs
+    # v1.7: the owner archive is computed server-side (never stored) so the
+    # owners tab can exclude completed-case passengers and the archive tab
+    # can list them with their case details.
+    out["archived_owners"] = crm_mod.archived_owners(data)
+    # v1.7: the period bar renders from the store's own period records.
+    out["periods"] = data.get("periods") or []
     return out
 
 
-def crm_sync_queue(device_id):
-    """Upsert the CRM device's estelam queue row and reset its status to
-    pending (review F2b — the robots skip rows carrying a final status).
+def crm_sync_queue(device_id, service="gomrok"):
+    """Upsert the CRM device's estelam queue row and reset ONLY the service
+    about to run to pending (review F2b — the robots skip rows carrying a
+    final status). The OTHER service's final result stays untouched: clobbering
+    it here reset a healthy gomrok verdict to pending whenever a hamta run
+    followed it (v1.7 bug: inquiry order must not matter).
     ALL reads/writes go through estelam_load/estelam_save (_ESTELAM_LOCK);
     non-CRM rows stay byte-identical (review F18)."""
     import crm as crm_mod
@@ -1443,22 +1452,43 @@ def crm_sync_queue(device_id):
         return ["دستگاه پیدا نشد"]
     customer = next((c for c in data.get("customers", [])
                      if c.get("id") == device.get("customer_id")), None)
+    # Only the service(s) about to run are re-queued. Each robot skips rows
+    # that already carry a final status for its own slot, so re-queuing a
+    # slot that is not about to run would DESTROY a finished verdict, while
+    # failing to re-queue one that IS about to run makes that robot skip the
+    # device. "all" runs both, so it re-queues both.
+    reset_keys = []
+    if service in ("gomrok", "all"):
+        reset_keys += ["status", "result"]
+    if service in ("hamta", "all"):
+        reset_keys += ["hamta_status", "hamta_result"]
+    if not reset_keys:
+        reset_keys = ["status", "result"]
+    reset_keys = tuple(reset_keys)
     est = estelam_load()
     row = next((d for d in est.get("devices", [])
                 if str(d.get("id")) == str(device_id)), None)
     if row:
-        row["status"] = "pending"
+        for key in reset_keys:
+            row[key] = "pending" if key.endswith("status") else ""
         row["customer_id"] = device.get("customer_id") or ""
     else:
+        # A brand-new queue row: the service about to run starts pending;
+        # the other service's slot stays unknown ("") so a later run of it
+        # is not falsely reported as a clean result.
+        gomrok_status, gomrok_result = (
+            ("pending", "") if service != "hamta" else ("", ""))
+        hamta_status, hamta_result = (
+            ("pending", "") if service != "gomrok" else ("", ""))
         row = {
             "id": str(device_id),
             "name": device.get("name") or "",
             "serial1": device.get("serial1") or "",
             "serial2": device.get("serial2") or "",
-            "status": "pending",
-            "result": "",
-            "hamta_status": "pending",
-            "hamta_result": "",
+            "status": gomrok_status,
+            "result": gomrok_result,
+            "hamta_status": hamta_status,
+            "hamta_result": hamta_result,
             "customer_id": device.get("customer_id") or "",
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
             "customer_name": (customer or {}).get("full_name") or "",
@@ -1528,7 +1558,7 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual",
         if person_errors:
             return {"ok": False, "errors": person_errors}
         estelam_save_person(person)
-    errors = crm_sync_queue(device_id)
+    errors = crm_sync_queue(device_id, service=service)
     if errors:
         return {"ok": False, "errors": errors}
     result = estelam_start(device_id=device_id, service=service,
@@ -1925,14 +1955,16 @@ def crm_update_settings(fields):
             settings[key] = bool(fields[key])
     if "registry_fee_amount" in fields:
         raw = str(fields.get("registry_fee_amount") or "").strip()
+        # The field arrives pre-filled from the panel's own fa() formatter,
+        # which groups with U+066C «٬»; the old strip-list here omitted it,
+        # so re-saving any amount over 999 failed with «عدد نامنفی».
+        text = crm_mod._amount_digits(raw)
         try:
-            fee = int(crm_mod.normalize_digits(raw.replace(",", "")
-                                               .replace("،", "")
-                                               .replace(" ", "")))
+            fee = int(text) if text else -1
         except (TypeError, ValueError):
             fee = -1
         if fee < 0:
-            errors.append("هزینهٔ ثبت رجیستری باید عدد نامنفی باشد (تومان)")
+            errors.append("هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)")
         else:
             settings["registry_fee_amount"] = fee
     if "registration_chat_id" in fields:
@@ -5677,6 +5709,10 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .toast{background:var(--ok);color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;
     box-shadow:var(--shadow-2);animation:tin .18s ease-out}
   .toast.bad{background:var(--danger)}
+  /* v1.7: the period-close notice is a warning, not a success. Solid amber
+     with ink text keeps >=4.5:1 on --warn in both themes (white text would
+     be 3.7:1 in light and 1.8:1 in dark). */
+  .toast.warn{background:var(--warn);color:#0c1226}
   /* dark theme brightens --ok/--danger, so white toast text loses contrast
      (1.9:1 / 2.8:1) — flip to ink text there */
   html[data-theme="dark"] .toast{color:#0c1226}
@@ -5787,6 +5823,7 @@ var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','
   'blocked':'bad','unknown':'warn','error':'bad','':'n'};
 var TABS = [
   ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
+  ['owner_archive','بایگانی مسافر‌ها'],
   ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
   ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
   ['settings','تنظیمات']
@@ -5802,7 +5839,8 @@ var TAB_COUNT=0;
 var TAB_SEARCH={
   devices:{ph:'جستجو در پرونده‌ها…',unit:'پرونده'},
   customers:{ph:'جستجو در مشتری‌ها…',unit:'مشتری'},
-  owners:{ph:'جستجو در مسافرها…',unit:'مسافر'},
+  owners:{ph:'جستجو در مسافر‌ها…',unit:'مسافر'},
+  owner_archive:{ph:'جستجو در بایگانی مسافر‌ها…',unit:'مسافر'},
   identities:{ph:'جستجو در استخر هویت…',unit:'مشخصات'},
   periodic:{ph:'جستجو در استعلام دوره‌ای…',unit:'دستگاه'},
   ledger:{ph:'جستجو در تراکنش‌ها…',unit:'تراکنش'},
@@ -5839,7 +5877,7 @@ async function api(path,payload){
 }
 function toast(msg, ok){
   var el=document.createElement('div');
-  el.className='toast'+(ok===false?' bad':'');
+  el.className='toast'+(ok==='warn'?' warn':(ok===false?' bad':''));
   el.textContent=msg;
   document.getElementById('toasts').appendChild(el);
   setTimeout(()=>el.remove(), 3800);
@@ -6019,6 +6057,7 @@ function v(id){return document.getElementById(id).value.trim();}
 /* ================= inline SVG icons (no emoji per ux-guidelines) ================= */
 var ICONS = {
   user:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>',
+  warn:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 17H2L12 3z"/><path d="M12 9v5"/><path d="M12 17.4v.2"/></svg>',
   id:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.5 16c.6-1.6 1.7-2.3 3-2.3s2.4.7 3 2.3M14.5 9.5H19M14.5 13H19"/></svg>',
   dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
   search:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
@@ -6482,6 +6521,7 @@ function bodyHtml(){
   else if(TAB==='closed_tab')body=closedTabHtml();
   else if(TAB==='customers')body=customersHtml();
   else if(TAB==='owners')body=ownersHtml();
+  else if(TAB==='owner_archive')body=ownerArchiveHtml();
   else if(TAB==='identities')body=identitiesHtml();
   else if(TAB==='periodic')body=periodicHtml();
   else if(TAB==='ledger')body=ledgerHtml();
@@ -6516,11 +6556,49 @@ function kpisHtml(){
 /* Serials are long IMEIs; the table shows a masked form (the full value
    lives in the case detail modal). Short values pass through untouched. */
 function maskSerial(s){s=String(s||'');return s.length<=8?s:s.slice(0,4)+'…'+s.slice(-3);}
+/* v1.7: the active reporting period bar. Devices registered while a
+   period is open carry its id; the operator closes the period to lock the
+   books before printing the period finance report. Computed from STATE
+   (server is the source of truth) so a refresh always shows the truth. */
+function periodBarHtml(){
+  /* v1.7: the stored pointer can outlive the period it names, so the bar
+     only shows a period as the open one while it really is: the server
+     is the authority and answers a second close with a 400. */
+  var per=(STATE.settings||{}).current_period_id
+    ? (STATE.periods||[]).find(p=>p.id===STATE.settings.current_period_id
+                                  &&!p.closed_at)
+    : null;
+  if(!per) return '<div class="row" style="margin:0 0 12px;align-items:center">'
+    +'<span class="pill n">دورهٔ بسته</span>'
+    +'<span class="muted">پرونده‌های جدید بدون دوره ثبت می‌شوند.</span>'
+    +'<button class="btn primary" onclick="periodOpen()">شروع دورهٔ جدید</button></div>';
+  var inPeriod=(STATE.devices||[]).filter(d=>d.period_id===per.id).length;
+  return '<div class="row" style="margin:0 0 12px;align-items:center">'
+    +'<span class="pill ok">'+esc(per.label||('دورهٔ '+fa(per.number||0)))+'</span>'
+    +'<span class="muted">'+fa(inPeriod)+' پرونده در این دوره</span>'
+    +'<button class="btn warn" onclick="periodClose(\''+per.id+'\')">بستن دوره</button></div>';
+}
+function periodOpen(){
+  api('/crm-period-open',{label:''}).then(async r=>{
+    toast('دورهٔ جدید شروع شد: '+esc(r.period.label));await refresh();})
+    .catch(e=>toast(e,false));
+}
+function periodClose(id){
+  confirmDlg('بستن دوره','با بستن این دوره، پرونده‌های جدید به آن اضافه نمی‌شوند و گزارش مالی این دوره نهایی می‌شود. ادامه می‌دهید؟','بستن دوره',function(){
+    api('/crm-period-close',{period_id:id}).then(async r=>{
+      var s=r.summary;
+      var msg='دوره بسته شد: '+fa(s.devices)+' پرونده';
+      if(s.open_cases>0) msg+='؛ '+fa(s.open_cases)+' پرونده هنوز باز است';
+      toast(msg, s.open_cases>0?'warn':true);await refresh();})
+      .catch(e=>toast(e,false));
+  });
+}
 function devicesHtml(){
   var ds=(STATE.devices||[]).filter(isActiveCase).sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
   ds=filterDevices(ds);
   TAB_COUNT=ds.length;
+  var periodBar=periodBarHtml();
   var runCount=(STATE.estelam_runs||[]).length;
   var runningBanner=(STATE.estelam_running)
     ?'<div class="row" style="margin:0 0 12px;align-items:center">'
@@ -6533,8 +6611,8 @@ function devicesHtml(){
   if(!ds.length){
     // v1.4.0: an active search/stage filter with no hit shows its own
     // card; the genuine empty states below stay untouched.
-    if(searchActive())return runningBanner+searchEmptyCard();
-    return runningBanner+'<div class="row" style="margin-bottom:12px">'
+    if(searchActive())return periodBar+runningBanner+searchEmptyCard();
+    return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px">'
       +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
       +'<span class="muted">'+(others
         ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
@@ -6568,7 +6646,7 @@ function devicesHtml(){
       +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
       +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
   }).join('');
-  return runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
+  return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
     +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
@@ -6815,12 +6893,18 @@ function customersHtml(){
 }
 
 /* ================= owners ================= */
+function archivedIds(){
+  // v1.7: passengers whose case is delivered (done) move to the archive tab.
+  return (STATE.archived_owners||[]).map(r=>r.owner.id);
+}
 function ownersHtml(){
   var q=tabQ();
-  var os=(STATE.owners||[]).filter(o=>{
+  var arch=archivedIds();
+  var os=(STATE.owners||[]).filter(o=>!arch.includes(o.id)).filter(o=>{
     var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
     return tabSearchMatches([o.first_name,o.last_name,o.national,o.birth,o.mobile,o.card_no,o.passport,dev?dev.name:''].join(' '),q);
   });
+  var archCount=arch.length;
   TAB_COUNT=os.length;
   var rows=os.map(o=>{
     var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
@@ -6834,9 +6918,43 @@ function ownersHtml(){
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
+    +(archCount?'<button class="btn" onclick="setTab(\'owner_archive\')">بایگانی: '+fa(archCount)+' مسافر</button>':'')
     +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
     +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="7">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('مسافری ثبت نشده است','مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.'))+'</td></tr>')+'</tbody></table></div>';
+    +'<tbody>'+(rows||'<tr><td colspan="7">'+(searchActive()?searchEmptyHtml():(archCount?emptyInnerHtml('مسافر فعالی نیست','همهٔ مسافر‌ها در بایگانی هستند؛ به تب «بایگانی مسافر‌ها» بروید.'):emptyInnerHtml('مسافری ثبت نشده است','مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.')))+'</td></tr>')+'</tbody></table></div>';
+}
+
+/* ================= owner archive (v1.7) ================= */
+/* Passengers whose case reached completion leave the active owners tab
+   and land here with their delivered case, serials and completion dates.
+   The list is computed server-side; a stage rollback from done returns
+   the passenger to the active list automatically. */
+function ownerArchiveHtml(){
+  var q=tabQ();
+  var rows=(STATE.archived_owners||[]).filter(r=>
+    tabSearchMatches([r.owner.first_name,r.owner.last_name,r.owner.national,
+      r.owner.birth,r.owner.mobile,r.owner.passport,r.device?r.device.name:'',
+      r.customer_name].join(' '),q));
+  TAB_COUNT=rows.length;
+  var tr=rows.map(r=>{
+    var o=r.owner, d=r.device||{};
+    var serials=[d.serial1,d.serial2].filter(Boolean).join(' / ');
+    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
+    +'<td class="kbd">'+esc(o.national)+'</td>'
+    +'<td class="kbd">'+esc(o.birth)+'</td>'
+    +'<td class="kbd">'+esc(o.mobile||'—')+'</td>'
+    +'<td><b>'+esc(d.name||'—')+'</b>'
+    +(serials?'<div class="kbd" dir="ltr">'+esc(serials)+'</div>':'')+'</td>'
+    +'<td>'+esc(r.customer_name||'—')+'</td>'
+    +'<td class="kbd">'+esc(faDateTime(r.code_delivered_at||r.done_at||''))+'</td>'
+    +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
+    +'<button class="btn mini" onclick="caseDetail(\''+d.id+'\')">پرونده</button></td></tr>';
+  }).join('');
+  return '<div class="card"><div class="row" style="margin-bottom:10px">'
+    +'<span class="pill ok">'+fa(rows.length)+' مسافر تکمیل‌شده</span>'
+    +'<span class="muted">مسافرانی که کد فعال‌سازی تحویل شده و پروندهٔ آن‌ها تکمیل شده است. با بازگرداندن پرونده به گام قبل، مسافر به‌صورت خودکار به لیست فعال برمی‌گردد.</span></div>'
+    +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>دستگاه</th><th>مشتری</th><th>تاریخ تحویل کد</th><th></th></tr></thead>'
+    +'<tbody>'+(tr||'<tr><td colspan="8">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('هنوز مسافری بایگانی نشده است','با تکمیل پروندهٔ یک مسافر، او به‌صورت خودکار اینجا ظاهر می‌شود.'))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= periodic gomrok inquiry tab ================= */
@@ -7311,12 +7429,13 @@ function showFieldErrors(errText){
 function dlgDevice(){
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
-    +'<p class="muted">با ثبت دستگاه، «هزینهٔ ثبت رجیستری» (مبلغ قابل تنظیم در تب تنظیمات) به‌صورت خودکار به حساب مشتری بدهکار می‌شود. مبلغ واردشده نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.</p>'
+    +'<p class="muted">با ثبت دستگاه، «هزینه ثبت رجیستری» به حساب مشتری بدهکار می‌شود؛ مبلغ پیش‌فرض از تب تنظیمات خوانده می‌شود و قابل تغییر است. مبلغ دریافتی نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.</p>'
     +'<div class="grid" style="margin-bottom:8px">'
     +'<label class="f">نام دستگاه *<input id="dvName" placeholder="iPhone 13"></label>'
     +'<label class="f">سریال اول * (IMEI ۱۵ رقمی)<input id="dvS1" inputmode="numeric" maxlength="15" placeholder="356938035643809"></label>'
     +'<label class="f">سریال دوم (اختیاری)<input id="dvS2" inputmode="numeric" maxlength="15" placeholder=""></label>'
     +'<label class="f">مبلغ دریافتی (تومان)<input id="dvRecv" class="ltr" inputmode="numeric" value="0"></label>'
+    +'<label class="f">هزینه ثبت رجیستری (تومان)<input id="dvFee" class="ltr" inputmode="numeric" placeholder="پیش‌فرض تنظیمات" value="'+fa((STATE.settings||{}).registry_fee_amount||0)+'"></label>'
     +'</div>'
     +'<div class="row"><label class="f">مشتری *<select id="dvCust" onchange="document.getElementById(\'dvNewCustRow\').style.display=this.value?\'none\':\'block\'">'+custOpts+'</select></label>'
     +'<label class="f check"><input type="checkbox" id="dvAuto"><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پس از ثبت در گمرک</span></label></div>'
@@ -7342,9 +7461,18 @@ function doAddDevice(){
   /* v1.6: amount paid up front — books as «دریافتی» on the customer's
      account (server stays the authority; 0 means no transaction). The RAW
      input is validated first: digitsFa strips '-' and '.', so a typed
-     "-500" or "1.5" would otherwise silently book 500/15 (H1 review). */
+     "-500" or "1.5" would otherwise silently book 500/15 (H1 review).
+     The class also allows the Persian thousands separator U+066C «٬» that
+     fa()-formatted amounts carry (same reason as the fee field below). */
+  /* One input class for both amount fields, matching what the server's own
+     parser (crm._amount_digits) strips: ASCII/Persian digits plus every
+     group separator the panel's fa() formatter (toLocaleString('fa-IR')
+     emits U+066C) or a paste can carry — ASCII comma, U+060C, space, NBSP,
+     thin space, narrow NBSP. A sign or a dot must stay OUT of this class:
+     digitsFa() drops them, so a typed "-500" would silently book +500. */
+  var AMOUNT_RAW_RE=/^[\d\u06F0-\u06F9\u066C,\u060C\u00A0\u2009\u202F ]*$/;
   var recvRaw=v('dvRecv');
-  if(!/^[\d۰-۹,، ]*$/.test(recvRaw)){
+  if(!AMOUNT_RAW_RE.test(recvRaw)){
     document.getElementById('dvErr').textContent='مبلغ دریافتی باید عدد نامنفی باشد (تومان)';
     var rEl=document.getElementById('dvRecv');if(rEl)rEl.setAttribute('aria-invalid','true');
     return;
@@ -7356,12 +7484,42 @@ function doAddDevice(){
     return;
   }
   var rEl=document.getElementById('dvRecv');if(rEl)rEl.removeAttribute('aria-invalid');
+  /* v1.7: per-case registry fee — defaults to the configured amount; the
+     operator may lower or raise it for this case only. Raw input first:
+     digitsFa strips '-'/'.' so a typed "-500" must be rejected as text.
+     The class must ALSO allow the Persian thousands separator U+066C «٬»:
+     fa() renders the pre-filled default through toLocaleString('fa-IR'),
+     so the field the operator sees already carries it and a guard that
+     rejected it refused every submit. digitsFa drops it afterwards. */
+  var feeRaw=v('dvFee');
+  if(!AMOUNT_RAW_RE.test(feeRaw)){
+    document.getElementById('dvErr').textContent='هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)';
+    var fEl=document.getElementById('dvFee');if(fEl)fEl.setAttribute('aria-invalid','true');
+    return;
+  }
+  /* An EMPTY field means "no override, charge the configured amount", which
+     is exactly what the placeholder promises; only an explicit 0 means
+     "charge nothing". Mapping blank to 0 (the v1.7 behaviour) booked no fee
+     at all and said nothing, silently losing the configured amount. */
+  /* A field holding nothing but separators (the operator cleared the digits
+     of the pre-filled «۲۴٬۰۰۰٬۰۰۰» and left «٬» behind) means "no
+     override" as well: reading it as 0 would silently book no fee at all. */
+  var fee=null;
+  var feeDigits=digitsFa(feeRaw);
+  if(feeRaw!==''&&feeDigits!==''){fee=parseInt(feeDigits,10);}
+  if(fee!==null&&(isNaN(fee)||fee<0)){
+    document.getElementById('dvErr').textContent='هزینه ثبت رجیستری باید عدد نامنفی باشد (تومان)';
+    var fEl0=document.getElementById('dvFee');if(fEl0)fEl0.setAttribute('aria-invalid','true');
+    return;
+  }
+  var fEl2=document.getElementById('dvFee');if(fEl2)fEl2.removeAttribute('aria-invalid');
   var addBtn=document.querySelector('#dlg button[onclick="doAddDevice()"]');
   if(addBtn){if(addBtn.disabled)return;addBtn.disabled=true;
     setTimeout(function(){addBtn.disabled=false;},1500);}
   var payload={action:'add',name:v('dvName'),serial1:v('dvS1'),serial2:v('dvS2'),
     notes:v('dvNotes'),auto_advance:document.getElementById('dvAuto').checked,
     received_amount:recv};
+  if(fee!==null)payload.registry_fee_override=fee;
   var custSel=v('dvCust');
   if(custSel){payload.customer_id=custSel;}
   else payload.customer={full_name:v('dvCn'),mobile:mobile,telegram_id:v('dvTg'),
@@ -7757,25 +7915,51 @@ function sendTelegram(){
    on that anchor is ever computed here; all labels (from_fa/to_fa/day_fa)
    come from the response. FIN_SEQ drops stale responses that race a newer
    fetch (fast period navigation). */
-var FIN_MODE='daily',FIN_REF='',FIN_DATA=null,FIN_ERR='',FIN_SEQ=0;
+var FIN_MODE='daily',FIN_REF='',FIN_PERIOD='',FIN_DATA=null,FIN_ERR='',FIN_SEQ=0;
 function finIso(d){
   var p=function(n){return (n<10?'0':'')+n;};
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
 }
+function finPeriodPick(){
+  var sel=document.getElementById('finPeriodSel');
+  if(!sel)return;
+  FIN_PERIOD=sel.value;FIN_REF='';FIN_DATA=null;FIN_ERR='';FIN_SEQ++;
+  finLoad();
+}
 function finUrl(){
+  if(FIN_MODE==='period')
+    return '/crm-finance-report?mode=period'+(FIN_PERIOD?'&ref='+FIN_PERIOD:'')+'&fmt=json';
   return '/crm-finance-report?mode='+FIN_MODE+(FIN_REF?'&ref='+FIN_REF:'')+'&fmt=json';
+}
+/* v1.7: the report toolbar. Built separately from the dialog shell because
+   finMode() rebuilds it in place — the period selector only exists in
+   period mode, so switching modes must re-render the bar or the operator
+   never sees a period to pick. */
+function finBarHtml(){
+  var periodMode=(FIN_MODE==='period');
+  var sel=periodMode
+    ?'<select id="finPeriodSel" onchange="finPeriodPick()" style="max-width:180px">'
+      +((STATE.periods||[]).slice().reverse().map(p=>
+        '<option value="'+p.id+'"'+(FIN_PERIOD===p.id?' selected':'')+'>'+esc(p.label||('دورهٔ '+fa(p.number||0)))+(p.closed_at?' (بسته)':' (باز)')+'</option>'
+      ).join('')||'<option value="">دوره‌ای نیست</option>')+'</select>'
+    :'';
+  return '<div class="row" style="margin-bottom:10px"><div class="seg" id="finSeg">'
+    +'<button type="button" class="'+(FIN_MODE==='daily'?'on':'')+'" data-m="daily" aria-pressed="'+(FIN_MODE==='daily'?'true':'false')+'" onclick="finMode(\'daily\')">روزانه</button>'
+    +'<button type="button" class="'+(FIN_MODE==='weekly'?'on':'')+'" data-m="weekly" aria-pressed="'+(FIN_MODE==='weekly'?'true':'false')+'" onclick="finMode(\'weekly\')">هفتگی</button>'
+    +'<button type="button" class="'+(periodMode?'on':'')+'" data-m="period" aria-pressed="'+(periodMode?'true':'false')+'" onclick="finMode(\'period\')">دوره</button></div>'
+    +sel
+    /* The date nav (previous/next/today) is meaningless over a period: a
+       period is picked by name, not by shifting a day. */
+    +(periodMode?''
+      :'<button type="button" class="btn mini" title="بازهٔ قبلی" aria-label="بازهٔ قبلی" onclick="finShift(-1)">'+ICONS.chevR+'</button>'
+       +'<button type="button" class="btn mini" title="بازهٔ بعدی" aria-label="بازهٔ بعدی" onclick="finShift(1)">'+ICONS.chevL+'</button>'
+       +'<button type="button" class="btn mini" id="finReset" onclick="finReset()">'+(FIN_MODE==='daily'?'امروز':'این هفته')+'</button>')
+    +'<span class="chip" id="finLabel">…</span></div>';
 }
 function dlgFinance(){
   FIN_REF='';FIN_DATA=null;FIN_ERR='';FIN_SEQ++;
   openDlg('<div class="findlg"><h3>گزارش مالی مشتریان</h3>'
-    +'<div class="row" style="margin-bottom:10px">'
-    +'<div class="seg" id="finSeg">'
-    +'<button type="button" class="'+(FIN_MODE==='daily'?'on':'')+'" data-m="daily" aria-pressed="'+(FIN_MODE==='daily'?'true':'false')+'" onclick="finMode(\'daily\')">روزانه</button>'
-    +'<button type="button" class="'+(FIN_MODE==='weekly'?'on':'')+'" data-m="weekly" aria-pressed="'+(FIN_MODE==='weekly'?'true':'false')+'" onclick="finMode(\'weekly\')">هفتگی</button></div>'
-    +'<button type="button" class="btn mini" title="بازهٔ قبلی" aria-label="بازهٔ قبلی" onclick="finShift(-1)">'+ICONS.chevR+'</button>'
-    +'<span class="chip" id="finLabel">…</span>'
-    +'<button type="button" class="btn mini" title="بازهٔ بعدی" aria-label="بازهٔ بعدی" onclick="finShift(1)">'+ICONS.chevL+'</button>'
-    +'<button type="button" class="btn mini" id="finReset" onclick="finReset()">'+(FIN_MODE==='daily'?'امروز':'این هفته')+'</button></div>'
+    +'<div id="finBar">'+finBarHtml()+'</div>'
     +'<div id="finBody"><div class="muted">در حال دریافت گزارش…</div></div>'
     +'<div class="row" style="margin-top:12px">'
     +'<button type="button" class="btn" id="finPrint" disabled onclick="finOpen(\'html\')">چاپ</button>'
@@ -7787,14 +7971,17 @@ function dlgFinance(){
 function finMode(m){
   if(FIN_MODE===m)return;
   FIN_MODE=m;
-  var seg=document.querySelectorAll('#finSeg button');
-  for(var i=0;i<seg.length;i++){
-    var on=seg[i].getAttribute('data-m')===m;
-    seg[i].classList.toggle('on',on);
-    seg[i].setAttribute('aria-pressed',on?'true':'false');
+  /* v1.7: entering period mode selects the newest period by default.
+     Either way the date anchor resets, so leaving period mode lands on
+     today rather than on the period's open date. FIN_PERIOD is kept so
+     returning to period mode re-selects the same period. */
+  if(m==='period'){
+    var pers=(STATE.periods||[]);
+    if(pers.length&&!FIN_PERIOD)FIN_PERIOD=pers[pers.length-1].id;
   }
-  var rst=document.getElementById('finReset');
-  if(rst)rst.textContent=FIN_MODE==='daily'?'امروز':'این هفته';
+  FIN_REF='';
+  var bar=document.getElementById('finBar');
+  if(bar)bar.innerHTML=finBarHtml();
   finLoad();
 }
 function finShift(dir){
@@ -7835,8 +8022,20 @@ function finPaint(){
 }
 function finLabelHtml(){
   if(!FIN_DATA)return '…';
+  if(FIN_MODE==='period'){
+    var p=FIN_DATA.period||{};
+    return esc(p.label||('دورهٔ '+fa(p.number||0)))
+      +(p.closed_at? '، بسته در '+faDateTime(p.closed_at):'، باز');
+  }
   return FIN_MODE==='daily'?esc(FIN_DATA.from_fa||'')
     :'از '+esc(FIN_DATA.from_fa||'')+' تا '+esc(FIN_DATA.to_fa||'');
+}
+/* v1.7: a period that is still open warns the operator right inside the
+   report that the figures are not final. */
+function finOpenWarningHtml(){
+  if(!FIN_DATA||!FIN_DATA.open_warning)return '';
+  return '<div class="row" style="margin:0 0 10px"><span class="pill warn">'
+    +ICONS.warn+' '+esc(FIN_DATA.open_warning)+'</span></div>';
 }
 function finBal(n){
   n=Number(n||0);
@@ -7851,7 +8050,8 @@ function finBodyHtml(){
   var split=(Number(t.closing)||0)===0
     ?'<span class="pill n">تسویه</span>'
     :'<span class="pill bad">بدهکار '+money(t.debtors_total)+'</span> / <span class="pill ok">بستانکار '+money(t.creditors_total)+'</span>';
-  var html='<div class="finkpis">'
+  var warn=finOpenWarningHtml();
+  var html=warn+'<div class="finkpis">'
     +'<div class="finkpi ok"><span class="l">دریافتی‌های نقدی (واریزی)</span><span class="v">'+money(t.receipts)+'</span></div>'
     +'<div class="finkpi bad"><span class="l">بدهکاری‌های جدید</span><span class="v">'+money(t.debits)+'</span></div>'
     +'<div class="finkpi '+(t.closing>0?'ok':(t.closing<0?'bad':''))+'"><span class="l">ماندهٔ کل مشتریان</span><span class="v">'+money(t.closing)+'</span>'
@@ -7892,9 +8092,15 @@ function finBodyHtml(){
 }
 function finOpen(fmt){
   if(!FIN_REF)return;
-  window.open('/crm-finance-report?mode='+FIN_MODE+'&ref='+FIN_REF+'&fmt='+fmt,'_blank');
+  window.open('/crm-finance-report?mode='+FIN_MODE+'&ref='+(FIN_MODE==='period'?FIN_PERIOD:FIN_REF)+'&fmt='+fmt,'_blank');
 }
 function finTelegram(){
+  if(FIN_MODE==='period'){
+    if(!FIN_PERIOD)return;
+    api('/crm-finance-report-telegram',{mode:'period',ref:FIN_PERIOD})
+      .then(r=>toast('ارسال شد ('+fa(r.sent)+' بخش)')).catch(e=>toast(String(e),false));
+    return;
+  }
   if(!FIN_REF)return;
   api('/crm-finance-report-telegram',{mode:FIN_MODE,ref:FIN_REF})
     .then(r=>toast('ارسال شد ('+fa(r.sent)+' بخش)')).catch(e=>toast(String(e),false));
@@ -8050,8 +8256,13 @@ function historyHtml(){
 }
 function renderTabs(){
   var devs=(STATE&&STATE.devices||[]);
+  /* v1.7: archived passengers left the owners tab, so its badge counts only
+     the ones that tab actually lists and the archive gets its own badge. */
+  var arch=((STATE&&STATE.archived_owners)||[]).length;
+  var allOwners=((STATE&&STATE.owners)||[]).length;
   var counts={devices:devs.length,customers:(STATE&&STATE.customers||[]).length,
-    owners:(STATE&&STATE.owners||[]).length,identities:(STATE&&STATE.identities||[]).length,
+    owners:Math.max(0,allOwners-arch),owner_archive:arch,
+    identities:(STATE&&STATE.identities||[]).length,
     periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
     ledger:null,reports:null,
     done_tab:devs.filter(d=>d.stage==='done').length,
@@ -8214,11 +8425,17 @@ def crm_finance_report_params(mode, ref, fmt):
     import datetime
     errors = []
     mode = str(mode or "").strip()
-    if mode not in ("daily", "weekly"):
+    if mode not in ("daily", "weekly", "period"):
         errors.append("مقدار mode نامعتبر است")
     ref_text = str(ref or "").strip()
     ref_date = None
-    if not ref_text or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref_text):
+    # v1.7: period mode takes a period id, not a date — the range comes from
+    # the period's own open/close times.
+    if mode == "period":
+        if not ref_text:
+            errors.append("شناسهٔ دوره مشخص نشده است")
+        ref_date = ref_text or None
+    elif not ref_text or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref_text):
         errors.append("تاریخ ref نامعتبر است؛ قالب درست: YYYY-MM-DD")
     else:
         try:
@@ -8364,7 +8581,7 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"device_id": first, "ok": False,
                                 "errors": result.get("errors")})
             for extra in restart_ids:
-                sync_errors = crm_sync_queue(extra)
+                sync_errors = crm_sync_queue(extra, service="gomrok")
                 results.append({"device_id": extra,
                                 "ok": not sync_errors,
                                 "errors": sync_errors})
@@ -8613,19 +8830,65 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _finance_aggregate(self, mode, ref):
+        """Aggregate the finance report, or None after answering with a 400.
+
+        v1.7: in period mode `ref` is a period id that is never validated
+        against the store, so a stale id (a period dropped by a store
+        restore) made the aggregate raise ValueError and abort the socket.
+        Answer in Persian instead of leaving the operator with a dropped
+        connection. Only a bad *reference* is a 400 (ReportRefError); any
+        other ValueError is an unreadable store record and is answered as a
+        500, so the operator is not told to re-read a list that is itself
+        broken.
+        """
+        import crm as crm_mod
+        try:
+            return crm_mod.finance_report_aggregate(
+                crm_mod.store_read(), mode, ref)
+        except crm_mod.ReportRefError as exc:
+            crm_mod.crm_log("warn", "report_finance_bad_ref",
+                            detail="%s: %s" % (mode, exc))
+            self._json({"ok": False, "errors": [
+                "دورهٔ انتخاب‌شده پیدا نشد؛ فهرست دوره‌ها را دوباره بخوانید"]},
+                400)
+            return None
+        except ValueError as exc:
+            # Any other ValueError is a server-side data problem (a period
+            # record whose fields cannot be read, say), not a stale client
+            # list: answer 500 and keep the traceback in the log instead of
+            # telling the operator to re-read a list that is itself broken.
+            crm_mod.crm_log("error", "report_finance_failed",
+                            detail="%s: %s" % (mode, exc))
+            import traceback
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
+            self._json({"ok": False,
+                        "errors": ["خطای سرور؛ دوباره تلاش کنید"]}, 500)
+            return None
+
     def _crm_finance_report(self, query):
-        """Finance report (v1.5); mode=daily|weekly, ref=YYYY-MM-DD,
+        """Finance report (v1.5+); mode=daily|weekly|period (v1.7),
+        ref=YYYY-MM-DD or, in period mode, the period id,
         fmt=json (aggregate) | html (printable) | pdf (Edge, HTML fallback) |
         txt (attachment download). Mirrors _crm_report's serving patterns."""
         import crm as crm_mod
         mode = (query.get("mode") or ["daily"])[0]
-        ref = (query.get("ref") or [""])[0] or time.strftime("%Y-%m-%d")
+        # v1.7: period mode takes the period id as `ref`, so the today-fallback
+        # (a date) must not be substituted for it.
+        ref = (query.get("ref") or [""])[0]
+        if mode != "period" and not ref:
+            ref = time.strftime("%Y-%m-%d")
         fmt = (query.get("fmt") or ["json"])[0]
         mode, ref, fmt, errors = crm_finance_report_params(mode, ref, fmt)
         if errors:
             self._json({"ok": False, "errors": errors}, 400)
             return
-        agg = crm_mod.finance_report_aggregate(crm_mod.store_read(), mode, ref)
+        agg = self._finance_aggregate(mode, ref)
+        if agg is None:
+            return
         if fmt == "json":
             payload = {"ok": True}
             payload.update(agg)
@@ -8666,12 +8929,18 @@ class Handler(BaseHTTPRequestHandler):
         digest must never report success)."""
         import crm as crm_mod
         mode = str(data.get("mode") or "daily")
-        ref = str(data.get("ref") or "") or time.strftime("%Y-%m-%d")
+        # v1.7: period mode passes the period id through `ref`; the
+        # today-fallback is a date and must not replace it.
+        ref = str(data.get("ref") or "")
+        if mode != "period" and not ref:
+            ref = time.strftime("%Y-%m-%d")
         mode, ref, _fmt, errors = crm_finance_report_params(mode, ref, "json")
         if errors:
             self._json({"ok": False, "errors": errors}, 400)
             return
-        agg = crm_mod.finance_report_aggregate(crm_mod.store_read(), mode, ref)
+        agg = self._finance_aggregate(mode, ref)
+        if agg is None:
+            return
         text = crm_mod.finance_report_txt(agg)
         chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
         sent = 0
@@ -8950,6 +9219,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        try:
+            self._do_get_body()
+        except Exception as exc:
+            # v1.7: mirrors do_POST's safety net. A GET route that raised used
+            # to abort the socket mid-response, so the browser reported a raw
+            # "TypeError: Failed to fetch" (e.g. a period report whose id no
+            # longer resolves against the store). Answer in Persian instead,
+            # and log the traceback so the cause stays discoverable.
+            import traceback
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
+            try:
+                self._json({"ok": False,
+                            "errors": ["خطای سرور؛ دوباره تلاش کنید"]}, 500)
+            except Exception:
+                pass
+
+    def _do_get_body(self):
         from urllib.parse import urlsplit
         route = urlsplit(self.path).path
         if not self._gate(route):
@@ -9082,6 +9371,27 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import urlsplit
         if not self._gate(urlsplit(self.path).path):
             return
+        try:
+            self._do_post_body()
+        except Exception as exc:
+            # v1.7: a route exception used to abort the socket mid-response,
+            # so the browser reported a raw "TypeError: Failed to fetch" while
+            # the store write had already succeeded (the operator saw "saved
+            # but errored"). Surface a Persian error instead, and log the
+            # traceback server-side so the cause is discoverable.
+            import traceback
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
+            try:
+                self._json({"ok": False,
+                            "errors": ["خطای سرور؛ دوباره تلاش کنید"]}, 500)
+            except Exception:
+                pass
+
+    def _do_post_body(self):
+        from urllib.parse import urlsplit
         try:
             store = load_store()
         except StoreUnreadableError:
@@ -9338,6 +9648,28 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/crm-stop":
             self._json(estelam_stop())
+
+        elif self.path == "/crm-period-open":
+            import crm as crm_mod
+            payload = self._read_json()
+            period, errors = crm_mod.open_period(
+                str(payload.get("label") or ""), actor=self.actor)
+            if errors:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                self._json({"ok": True, "period": period})
+
+        elif self.path == "/crm-period-close":
+            import crm as crm_mod
+            payload = self._read_json()
+            summary, errors = crm_mod.close_period(
+                str(payload.get("period_id") or ""),
+                actor=self.actor,
+                reason=str(payload.get("reason") or ""))
+            if errors:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                self._json({"ok": True, "summary": summary})
 
         elif self.path == "/crm-periodic":
             data = self._read_json()

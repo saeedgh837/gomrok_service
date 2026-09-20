@@ -73,6 +73,9 @@ DEFAULT = [
     # v1.6 accounting round (W1 backend): void-aware ledger + statement +
     # invoice + business settings.
     "test_v1_6_accounting",
+    # v1.7 round: per-case fee (U+066C intake), inquiry-order fix, owner
+    # archive, reporting periods, GET safety net, period-report routes.
+    "test_v1_7",
 ]
 
 names = sys.argv[1:] or DEFAULT

@@ -33,6 +33,14 @@ class _StoreHarness(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         os.environ["IRICA_CRM_STORE"] = os.path.join(
             self.tmp.name, "crm_store.json")
+        # Hygiene (v1.7): `_device_at` seeds panel.ESTELAM_PATH so the
+        # inquiry gate passes. Unpatched, that wrote the operator's live
+        # estelam store (%LOCALAPPDATA%\irica) on every suite run.
+        estelam_patcher = patch.object(
+            panel, "ESTELAM_PATH",
+            os.path.join(self.tmp.name, "estelam_store.json"))
+        estelam_patcher.start()
+        self.addCleanup(estelam_patcher.stop)
         crm.reset_cache()
 
     def tearDown(self):

@@ -28,7 +28,9 @@ class DashboardRewriteTests(unittest.TestCase):
         self.assertIn("function refreshLogs()", source)
         self.assertIn("fetch('/logs'", source)
         self.assertIn("setInterval(refreshLogs,10000)", source)
-        self.assertIn("/logs", panel.Handler.do_GET.__code__.co_consts)
+        # v1.7: the GET dispatcher moved into _do_get_body, behind do_GET's
+        # exception safety net.
+        self.assertIn("/logs", panel.Handler._do_get_body.__code__.co_consts)
         self.assertIn("refreshLogs", html)
 
     def test_profile_list_is_compact_numbered_and_newest_first(self):

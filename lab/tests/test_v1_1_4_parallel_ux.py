@@ -71,7 +71,7 @@ class FeeNoteTests(unittest.TestCase):
                   if tx.get("kind") == "base_fee"]
         self.assertTrue(fee_tx, "registry fee transaction missing")
         note = fee_tx[0]["note"]
-        self.assertIn("هزینهٔ ثبت رجیستری", note)
+        self.assertIn("هزینه ثبت رجیستری", note)
         self.assertIn("آیفون ۱۳ پرو", note)
 
 

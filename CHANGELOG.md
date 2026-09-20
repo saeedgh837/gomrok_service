@@ -3,6 +3,126 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-09-20
+
+### Added
+
+- **Reporting periods (دوره):** cases are grouped into operator-closed
+  batches. A period opens from the devices tab («شروع دورهٔ جدید»); every
+  case registered while it is open carries its id, and «بستن دوره» locks
+  the books so no new case can join it. Periods auto-number (دورهٔ اول،
+  دوم …) and the open count is shown in the bar. Closing is deliberately
+  not blocked by open cases — the unclosed count is surfaced instead.
+- **Period finance report:** the finance dialog gains a «دوره» segment that
+  aggregates exactly the cases of one period (receipts, new debits,
+  balances). While the period is still open the report prints a warning
+  banner «این دوره هنوز بسته نشده است؛ ارقام نهایی نیستند» in the HTML,
+  text and Telegram bodies alike; closing the period removes it.
+- **Owner archive (بایگانی مسافر‌ها):** passengers whose case reaches
+  «تکمیل‌شده» leave the active owners tab and appear in a new archive tab
+  with the device, serials, customer and code-delivery date. A stage
+  rollback returns the passenger to the active list automatically; closed
+  (مختومه) cases are not archived. The active tab shows a button with the
+  archived count.
+- **Per-case registry fee:** the new-case dialog now carries an editable
+  «هزینه ثبت رجیستری» that defaults to the configured settings amount and
+  may be changed for this case only. The settings value was already
+  persistent; the dialog no longer silently overrode it with a hard-coded
+  figure. Leaving the field empty means "use the configured amount"; an
+  explicit 0 books a free case.
+
+### Fixed
+
+- **Owner save no longer errors with a raw `TypeError: Failed to fetch`
+  (production report):** the POST handler had no safety net, so an exception
+  raised mid-route (after the store write had already landed) aborted the
+  socket and the browser reported a network error while the row was in fact
+  saved. Every POST now answers JSON — a failure surfaces a Persian error,
+  and the traceback is logged server-side. GET received the same safety net:
+  a report route that raised used to drop the connection (the browser showed
+  the raw fetch error) and now answers 500 with a Persian message.
+- **The unsavable passenger (production report):** a national code that
+  failed the mod-11 checksum produced a generic «کد ملی نامعتبر است» that
+  hid the cause. The error is now specific — «رقم کنترلی کد ملی اشتباه
+  است؛ رقم دهم را بررسی کنید» for a bad check digit and an exact-length
+  message for a wrong digit count.
+- **Inquiry order no longer clobbers a finished verdict (production
+  report):** queuing a hamta inquiry reset the gomrok status of the same
+  device to pending, so running گمرک then همتا wiped the «سالم» verdict.
+  The queue sync now resets only the slot of the service actually starting;
+  the other service's final result is preserved (verified both orders).
+- **A fee typed with the panel's own separator was rejected:** the amount
+  field is pre-filled by `fa()`, which groups digits with U+066C «٬», while
+  the server stripped only ASCII/arabic separators. Saving an amount of
+  1000 Toman or more from the settings tab therefore failed, and the new
+  per-case fee field had the same hole. U+066C is now accepted on both
+  paths; a negative or non-numeric amount is still rejected instead of
+  being silently booked. The fee parser also stopped borrowing the
+  received-amount wording («مبلغ دریافتی باید عدد نامنفی باشد») and names
+  its own field.
+- **A period report called itself «روزانه» and an unknown period id crashed
+  the route:** the report heading now names the cycle it belongs to
+  («گزارش مالی مشتریان: دورهٔ اول (باز)») with the date range on the
+  sub-line, and the footer states how rows are counted. An id that no
+  longer resolves answers 400 with «دورهٔ انتخاب‌شده پیدا نشد…» instead of
+  aborting the request.
+- **Archived passengers were listed by the wrong id:** `archived_owner_ids`
+  returned device ids, so the archive tab and the active-passenger filter
+  could disagree. Membership is now derived from a single helper, so the
+  two views cannot drift.
+- **A closed-period warning toast rendered as a plain success:** `toast()`
+  gained a `warn` variant, so «دوره بسته شد: N پرونده؛ M پرونده هنوز باز
+  است» now shows in the warning colour instead of looking like a clean
+  success.
+
+- **A closed period could still render as the open one:** the devices-bar
+  badge trusted `settings.current_period_id` and never checked the period
+  that id names, so a store carrying a stale pointer showed a closed cycle
+  as open. The bar now resolves the id against the period list and requires
+  it to be unclosed, and `open_period` re-adopts an unclosed orphan (a
+  restore or an interrupted write that lost the pointer) instead of opening
+  a second cycle on top of it.
+- **One bad report reference answered 400 for every kind of failure:** the
+  finance-report route caught a bare `ValueError`, so a server-side data
+  problem was reported to the operator as "your period list is stale".
+  `ReportRefError(ValueError)` now marks the client-facing case; anything
+  else answers 500 with a Persian message and the traceback in the log.
+- **The archive could list the same passenger twice:** a legacy store with
+  two delivered cases on one owner produced two rows while the badge counts
+  owners. The newest case wins, so the list and the count agree.
+- **The period anomaly counter could be inflated:** a malformed ledger row
+  with no usable case link was counted even when it belongs to no period of
+  this cycle. Counting is now scoped exactly like the report rows it warns
+  about (daily/weekly are unchanged).
+- **The two amount fields did not share their first-pass guard:** the
+  received-amount and the per-case fee now validate the raw text against
+  the same input class, so a pasted `-5۰0` is refused before `digitsFa`
+  can drop the sign.
+- **A fee field holding only separators booked a free case:** clearing the
+  digits of the pre-filled «۲۴٬۰۰۰٬۰۰۰» leaves «٬» behind; that is now read
+  as "no override" (the configured amount applies), never as a silent 0.
+- **The ledger note mixed an em dash into a name that has a Persian form:**
+  the charge writes «هزینه ثبت رجیستری، <device>» with the house comma.
+  Rows booked before this build keep the text they were stored with — the
+  ledger is append-only and is never rewritten.
+- **The test suite wrote the operator's live inquiry store:** several
+  modules seeded `panel.ESTELAM_PATH` directly, so every suite run
+  overwrote `%LOCALAPPDATA%\irica\estelam_store.json`. Each module now
+  patches the path to a temporary file and cleans it up.
+
+### Changed
+
+- The settings registry fee is the single default; the new-case field is an
+  explicit per-case override on the same atomic store write as the receipt.
+- Report counting rule for a period: a transaction linked to a case counts
+  by that case's period (so a late payment on an old case stays in its own
+  period), while a transaction booked directly on the customer ledger with
+  no case link counts by its own date. This keeps the cycle's manually
+  recorded cash inside its own report, and the rule is printed in the
+  report footer.
+- The charge is named «هزینه ثبت رجیستری» everywhere it is shown to the
+  operator, matching the ledger it writes to.
+
 ## [1.6.1] - 2026-09-15
 
 ### Added

@@ -412,8 +412,9 @@ class PeriodicUiTests(unittest.TestCase):
 
     def test_device_add_fee_hint(self):
         src = crm_page_src()
-        # operator-visible hint that the fee will be charged
-        self.assertIn("هزینهٔ ثبت", src)
+        # operator-visible hint that the fee will be charged. v1.7: one name
+        # for the charge — «هزینه ثبت رجیستری», matching the ledger.
+        self.assertIn("هزینه ثبت رجیستری", src)
 
 
 if __name__ == "__main__":

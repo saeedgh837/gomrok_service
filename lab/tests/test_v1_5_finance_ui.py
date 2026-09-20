@@ -116,11 +116,15 @@ class FinanceDialogTests(unittest.TestCase):
 
     def test_seg_active_state_follows_fin_mode(self):
         # the segmented control derives class/aria-pressed from FIN_MODE so
-        # a persisted weekly session reopens with the right highlight
+        # a persisted weekly session reopens with the right highlight.
+        # v1.7: the toolbar markup moved into finBarHtml() so finMode() can
+        # rebuild it in place when the mode changes.
         opening = fn_body(self.js, "dlgFinance")
-        self.assertIn("(FIN_MODE==='daily'?'on':'')", opening)
-        self.assertIn("(FIN_MODE==='weekly'?'on':'')", opening)
-        self.assertIn("(FIN_MODE==='daily'?'true':'false')", opening)
+        self.assertIn("finBarHtml()", opening)
+        bar = fn_body(self.js, "finBarHtml")
+        self.assertIn("(FIN_MODE==='daily'?'on':'')", bar)
+        self.assertIn("(FIN_MODE==='weekly'?'on':'')", bar)
+        self.assertIn("(FIN_MODE==='daily'?'true':'false')", bar)
 
     def test_telegram_toast_counts_and_anomalies_note(self):
         telegram = fn_body(self.js, "finTelegram")

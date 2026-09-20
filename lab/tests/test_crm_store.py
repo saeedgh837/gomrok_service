@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
@@ -19,6 +20,14 @@ class TempStoreCase(unittest.TestCase):
         os.remove(path)
         os.environ["IRICA_CRM_STORE"] = path
         self.path = path
+        # Hygiene (v1.7): `_seed_green_estelam` below writes the panel's
+        # estelam store; without this it was overwriting the operator's
+        # live file under %LOCALAPPDATA%\irica on every run.
+        import panel
+        self._estelam_patcher = patch.object(
+            panel, "ESTELAM_PATH", path + ".estelam.json")
+        self._estelam_patcher.start()
+        self.addCleanup(self._estelam_patcher.stop)
         import crm
         crm.reset_cache()
         self.crm = crm
@@ -30,7 +39,7 @@ class TempStoreCase(unittest.TestCase):
             os.environ["IRICA_CRM_STORE"] = self._old
         else:
             os.environ.pop("IRICA_CRM_STORE", None)
-        for suffix in ("", ".bak", ".tmp"):
+        for suffix in ("", ".bak", ".tmp", ".estelam.json"):
             try:
                 os.remove(self.path + suffix)
             except OSError:
