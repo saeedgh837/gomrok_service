@@ -3067,16 +3067,16 @@ var ICON={
   pin:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.1-7-11a7 7 0 0 1 14 0c0 4.9-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
   pencil:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>',
   copy:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A2.5 2.5 0 0 1 2 12.5v-8A2.5 2.5 0 0 1 4.5 2h8A2.5 2.5 0 0 1 15 4.5V5"/></svg>',
-  trash:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg>',
-  play:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5v14l12-7L7 5z"/></svg>',
+  trash:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16"/><path d="M9.5 6.5V4h5v2.5"/><path d="M6.5 6.5l.7 13.2A1.3 1.3 0 0 0 8.5 21h7a1.3 1.3 0 0 0 1.3-1.3l.7-13.2"/><path d="M10 10.5v6.5M14 10.5v6.5"/></svg>',
+  play:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 4.8 19.4 12 7.5 19.2z"/></svg>',
   stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
-  ban:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7l12.6 12.6"/></svg>',
+  ban:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7 18.3 18.3"/></svg>',
   eye:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.8 0 3.4.5 4.7 1.3M22 12s-3.6 7-10 7c-1.8 0-3.4-.5-4.7-1.3"/><path d="m3 3 18 18"/></svg>',
   receipt:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.3-1.6-2.3 1.6-2.4-1.6-2.3 1.6L5 21V3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
   card:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>',
   link:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7.1.4l2.1-2.1a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 10a5 5 0 0 0-7.1-.4l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/></svg>',
-  check:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
+  check:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.2 12.4 2.6 2.6 5.4-5.6"/></svg>',
   checkCircle:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/></svg>',
   xCircle:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
   alert:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
@@ -3086,7 +3086,7 @@ var ICON={
   clipboard:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
   save:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>',
   unlock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/></svg>',
-  lock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  lock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="10" width="15" height="10.5" rx="2.5"/><path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"/><path d="M12 14.5v3"/></svg>',
   bell:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   bellOff:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.5.6 4.3 1.4 5.6"/><path d="M17 17H3s3-2 3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="m3 3 18 18"/></svg>',
   code:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 6-5-6-5"/><path d="M12 19h8"/></svg>',
@@ -5399,6 +5399,120 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.ok:hover{border-color:var(--pill-ok-fg);filter:brightness(.97)}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
+  /* ===== v1.8 icon action buttons =====
+     The icon-only sibling of .btn.mini for row toolbars. Quiet at rest and
+     brand-tinted under the pointer, because a dense row has to say which
+     button is hot. Motion stays on transform only (1px travel, .16s hover,
+     .09s press) so the row never reflows; an action in flight swaps the
+     glyph for an absolutely-positioned spinner, which also can never move
+     the layout. Icon-only controls carry aria-label + data-tip at every call
+     site: the tooltip is supplementary, never the only disclosure. */
+  .ibtn{position:relative;display:inline-flex;align-items:center;justify-content:center;
+    width:34px;height:34px;min-width:34px;padding:0;flex:none;cursor:pointer;
+    border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--muted);
+    font-family:inherit;
+    transition:background .16s,border-color .16s,color .16s,transform .16s}
+  .ibtn .ic{width:14px;height:14px}
+  .ibtn:hover{border-color:var(--brand);background:var(--brand-soft);color:var(--brand);
+    transform:translateY(-1px)}
+  .ibtn:active{transform:translateY(0) scale(.96);transition-duration:.09s}
+  .ibtn:focus-visible{border-color:var(--brand);box-shadow:var(--ring)}
+  .ibtn.primary{background:var(--brand);border-color:transparent;color:var(--on-brand)}
+  .ibtn.primary:hover{background:var(--brand-hover);border-color:transparent;color:var(--on-brand)}
+  .ibtn.ok{color:var(--pill-ok-fg);border-color:var(--pill-ok-fg);background:var(--pill-ok-bg)}
+  .ibtn.warn{color:var(--pill-warn-fg);border-color:var(--pill-warn-fg);background:var(--pill-warn-bg)}
+  /* .ibtn.ok/.ibtn.warn set their own background, so the shared :hover tint
+     never reached them. currentColor/soft-token swaps are invisible here (the
+     border already IS the ink colour and the soft tints differ by 0.01 alpha),
+     so the hover lights a halo of the same tint instead — and never on a
+     disabled button, where the whole point is that it does not react. */
+  .ibtn.ok:hover:not(:disabled),.ibtn.warn:hover:not(:disabled){
+    filter:brightness(.94);transform:translateY(-1px);
+    box-shadow:0 0 0 3px var(--pill-ok-bg)}
+  .ibtn.warn:hover:not(:disabled){box-shadow:0 0 0 3px var(--pill-warn-bg)}
+  .ibtn.danger{color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft)}
+  .ibtn.danger:hover{border-color:var(--danger)}
+  .ibtn.ghost{background:var(--card);border-color:var(--line-strong);color:var(--txt)}
+  .ibtn.ghost:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+  .ibtn:disabled,.ibtn[disabled]{opacity:.5;cursor:not-allowed;transform:none}
+  .ibtn.busy{cursor:progress;pointer-events:none}
+  .ibtn.busy .ic{opacity:0}
+  .ibtn.busy::before{content:'';position:absolute;width:15px;height:15px;border-radius:50%;
+    border:2px solid currentColor;border-top-color:transparent;animation:ibspin .7s linear infinite}
+  @keyframes ibspin{to{transform:rotate(1turn)}}
+  /* touch targets grow to 44px while pointer devices keep the dense 34px that
+     matches the .btn.mini row rhythm */
+  @media (pointer:coarse){.ibtn{width:44px;height:44px;min-width:44px}}
+  @media (prefers-reduced-motion:reduce){
+    .ibtn{transition:none}
+    .ibtn:hover,.ibtn:active,
+    .ibtn.ok:hover:not(:disabled),.ibtn.warn:hover:not(:disabled){
+      transform:none;filter:none;box-shadow:none}
+    /* no spinner: the glyph stays, dimmed, so "in flight" is still visible */
+    .ibtn.busy::before{animation:none;border-top-color:var(--muted)}
+    .ibtn.busy .ic{opacity:.35}}
+  .ibacts{display:flex;gap:6px;align-items:center;justify-content:flex-end;white-space:nowrap}
+  /* tooltip chip (its behaviour lives in the TIP layer further down the
+     script): fixed and re-parented, because a tip inside a scrolling table
+     would be eaten by .tbl-wrap/.tblcard overflow, and a tip inside an open
+     dialog would be painted under it (the dialog sits in the browser top
+     layer). The geometry is read from getBoundingClientRect in physical
+     pixels, so nothing here needs RTL mirroring; --txt on --bg inverts with
+     the theme, which keeps the contrast ratio identical in both modes. */
+  #tip{position:fixed;z-index:120;max-width:min(280px,calc(100vw - 16px));
+    padding:6px 10px;border-radius:8px;background:var(--txt);color:var(--bg);
+    font-size:11.5px;font-weight:500;line-height:1.7;box-shadow:var(--shadow-2);
+    text-align:start;white-space:normal;unicode-bidi:plaintext;
+    pointer-events:none;animation:tipin .12s ease-out}
+  #tip[hidden]{display:none}
+  @keyframes tipin{from{opacity:0}}
+  @media (prefers-reduced-motion:reduce){#tip{animation:none}}
+  /* ===== v1.8 periods tab =====
+     A period card answers one question at a glance — how big was this batch
+     and how much money moved through it — and the whole card is the way into
+     the case-by-case detail. */
+  dialog:has(.perdlg){width:min(1040px,96vw)}
+  .pcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .pcard{position:relative;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:13px 15px;box-shadow:var(--shadow-1);
+    transition:border-color .15s,transform .15s,box-shadow .15s}
+  .pcard:hover{border-color:var(--brand);transform:translateY(-2px);box-shadow:var(--shadow-2)}
+  /* The stretched target sits ABOVE the card's text (so a click anywhere on
+     the card opens the period) and BELOW the card's own action row (so those
+     buttons stay clickable). The focus ring is drawn on the target itself —
+     an outline works on every engine, the :has() ring would not. */
+  .pcard-hit{position:absolute;inset:0;z-index:1;padding:0;border:0;background:transparent;
+    border-radius:inherit;cursor:pointer}
+  .pcard-hit:focus-visible{outline:2px solid var(--brand);outline-offset:-3px}
+  /* the row itself is transparent to the pointer — only its buttons are
+     clickable, so the empty part still falls through to the card target */
+  .pcard .pacts{position:relative;z-index:2;display:flex;gap:6px;align-items:center;
+    justify-content:flex-end;margin-top:10px;pointer-events:none}
+  .pcard .pacts>*{pointer-events:auto}
+  .pcard .ph{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .pcard .pn{font-size:14.5px;font-weight:700}
+  .pcard .pd{font-size:11.5px;color:var(--muted);margin-top:5px;font-variant-numeric:tabular-nums}
+  .pcard .pc{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .pcard .pm{display:flex;flex-wrap:wrap;gap:16px;margin-top:11px;padding-top:10px;
+    border-top:1px solid var(--line);font-size:12px;font-variant-numeric:tabular-nums}
+  .pcard .pm span{white-space:nowrap}
+  .pcard .pm b{font-weight:700}
+  .pcard .pm .d{color:var(--danger)}
+  .pcard .pm .c{color:var(--ok)}
+  .per-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--line);
+    border-radius:12px;background:var(--card);overflow:hidden;margin:2px 0 12px}
+  .per-kpi{padding:10px 13px;border-inline-start:1px solid var(--line);min-width:0}
+  .per-kpi:first-child{border-inline-start:none}
+  .per-kpi .l{display:block;font-size:11px;color:var(--muted);font-weight:600;margin-bottom:3px}
+  .per-kpi .v{display:block;font-size:15.5px;font-weight:750;font-variant-numeric:tabular-nums;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .per-kpi.ok .v{color:var(--ok)}
+  .per-kpi.bad .v{color:var(--danger)}
+  .pmoney{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:12.5px}
+  .pmoney.d{color:var(--danger)}
+  .pmoney.c{color:var(--ok)}
+  @media (max-width:900px){.per-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
   /* KPI — "دفتر ثبت" ledger strip: one surface, hairline dividers, not 4
      clone cards (frontend-design: structure carries the information). */
   .kpis{display:grid;grid-template-columns:repeat(4,1fr);background:var(--card);
@@ -5822,7 +5936,7 @@ var HAMTA_FA_CARD = {'pending':'در انتظار','running':'در حال است
 var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','success':'ok',
   'blocked':'bad','unknown':'warn','error':'bad','':'n'};
 var TABS = [
-  ['devices','دستگاه‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
+  ['devices','دستگاه‌ها'],['periods','دوره‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
   ['owner_archive','بایگانی مسافر‌ها'],
   ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
   ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
@@ -5876,6 +5990,7 @@ async function api(path,payload){
   return body;
 }
 function toast(msg, ok){
+  ibtnClearBusy();
   var el=document.createElement('div');
   el.className='toast'+(ok==='warn'?' warn':(ok===false?' bad':''));
   el.textContent=msg;
@@ -5934,6 +6049,7 @@ function closeDlg(){
      long after the close), so it is a safety net, not the driver. This
      also consumes DLG_BACK so dismissed child dialogs return to their
      case — unless the dialog being closed IS that case's own modal. */
+  ibtnClearBusy();
   var back=DLG_BACK;DLG_BACK='';
   var self=CASE_MODAL.live&&CASE_MODAL.id===back;
   document.getElementById('dlg').close();
@@ -6060,26 +6176,26 @@ var ICONS = {
   warn:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 17H2L12 3z"/><path d="M12 9v5"/><path d="M12 17.4v.2"/></svg>',
   id:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.5 16c.6-1.6 1.7-2.3 3-2.3s2.4.7 3 2.3M14.5 9.5H19M14.5 13H19"/></svg>',
   dev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
-  search:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
-  swap:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
-  stop:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
+  search:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>',
+  swap:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 16V4m0 0L3.5 7.5M7 4l3.5 3.5M17 8v12m0 0 3.5-3.5M17 20l-3.5-3.5"/></svg>',
+  stop:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
   info:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11.2 12h.8v4h.8"/><path d="M11.2 12h1.6v4h1"/></svg>',
   /* v1.3.5 button icons — one stroke language for every action button
      (replaces the old emoji links in the payment row). */
-  link:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7.1.4l2.1-2.1a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 10a5 5 0 0 0-7.1-.4l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/></svg>',
-  receipt:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.3-1.6-2.3 1.6-2.4-1.6-2.3 1.6L5 21V3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
-  card:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>',
-  eye:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
-  eyeOff:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.8 0 3.4.5 4.7 1.3M22 12s-3.6 7-10 7c-1.8 0-3.4-.5-4.7-1.3"/><path d="m3 3 18 18"/></svg>',
-  send:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>',
-  alert:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
-  userplus:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3.6-6.5 8-6.5"/><path d="M19 8v6M16 11h6"/></svg>',
+  link:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7.1.4l2.1-2.1a5 5 0 0 0-7.1-7.1l-1.2 1.2"/><path d="M14 10a5 5 0 0 0-7.1-.4l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/></svg>',
+  receipt:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.3-1.6-2.3 1.6-2.4-1.6-2.3 1.6L5 21V3z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
+  card:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20"/></svg>',
+  eye:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.8 0 3.4.5 4.7 1.3M22 12s-3.6 7-10 7c-1.8 0-3.4-.5-4.7-1.3"/><path d="m3 3 18 18"/></svg>',
+  send:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>',
+  alert:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>',
+  userplus:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3.6-6.5 8-6.5"/><path d="M19 8v6M16 11h6"/></svg>',
   wallet:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>',
   /* v1.5 finance dialog: the library chevron-down reused for the RTL
      period-nav pair and the collapsible section — chev-r/chev-l only add
      the CSS rotation (previous points right, next left; same direction
      language as arrow-back), the path stays byte-identical. */
-  chev:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+  chev:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
   chevR:'<svg class="ic chev-r" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
   chevL:'<svg class="ic chev-l" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
   /* empty-state tiles (irica-icons language, 24-grid / stroke 2): the inbox
@@ -6089,8 +6205,148 @@ var ICONS = {
   searchx:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M8.5 8.5l5 5M13.5 8.5l-5 5"/></svg>',
   /* v1.6 accounting round: printable document (page + text lines) for the
      invoice action — same 24-grid stroke-2 rounded language as the rest. */
-  doc:'<svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>',
+  doc:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>',
+  plus:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  edit:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 20H20"/><path d="M17 4.4a1.8 1.8 0 0 1 2.55 2.55L7.55 18.95 3.8 20.1l1.2-3.7z"/><path d="M14.6 6.8 17.2 9.4"/></svg>',
+  trash:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6.5h17"/><path d="M9 6.5V4h6v2.5"/><path d="M18.5 6.5 17.7 20a1.8 1.8 0 0 1-1.8 1.7H8.1A1.8 1.8 0 0 1 6.3 20L5.5 6.5"/><path d="M10 11v6M14 11v6"/></svg>',
+  unlink:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.6 5.4l1.8-1.8a4 4 0 0 1 5.6 5.6l-1.8 1.8"/><path d="M9.4 18.6l-1.8 1.8a4 4 0 0 1-5.6-5.6l1.8-1.8"/><path d="M7.4 7.4 5.2 5.2M16.6 16.6l2.2 2.2"/></svg>',
+  undo:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+  rotate:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+  refresh:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>',
+  ban:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M5.99 5.99l12.02 12.02"/></svg>',
+  play:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 4.8v14.4L19.5 12z"/></svg>',
+  lock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7"/></svg>',
+  list:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></svg>',
+  users:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9.5" cy="7.5" r="3.5"/><path d="M15.5 20.5c0-3.4-2.6-5.5-6-5.5s-6 2.1-6 5.5"/><path d="M16.5 4.5a3.5 3.5 0 0 1 0 6.4"/><path d="M18.5 20.5c0-2.4-.9-4.1-2.4-5.2"/></svg>',
+  check:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m8.2 12.4 2.6 2.6 5-5.4"/></svg>',
+  clock:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6.8V12l3.8 2.4"/></svg>',
+  globe:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>',
+  fileText:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="3.5" width="15" height="17" rx="2"/><path d="M8.5 8.5h7M8.5 12.5h7M8.5 16.5h4"/></svg>',
+  download:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v11M7.5 10 12 14.5 16.5 10"/><path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/></svg>',
+  x:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18"/></svg>',
+  money:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 12h.01M17.5 12h.01"/></svg>',
+  rewind:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3.5 2"/></svg>',
+  printer:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5V3.5h11v6"/><path d="M6.5 18H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-1.5"/><path d="M6.5 14.5h11v6h-11z"/></svg>',
+  ticket:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9.5V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2.5a2.5 2.5 0 0 0 0 5V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2.5a2.5 2.5 0 0 0 0-5z"/><path d="M14.5 5v14"/></svg>',
 };
+/* ===== v1.8 shared tooltip layer =====
+   One layer, delegated listeners, fixed positioning: a short hover dwell (so
+   sweeping a row of buttons does not flash labels), a small hide tolerance,
+   and an immediate show on keyboard focus. The chip is flipped below its
+   trigger when there is no room above, then clamped to the viewport. Any
+   scroll, resize, press, blur or Escape dismisses it. `data-tip` is the
+   trigger; the accessible name always lives in `aria-label` on the control,
+   so nothing here is hover-only. */
+var TIP=(function(){
+  var el=null,t=null,showTimer=0,hideTimer=0;
+  function layer(){
+    if(!el){
+      el=document.createElement('div');
+      el.id='tip';
+      el.setAttribute('role','tooltip');
+      el.hidden=true;
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function place(){
+    if(!t||!t.isConnected)return hide();
+    var r=t.getBoundingClientRect(),b=el.getBoundingClientRect();
+    var vw=document.documentElement.clientWidth;
+    var top=r.top-b.height-10;
+    if(top<8)top=r.bottom+10;
+    var left=r.left+r.width/2-b.width/2;
+    var max=Math.max(8,vw-b.width-8);
+    el.style.top=Math.max(8,Math.round(top))+'px';
+    el.style.left=Math.min(Math.max(8,Math.round(left)),max)+'px';
+  }
+  function show(trig){
+    clearTimeout(showTimer);clearTimeout(hideTimer);
+    /* jumping straight from one trigger to the next must not leave the first
+       one pointing at the chip with aria-describedby */
+    if(t&&t!==trig)t.removeAttribute('aria-describedby');
+    t=trig;
+    layer();
+    el.textContent=trig.getAttribute('data-tip');
+    /* an open dialog paints above every z-index on the page, so the chip has
+       to live inside it while it is up */
+    (trig.closest('dialog[open]')||document.body).appendChild(el);
+    el.hidden=false;
+    place();
+    trig.setAttribute('aria-describedby','tip');
+  }
+  function hide(){
+    clearTimeout(showTimer);clearTimeout(hideTimer);
+    if(t)t.removeAttribute('aria-describedby');
+    t=null;
+    if(el){el.hidden=true;el.textContent='';}
+  }
+  /* Named tip* handlers: the dismissal paths are part of the layer's
+     surface, so they read as such (and stay greppable) instead of hiding
+     inside anonymous callbacks. */
+  function tipFocusIn(e){
+    var n=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;
+    if(n&&n.matches&&n.matches(':focus-visible'))show(n);
+  }
+  function tipDismiss(){hide();}
+  /* Leaving a trigger (or the window) must take the chip down: pointerover
+     alone only notices the NEXT element under the pointer. */
+  function tipPointerOut(e){
+    var to=e.relatedTarget;
+    if(to&&to.closest&&to.closest('[data-tip]'))return;
+    clearTimeout(showTimer);
+    hideTimer=setTimeout(hide,90);
+  }
+  document.addEventListener('pointerover',function(e){
+    var n=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;
+    if(n===t)return;
+    if(!n){clearTimeout(showTimer);hideTimer=setTimeout(hide,90);return;}
+    clearTimeout(hideTimer);
+    clearTimeout(showTimer);
+    var d=n.getAttribute('data-tip-delay')==='0'?0:220;
+    showTimer=setTimeout(function(){show(n);},d);
+  });
+  document.addEventListener('pointerout',tipPointerOut,true);
+  document.addEventListener('pointerdown',tipDismiss,true);
+  document.addEventListener('click',tipDismiss,true);
+  document.addEventListener('focusin',tipFocusIn);
+  document.addEventListener('focusout',tipDismiss,true);
+  document.addEventListener('scroll',tipDismiss,true);
+  window.addEventListener('resize',tipDismiss);
+  /* Escape only takes the chip down; it never swallows the key, so a dialog's
+     own Escape-to-close still works on the same press. */
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape')hide();
+  });
+  return {show:show,hide:hide};
+})();
+function tipShow(el){TIP.show(el);}
+function tipHide(){TIP.hide();}
+/* An icon-only button has no label to grey out, so an action in flight shows a
+   spinner instead. Every settled action on this page ends in a toast, which is
+   therefore the signal that clears the busy buttons; the timeout is the net for
+   the few paths that never toast. Buttons that only open something carry
+   data-static="1" and never flip. */
+var _busyEls=[],_busyTimer=0;
+function ibtnClearBusy(){
+  clearTimeout(_busyTimer);
+  _busyEls.forEach(function(el){el.classList.remove('busy');el.removeAttribute('aria-busy');});
+  _busyEls=[];
+}
+document.addEventListener('click',function(e){
+  var el=e.target&&e.target.closest?e.target.closest('.ibtn'):null;
+  if(!el||el.disabled||el.getAttribute('data-static')==='1')return;
+  if(el.classList.contains('busy'))return;
+  el.classList.add('busy');
+  el.setAttribute('aria-busy','true');
+  _busyEls.push(el);
+  clearTimeout(_busyTimer);
+  /* A press indicator, not a progress bar: the toast that ends the action
+     clears it, the 5s list re-render drops it anyway, and this net only
+     covers a handler that never toasts. Long robot runs show their state in
+     the «ربات استعلام در حال اجراست» banner, not here. */
+  _busyTimer=setTimeout(ibtnClearBusy,6000);
+});
 /* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
    / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
    instead of the old broad intake/handoff stage lists — see the toolsHtml
@@ -6226,8 +6482,10 @@ function doneTabHtml(){
   }
   return note+ds.map(d=>devRow(d,
     '<span class="kbd">تاریخ تکمیل: '+esc(faDate(d.done_at))+'</span>'
-    +'<button class="btn mini" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش</button>'
-    +'<button class="btn mini danger" onclick="doneRollback(\''+d.id+'\')">بازگشت به مرحلهٔ قبل</button>')).join('');
+    +'<div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش پرونده" data-tip="ویرایش پرونده" onclick="dlgDeviceEdit(\''+d.id+'\')">'+ICONS.edit+'</button>'
+    +'<button type="button" class="ibtn danger" aria-label="بازگشت به مرحلهٔ قبل" data-tip="بازگشت به مرحلهٔ قبل" onclick="doneRollback(\''+d.id+'\')">'+ICONS.undo+'</button>'
+    +'</div>')).join('');
 }
 /* Done-tab rollback (v1.5 B3): undoing a completion is bookkeeping-sensitive,
    so it lives here with its own strong confirmation instead of riding the
@@ -6255,8 +6513,10 @@ function problemTabHtml(){
     return note+emptyHtml('پروندهٔ دارای اشکالی نیست','اگر استعلامی اشکال پیدا کند پروندهٔ آن این‌جا می‌آید.');
   }
   return note+ds.map(d=>devRow(d,
-    '<button class="btn mini primary" onclick="devRequeue(\''+d.id+'\')">بازگشت به صف</button>'
-    +'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن پرونده</button>')).join('');
+    '<div class="ibacts">'
+    +'<button type="button" class="ibtn primary" aria-label="بازگشت به صف" data-tip="بازگشت به صف" onclick="devRequeue(\''+d.id+'\')">'+ICONS.undo+'</button>'
+    +'<button type="button" class="ibtn danger" aria-label="مختومه کردن پرونده" data-tip="مختومه کردن پرونده" onclick="devTick(\''+d.id+'\',\'__close_case\')">'+ICONS.ban+'</button>'
+    +'</div>')).join('');
 }
 function closedTabHtml(){
   var ds=(STATE.devices||[]).filter(d=>d.stage==='closed')
@@ -6516,6 +6776,7 @@ document.addEventListener('scroll',function(e){
 function bodyHtml(){
   var body;
   if(TAB==='devices')body=devicesHtml();
+  else if(TAB==='periods')body=periodsHtml();
   else if(TAB==='done_tab')body=doneTabHtml();
   else if(TAB==='problem_tab')body=problemTabHtml();
   else if(TAB==='closed_tab')body=closedTabHtml();
@@ -6593,6 +6854,292 @@ function periodClose(id){
       .catch(e=>toast(e,false));
   });
 }
+/* ================= periods tab (v1.8) ================= */
+/* One card per reporting period, plus a detail dialog that answers — for every
+   case of that period — which customer owns it, which passenger is attached,
+   whether the case is finished, and its debit/credit/remaining. Everything is
+   derived from the STATE the page already holds: no extra route, so the tab
+   can never disagree with the case list it links to, and it opens instantly. */
+var PER={pid:'',seg:'cases'};
+function periodById(pid){
+  return ((STATE&&STATE.periods)||[]).find(p=>String(p.id)===String(pid))||null;
+}
+function periodCases(pid){
+  return ((STATE&&STATE.devices)||[]).filter(d=>String(d.period_id||'')===String(pid));
+}
+/* Mirrors crm._tx_countable: a voided row (and the reversal that voids it) and
+   a row whose date cannot be parsed never count, and the sign picks the
+   column. Kept on this side on purpose — every ledger row is already in STATE,
+   so one round-trip per case would make the dialog crawl on a long period and
+   could disagree with the balances the same page shows. */
+function caseMoney(deviceId){
+  var debit=0,credit=0;
+  ((STATE&&STATE.customers)||[]).forEach(function(c){
+    (c.transactions||[]).forEach(function(t){
+      /* one row counts for this case when it is linked to this device, it is
+         not voided (and is not the reversal that voids one), and its stamp is
+         a real date — the same three tests crm._tx_countable applies. */
+      if(String(t.device_id||'')===deviceId&&!t.voided_at&&t.kind!=='void'
+         &&/^\d{4}-\d{2}-\d{2}/.test(String(t.at||''))){
+        var amount=Number(t.amount||0);
+        if(!isFinite(amount))return;      /* a hand-edited store must not NaN */
+        if(amount<0)debit+=-amount;else credit+=amount;
+      }
+    });
+  });
+  return {debit:debit,credit:credit,net:credit-debit};
+}
+function periodMoney(pid){
+  var m={debit:0,credit:0,net:0};
+  periodCases(pid).forEach(function(d){
+    var cm=caseMoney(d.id);
+    m.debit+=cm.debit;m.credit+=cm.credit;m.net+=cm.net;
+  });
+  return m;
+}
+function periodOwners(pid){
+  return periodCases(pid).map(function(d){
+    var o=((STATE&&STATE.owners)||[]).find(x=>String(x.id)===String(d.owner_id||''));
+    return o?{owner:o,device:d}:null;
+  }).filter(Boolean);
+}
+function periodCustomers(pid){
+  var seen={},out=[];
+  periodCases(pid).forEach(function(d){
+    var cid=String(d.customer_id||'');
+    if(!cid||seen[cid])return;
+    seen[cid]=true;
+    var c=((STATE&&STATE.customers)||[]).find(x=>String(x.id)===cid);
+    if(c)out.push(c);
+  });
+  return out;
+}
+function periodCustomerMoney(pid,cid){
+  var m={debit:0,credit:0,net:0,cases:0};
+  periodCases(pid).forEach(function(d){
+    if(String(d.customer_id||'')!==String(cid))return;
+    var cm=caseMoney(d.id);
+    m.debit+=cm.debit;m.credit+=cm.credit;m.net+=cm.net;m.cases++;
+  });
+  return m;
+}
+function balancePill(net){
+  if(net>0)return '<span class="pill ok">بستانکار</span>';
+  if(net<0)return '<span class="pill bad">بدهکار</span>';
+  return '<span class="pill n">تسویه</span>';
+}
+function stagePill(st){
+  return '<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>';
+}
+function periodPill(p){
+  return p.closed_at?'<span class="pill n">بسته</span>':'<span class="pill ok">باز</span>';
+}
+function periodName(p){return p.label||("دورهٔ "+fa(p.number||0));}
+function periodRange(p){
+  return faDateTime(p.opened_at)+(p.closed_at?' — '+faDateTime(p.closed_at):' — تا کنون');
+}
+function periodOpenCard(p){return !p.closed_at;}
+function periodSorted(){
+  var cur=(STATE.settings||{}).current_period_id;
+  return ((STATE&&STATE.periods)||[]).slice().sort(function(a,b){
+    var ao=(String(a.id)===String(cur)&&periodOpenCard(a))?0:1,
+        bo=(String(b.id)===String(cur)&&periodOpenCard(b))?0:1;
+    return ao-bo||String(b.opened_at||'').localeCompare(String(a.opened_at||''));
+  });
+}
+function periodCardsHtml(){
+  var ps=periodSorted();
+  if(!ps.length)
+    return emptyHtml('دوره‌ای ثبت نشده است',
+      'با «شروع دورهٔ جدید» پرونده‌های بعدی در یک دورهٔ قابل‌گزارش جمع می‌شوند.');
+  return '<div class="pcards">'+ps.map(function(p){
+    var ds=periodCases(p.id);
+    var done=ds.filter(d=>d.stage==='done').length;
+    var closed=ds.filter(d=>d.stage==='closed').length;
+    var run=ds.length-done-closed;
+    var m=periodMoney(p.id);
+    /* The whole card is the way in, and the click lives on a real button
+       stretched over it rather than on the card div: the button carries the
+       accessible name and the focus state for free. It is layered above the
+       card's text and below the action row (see .pcard-hit / .pacts). */
+    return '<div class="pcard">'
+      +'<button type="button" class="pcard-hit" aria-label="جزئیات '+esc(periodName(p))+'"'
+      +' onclick="dlgPeriod(\''+p.id+'\')"></button>'
+      +'<div class="ph"><span class="pn">'+esc(periodName(p))+'</span>'+periodPill(p)+'</div>'
+      +'<div class="pd">'+esc(periodRange(p))+'</div>'
+      +'<div class="pc"><span class="chip">'+fa(ds.length)+' پرونده</span>'
+      +'<span class="chip">'+fa(done)+' تکمیل‌شده</span>'
+      +(run>0?'<span class="chip">'+fa(run)+' در جریان</span>':'')
+      +(closed>0?'<span class="chip">'+fa(closed)+' مختومه</span>':'')
+      +'<span class="chip">'+fa(ds.filter(d=>d.owner_id).length)+' مسافر متصل</span>'
+      +'<span class="chip">'+fa(periodCustomers(p.id).length)+' مشتری</span></div>'
+      +'<div class="pm"><span>بدهکاری پرونده‌ها <b class="d">'+money(m.debit)+'</b></span>'
+      +'<span>بستانکاری پرونده‌ها <b class="c">'+money(m.credit)+'</b></span>'
+      +'<span>مانده '+balancePill(m.net)+'</span></div>'
+      +'<div class="pacts">'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="گزارش مالی این دوره"'
+      +' data-tip="گزارش مالی این دوره" onclick="window.open(\'/crm-finance-report?mode=period&ref='
+      +p.id+'&fmt=html\',\'_blank\')">'+ICONS.wallet+'</button>'
+      +(p.closed_at?'':'<button type="button" class="ibtn warn" aria-label="بستن دوره"'
+        +' data-tip="بستن دوره" onclick="periodClose(\''+p.id+'\')">'+ICONS.lock+'</button>')
+      +'</div>'
+      +'</div>';
+  }).join('')+'</div>';
+}
+function periodsHtml(){
+  var ps=(STATE&&STATE.periods)||[];
+  /* No search toolbar on this tab (TAB_SEARCH has no entry), so there is no
+     count pill to feed either. */
+  var open=ps.find(p=>!p.closed_at);
+  return '<div class="card"><div class="row" style="margin-bottom:10px">'
+    +(open?'':'<button class="btn primary" onclick="periodOpen()">شروع دورهٔ جدید</button>')
+    +'<span class="muted">هر پرونده‌ای که در دورهٔ باز ثبت شود عضو آن می‌شود؛ تا دوره بسته نشود ارقام نهایی نیستند.</span>'
+    +'</div>'+periodCardsHtml()+'</div>';
+}
+function perKpisHtml(p){
+  var ds=periodCases(p.id);
+  var done=ds.filter(d=>d.stage==='done').length;
+  var m=periodMoney(p.id);
+  return '<div class="per-kpis">'
+    +'<div class="per-kpi"><span class="l">پرونده</span><span class="v">'+fa(ds.length)+'</span></div>'
+    +'<div class="per-kpi ok"><span class="l">تکمیل‌شده</span><span class="v">'+fa(done)+'</span></div>'
+    +'<div class="per-kpi"><span class="l">مسافر متصل</span><span class="v">'+fa(ds.filter(d=>d.owner_id).length)+'</span></div>'
+    +'<div class="per-kpi'+(m.debit?' bad':'')+'"><span class="l">بدهکاری پرونده‌ها</span><span class="v">'+money(m.debit)+'</span></div>'
+    +'<div class="per-kpi'+(m.credit?' ok':'')+'"><span class="l">بستانکاری پرونده‌ها</span><span class="v">'+money(m.credit)+'</span></div>'
+    +'</div>';
+}
+function perDetailBtn(did,label){
+  label=esc(label);
+  return '<button type="button" class="ibtn ghost" data-static="1" aria-label="'+label+'" data-tip="'+label+'"'
+    +' onclick="caseDetail(\''+did+'\')">'+ICONS.eye+'</button>';
+}
+function perCasesHtml(p){
+  var ds=periodCases(p.id).slice().sort(function(a,b){
+    return String(b.updated||'').localeCompare(String(a.updated||''));});
+  if(!ds.length)
+    return emptyHtml('پرونده‌ای در این دوره نیست','هنوز هیچ پرونده‌ای عضو این دوره نشده است.');
+  var rows=ds.map(function(d){
+    var cm=caseMoney(d.id);
+    var o=((STATE&&STATE.owners)||[]).find(x=>String(x.id)===String(d.owner_id||''));
+    return '<tr><td><b>'+esc(d.name)+'</b>'
+      +'<div class="kbd" dir="ltr">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div></td>'
+      +'<td>'+esc(custName(d.customer_id)||'—')+'</td>'
+      +'<td>'+(o?'<b>'+esc(o.first_name+' '+o.last_name)+'</b> <span class="pill ok">متصل</span>'
+              :'<span class="pill n">بدون مسافر</span>')+'</td>'
+      +'<td>'+stagePill(d.stage)+'</td>'
+      +'<td class="pmoney d">'+(cm.debit?money(cm.debit):'—')+'</td>'
+      +'<td class="pmoney c">'+(cm.credit?money(cm.credit):'—')+'</td>'
+      +'<td>'+balancePill(cm.net)+'</td>'
+      +'<td>'+perDetailBtn(d.id,'جزئیات پرونده')+'</td></tr>';
+  }).join('');
+  return '<div class="card tblcard"><div class="tbl-wrap"><table><thead><tr>'
+    +'<th>پرونده</th><th>مشتری</th><th>مسافر</th><th>وضعیت</th>'
+    +'<th>بدهکاری</th><th>بستانکاری</th><th>مانده</th><th></th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function perOwnersHtml(p){
+  var ps=periodOwners(p.id);
+  var bound={};
+  ((STATE&&STATE.devices)||[]).forEach(function(d){
+    if(d.owner_id)bound[String(d.owner_id)]=true;
+  });
+  var free=((STATE&&STATE.owners)||[]).filter(o=>!bound[String(o.id)]);
+  /* Reviewing a period is also when the operator wants to see who is still
+     unassigned, so the free passengers ride along — clearly marked, because
+     they belong to no case at all. */
+  var freeHtml=free.length
+    ?'<div class="row" style="margin-top:10px;flex-wrap:wrap;gap:6px">'
+      +'<span class="muted">مسافران بدون پرونده:</span>'
+      +free.map(o=>'<span class="chip">'+esc(o.first_name+' '+o.last_name)
+        +' <span class="pill n">بدون پرونده</span></span>').join('')+'</div>'
+    :'';
+  if(!ps.length)
+    return emptyHtml('مسافری به پرونده‌های این دوره وصل نشده است',
+      'با اتصال مسافر به هر پرونده، این‌جا با وضعیت همان پرونده نمایش داده می‌شود.')+freeHtml;
+  var rows=ps.map(function(r){
+    var d=r.device,o=r.owner,cm=caseMoney(d.id);
+    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b> <span class="pill ok">متصل</span></td>'
+      +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.mobile)+'</td>'
+      +'<td>'+esc(d.name)+'<div class="kbd" dir="ltr">'+esc(d.serial1)+'</div></td>'
+      +'<td>'+stagePill(d.stage)+'</td>'
+      +'<td>'+balancePill(cm.net)+'</td>'
+      +'<td>'+perDetailBtn(d.id,'جزئیات پرونده')+'</td></tr>';
+  }).join('');
+  return '<div class="card tblcard"><div class="tbl-wrap"><table><thead><tr>'
+    +'<th>مسافر</th><th>کد ملی</th><th>موبایل</th><th>پرونده</th><th>وضعیت پرونده</th>'
+    +'<th>ماندهٔ پرونده</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>'
+    +freeHtml;
+}
+function perCustomersHtml(p){
+  var cs=periodCustomers(p.id);
+  if(!cs.length)
+    return emptyHtml('مشتری‌ای به پرونده‌های این دوره وصل نیست',
+      'پرونده‌های بدون مشتری هم در بخش «پرونده‌ها» فهرست شده‌اند.');
+  var rows=cs.map(function(c){
+    var m=periodCustomerMoney(p.id,c.id);
+    return '<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(c.mobile)+'</td>'
+      +'<td class="kbd">'+fa(m.cases)+'</td>'
+      +'<td class="pmoney d">'+(m.debit?money(m.debit):'—')+'</td>'
+      +'<td class="pmoney c">'+(m.credit?money(m.credit):'—')+'</td>'
+      +'<td>'+balancePill(m.net)+'</td>'
+      +'<td><button type="button" class="ibtn" data-static="1" aria-label="صورت‌حساب مشتری"'
+      +' data-tip="صورت‌حساب مشتری" onclick="window.open(\'/crm-statement?customer_id='+c.id
+      +'&fmt=html\',\'_blank\')">'+ICONS.list+'</button></td></tr>';
+  }).join('');
+  return '<div class="card tblcard"><div class="tbl-wrap"><table><thead><tr>'
+    +'<th>مشتری</th><th>موبایل</th><th>پرونده</th><th>بدهکاری</th><th>بستانکاری</th>'
+    +'<th>مانده</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function perBodyHtml(p){
+  if(PER.seg==='owners')return perOwnersHtml(p);
+  if(PER.seg==='customers')return perCustomersHtml(p);
+  return perCasesHtml(p);
+}
+function perSeg(seg){PER.seg=seg;perPaint();}
+function perPaint(){
+  var p=periodById(PER.pid);
+  if(!p)return;
+  var segs=document.getElementById('perSeg');
+  if(segs)
+    [].forEach.call(segs.querySelectorAll('button'),function(b){
+      var on=b.getAttribute('data-pseg')===PER.seg;
+      b.classList.toggle('on',on);
+      b.setAttribute('aria-pressed',on?'true':'false');
+    });
+  var body=document.getElementById('perBody');
+  if(body)body.innerHTML=perKpisHtml(p)+perBodyHtml(p);
+  var head=document.getElementById('perHead');
+  if(head)head.innerHTML='<h3>'+esc(periodName(p))+' '+periodPill(p)+'</h3>'
+    +'<div class="kbd">'+esc(periodRange(p))+'</div>';
+}
+function dlgPeriod(pid){
+  var p=periodById(pid);
+  if(!p){toast('دورهٔ انتخاب‌شده پیدا نشد',false);return;}
+  PER={pid:String(pid),seg:'cases'};
+  openDlg('<div class="perdlg">'
+    +'<div id="perHead"></div>'
+    +'<div class="row" style="margin:8px 0 12px">'
+    +'<div class="seg" id="perSeg">'
+    +'<button type="button" data-pseg="cases" onclick="perSeg(\'cases\')">پرونده‌ها</button>'
+    +'<button type="button" data-pseg="owners" onclick="perSeg(\'owners\')">مسافر‌ها</button>'
+    +'<button type="button" data-pseg="customers" onclick="perSeg(\'customers\')">مشتری‌ها</button>'
+    +'</div></div>'
+    +'<div id="perBody"></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button type="button" class="btn" onclick="window.open(\'/crm-finance-report?mode=period&ref='
+    +pid+'&fmt=html\',\'_blank\')">'+ICONS.wallet+' گزارش مالی این دوره</button>'
+    +(p.closed_at?'':'<button type="button" class="btn warn" onclick="periodClose(\''+pid+'\')">'
+      +ICONS.lock+' بستن دوره</button>')
+    +'<button type="button" class="btn" onclick="closeDlg()">بستن</button>'
+    +'</div>'
+    +'<p class="muted" style="margin:10px 0 0">ارقام این پنجره تراکنش‌های '
+    +'وصل‌شده به پرونده‌های همین دوره را می‌شمارد؛ گزارش مالی این دوره ممکن است '
+    +'ردیف‌های دستی (بدون پرونده) را هم داشته باشد، و برای پرونده‌ای که مشتری‌اش '
+    +'بعداً عوض شده، ماندهٔ این‌جا با فاکتور همان پرونده یکی نیست.</p>'
+    +'</div>');
+  perPaint();
+}
+
 function devicesHtml(){
   var ds=(STATE.devices||[]).filter(isActiveCase).sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
@@ -6603,7 +7150,7 @@ function devicesHtml(){
   var runningBanner=(STATE.estelam_running)
     ?'<div class="row" style="margin:0 0 12px;align-items:center">'
       +'<span class="pill warn">ربات استعلام در حال اجراست'+(runCount>1?' — '+fa(runCount)+' اجرای همزمان':'')+'</span>'
-      +'<button class="btn mini danger" onclick="crmStopRun()">'+ICONS.stop+' توقف ربات استعلام</button></div>'
+      +'<button type="button" class="ibtn danger" aria-label="توقف ربات استعلام" data-tip="توقف ربات استعلام" onclick="crmStopRun()">'+ICONS.stop+'</button></div>'
     :'';
   // B4: an empty active grid must not claim the workspace has no cases at
   // all when only done/problem/closed ones exist — point at their tabs.
@@ -6644,7 +7191,7 @@ function devicesHtml(){
         +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
       +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
       +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
-      +'<td><button class="btn mini" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">جزئیات</button></td></tr>';
+      +'<td><div class="ibacts"><button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
   }).join('');
   return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
@@ -6880,11 +7427,13 @@ function customersHtml(){
     +'<td class="kbd">'+esc(c.address||'—')+'</td>'
     +'<td>'+(bal(c.id)<0?'<span class="pill bad">بدهکار '+money(bal(c.id))+'</span>'
              :(bal(c.id)>0?'<span class="pill ok">'+money(bal(c.id))+'</span>':'<span class="pill n">تسویه</span>'))+'</td>'
-    +'<td><button class="btn mini" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">ویرایش</button> '
-    +'<button class="btn mini" onclick="dlgStatement(\''+c.id+'\')">صورت‌حساب</button> '
-    +'<button class="btn mini ok" onclick="dlgReceipt(\''+c.id+'\')">ثبت دریافتی</button> '
-    +'<button class="btn mini warn" onclick="dlgDebt(\''+c.id+'\')">ثبت بدهی</button> '
-    +'<button class="btn mini danger" onclick="custDelete(\''+c.id+'\')">حذف</button></td></tr>').join('');
+    +'<td><div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش مشتری" data-tip="ویرایش مشتری" onclick="dlgCustomer(\'edit\',\''+c.id+'\')">'+ICONS.edit+'</button>'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="صورت‌حساب مشتری" data-tip="صورت‌حساب مشتری" onclick="dlgStatement(\''+c.id+'\')">'+ICONS.list+'</button>'
+    +'<button type="button" class="ibtn ok" data-static="1" aria-label="ثبت دریافتی" data-tip="ثبت دریافتی" onclick="dlgReceipt(\''+c.id+'\')">'+ICONS.receipt+'</button>'
+    +'<button type="button" class="ibtn warn" data-static="1" aria-label="ثبت بدهی" data-tip="ثبت بدهی" onclick="dlgDebt(\''+c.id+'\')">'+ICONS.money+'</button>'
+    +'<button type="button" class="ibtn danger" aria-label="حذف مشتری" data-tip="حذف مشتری" onclick="custDelete(\''+c.id+'\')">'+ICONS.trash+'</button>'
+    +'</div></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn" onclick="dlgFinance()">'+ICONS.wallet+' گزارش مالی</button>'
     +'<button class="btn primary" onclick="dlgCustomer(\'add\')">+ مشتری جدید</button></div>'
@@ -6911,10 +7460,11 @@ function ownersHtml(){
     return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
     +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.birth)+'</td>'
     +'<td class="kbd">'+esc(o.mobile)+'</td><td class="kbd">'+esc(o.card_no)+'</td>'
-    +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span>':'<span class="pill warn">آزاد</span>')+'</td>'
-    +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
-    +(dev&&dev.stage!=='done'?'<button class="btn mini warn" onclick="dlgDetach(\''+o.id+'\')">قطع اتصال</button> ':'')
-    +(dev?'':'<button class="btn mini danger" onclick="ownerDelete(\''+o.id+'\')">حذف</button>')+'</td></tr>';
+    +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span> <span class="pill ok">متصل</span>':'<span class="pill warn">آزاد</span>')+'</td>'
+    +'<td><div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش مسافر" data-tip="ویرایش مسافر" onclick="dlgOwner(\'edit\',\''+o.id+'\')">'+ICONS.edit+'</button>'
+    +(dev&&dev.stage!=='done'?'<button type="button" class="ibtn warn" data-static="1" aria-label="قطع اتصال" data-tip="قطع اتصال" onclick="dlgDetach(\''+o.id+'\')">'+ICONS.unlink+'</button>':'')
+    +(dev?'':'<button type="button" class="ibtn danger" aria-label="حذف مسافر" data-tip="حذف مسافر" onclick="ownerDelete(\''+o.id+'\')">'+ICONS.trash+'</button>')+'</div></td></tr>';
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
@@ -6947,8 +7497,10 @@ function ownerArchiveHtml(){
     +(serials?'<div class="kbd" dir="ltr">'+esc(serials)+'</div>':'')+'</td>'
     +'<td>'+esc(r.customer_name||'—')+'</td>'
     +'<td class="kbd">'+esc(faDateTime(r.code_delivered_at||r.done_at||''))+'</td>'
-    +'<td><button class="btn mini" onclick="dlgOwner(\'edit\',\''+o.id+'\')">ویرایش</button> '
-    +'<button class="btn mini" onclick="caseDetail(\''+d.id+'\')">پرونده</button></td></tr>';
+    +'<td><div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش مسافر" data-tip="ویرایش مسافر" onclick="dlgOwner(\'edit\',\''+o.id+'\')">'+ICONS.edit+'</button>'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button>'
+    +'</div></td></tr>';
   }).join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<span class="pill ok">'+fa(rows.length)+' مسافر تکمیل‌شده</span>'
@@ -7166,12 +7718,13 @@ function periodicHtml(){
       '<td><span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">'+(HAMTA_FA_CARD[est.hamta_status]||'—')+'</span></td>'+
       '<td class="kbd">'+esc(faDateTime(d.last_inquiry_at))+'</td>'+
       '<td class="kbd">'+due+'</td>'+
-      '<td><button class="btn mini ghost" onclick="periodicHistory(\''+d.id+'\')">تاریخچه</button> '+
-      '<button class="btn mini warn"'+gomrokGateAttrs()+' onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>اجرای فوری</button> '+
-      '<button class="btn mini ghost" onclick="periodicResetOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>ریست تاریخچه</button> '+
-      '<button class="btn mini ok"'+gomrokGateAttrs()+' onclick="periodicReInquire(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>استعلام مجدد</button> '+
-      (opt?'<button class="btn mini primary" onclick="periodicReAdd(\''+d.id+'\')">افزودن</button>'
-          :'<button class="btn mini danger" onclick="periodicRemove(\''+d.id+'\')">حذف از لیست</button>')+'</td></tr>';
+      '<td><div class="ibacts">'+
+      '<button type="button" class="ibtn ghost" data-static="1" aria-label="تاریخچه" data-tip="تاریخچه" onclick="periodicHistory(\''+d.id+'\')">'+ICONS.clock+'</button>'+
+      '<button type="button" class="ibtn warn" aria-label="اجرای فوری" data-tip="اجرای فوری"'+gomrokGateAttrs()+' onclick="periodicRunOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>'+ICONS.play+'</button>'+
+      '<button type="button" class="ibtn danger" aria-label="ریست تاریخچه" data-tip="ریست تاریخچه" onclick="periodicResetOne(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>'+ICONS.rewind+'</button>'+
+      '<button type="button" class="ibtn ok" aria-label="استعلام مجدد" data-tip="استعلام مجدد"'+gomrokGateAttrs()+' onclick="periodicReInquire(\''+d.id+'\')" '+(STATE.estelam_running?'disabled':'')+'>'+ICONS.refresh+'</button>'+
+      (opt?'<button type="button" class="ibtn primary" aria-label="افزودن به استعلام دوره‌ای" data-tip="افزودن به استعلام دوره‌ای" onclick="periodicReAdd(\''+d.id+'\')">'+ICONS.plus+'</button>'
+          :'<button type="button" class="ibtn danger" aria-label="حذف از لیست" data-tip="حذف از لیست" onclick="periodicRemove(\''+d.id+'\')">'+ICONS.trash+'</button>')+'</div></td></tr>';
   }).join('');
   var logs=(STATE.periodic_logs||[]).slice(0,60).map(l=>'<tr><td class="kbd">'+esc(faDateTime(l.ts))+'</td>'+
     '<td><b>'+esc((STATE.devices||[]).find(d=>String(d.id)===String(l.device_id))?.name||l.device_id||'—')+'</b></td>'+
@@ -7325,8 +7878,10 @@ function identitiesHtml(){
   var rows=ids.map(i=>
     '<tr><td><b>'+esc(i.label)+'</b></td><td class="kbd">'+esc(i.national)+'</td>'
     +'<td class="kbd">'+esc(i.birth)+'</td><td class="kbd">'+esc(i.mobile)+'</td>'
-    +'<td><button class="btn mini" onclick="dlgIdent(\'edit\',\''+i.id+'\')">ویرایش</button> '
-    +'<button class="btn mini danger" onclick="identDelete(\''+i.id+'\')">حذف</button></td></tr>').join('');
+    +'<td><div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش مشخصات" data-tip="ویرایش مشخصات" onclick="dlgIdent(\'edit\',\''+i.id+'\')">'+ICONS.edit+'</button>'
+    +'<button type="button" class="ibtn danger" aria-label="حذف مشخصات" data-tip="حذف مشخصات" onclick="identDelete(\''+i.id+'\')">'+ICONS.trash+'</button>'
+    +'</div></td></tr>').join('');
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<button class="btn primary" onclick="dlgIdent(\'add\')">+ مشخصات جدید</button>'
     +'<span class="muted">برای هر استعلام — ورودی و نظارتی — یک مشخصات تصادفی معتبر از همین استخر انتخاب می‌شود.</span></div>'
@@ -7354,7 +7909,7 @@ function ledgerHtml(){
       rows+='<tr'+(dead?' class="voidedtx"':'')+'><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(faDateTime(t.at))+'</td>'
       +'<td>'+(t.amount<0?'<span class="pill bad">'+money(t.amount)+'</span>':'<span class="pill ok">'+money(t.amount)+'</span>')+'</td>'
       +'<td class="kbd">'+esc(t.note||'—')+'</td>'
-      +'<td><button class="btn mini ghost" title="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+' جزئیات</button></td></tr>';
+      +'<td><button type="button" class="ibtn ghost" data-static="1" aria-label="جزئیات تراکنش" data-tip="جزئیات تراکنش" onclick="txDetailModal(\''+c.id+'\','+idx+')">'+ICONS.info+'</button></td></tr>';
     }
   });
   TAB_COUNT=count;
@@ -7398,10 +7953,11 @@ function txDetailModal(cid, idx){
 /* ================= reports ================= */
 function reportsHtml(){
   return '<div class="card">'
-    +'<div class="row"><button class="btn" onclick="location.href=\'/crm-report?fmt=txt\'">دانلود گزارش متنی</button>'
-    +'<button class="btn" onclick="window.open(\'/crm-report?fmt=html\',\'_blank\')">گزارش چاپی</button>'
-    +'<button class="btn" onclick="location.href=\'/crm-report?fmt=pdf\'">PDF</button>'
-    +'<button class="btn primary" onclick="sendTelegram()">ارسال به تلگرام</button></div>'
+    +'<div class="row">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="دانلود گزارش متنی" data-tip="دانلود گزارش متنی" onclick="location.href=\'/crm-report?fmt=txt\'">'+ICONS.fileText+'</button>'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="گزارش چاپی" data-tip="گزارش چاپی" onclick="window.open(\'/crm-report?fmt=html\',\'_blank\')">'+ICONS.printer+'</button>'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="دانلود PDF" data-tip="دانلود PDF" onclick="location.href=\'/crm-report?fmt=pdf\'">'+ICONS.download+'</button>'
+    +'<button type="button" class="ibtn primary" aria-label="ارسال گزارش به تلگرام" data-tip="ارسال گزارش به تلگرام" onclick="sendTelegram()">'+ICONS.send+'</button></div>'
     +'<p class="muted">گزارش شامل وضعیت تمام پرونده‌هاست؛ در تلگرام کد ملی‌ها ماسک می‌شوند و شمارهٔ کارت هرگز ارسال نمی‌شود.</p>'
     +'<h3>لاگ رویدادها</h3>'
     +'<div id="logBox"></div>'
@@ -7694,11 +8250,15 @@ function doSaveCustomer(id){
     .catch(e=>{document.getElementById('cErr').textContent=e;showFieldErrors(String(e));});
 }
 function custDelete(id){
+  /* v1.8: the styled confirm replaces the blocking native one, so a cancelled
+     delete can never leave the row's icon spinning (and the page keeps one
+     confirmation language). */
   var hasDevices=(STATE.devices||[]).some(d=>d.customer_id===id);
   var msg=hasDevices?'این مشتری دستگاه دارد؛ دستگاه‌ها فقط از اتصال مشتری آزاد می‌شوند. حذف شود؟'
                     :'مشتری حذف شود؟';
-  if(!confirm(msg))return;
-  api('/crm-customer',{action:'delete',id:id,force:true}).then(async()=>{toastCtx(custName(id),'حذف شد');await refresh();}).catch(e=>toast(e,false));
+  confirmDlg('حذف مشتری',msg,'حذف مشتری',function(){
+    api('/crm-customer',{action:'delete',id:id,force:true}).then(async()=>{toastCtx(custName(id),'حذف شد');await refresh();}).catch(e=>toast(e,false));
+  });
 }
 function dlgTx(cid){
   openDlg('<h3>تراکنش جدید — '+esc(custName(cid))+'</h3>'
@@ -7899,9 +8459,10 @@ function doSaveIdent(id){
     .catch(e=>{document.getElementById('iErr').textContent=e;showFieldErrors(String(e));});
 }
 function identDelete(id){
-  if(!confirm('مشخصات از استخر حذف شود؟'))return;
   var i=(STATE.identities||[]).find(x=>x.id===id);
-  api('/crm-identity',{action:'delete',id:id}).then(async()=>{toastCtx((i&&i.label)||'','حذف شد');await refresh();}).catch(e=>toast(e,false));
+  confirmDlg('حذف مشخصات','مشخصات از استخر حذف شود؟ این مشخصات از پرونده‌های متصل هم جدا می‌شود.','حذف از استخر',function(){
+    api('/crm-identity',{action:'delete',id:id}).then(async()=>{toastCtx((i&&i.label)||'','حذف شد');await refresh();}).catch(e=>toast(e,false));
+  });
 }
 function sendTelegram(){
   api('/crm-report-telegram',{full_data:document.documentElement.dataset.full==='1'})
@@ -8260,7 +8821,7 @@ function renderTabs(){
      the ones that tab actually lists and the archive gets its own badge. */
   var arch=((STATE&&STATE.archived_owners)||[]).length;
   var allOwners=((STATE&&STATE.owners)||[]).length;
-  var counts={devices:devs.length,customers:(STATE&&STATE.customers||[]).length,
+  var counts={devices:devs.length,periods:((STATE&&STATE.periods)||[]).length,customers:(STATE&&STATE.customers||[]).length,
     owners:Math.max(0,allOwners-arch),owner_archive:arch,
     identities:(STATE&&STATE.identities||[]).length,
     periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
@@ -8272,7 +8833,7 @@ function renderTabs(){
     '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]
     +(counts[t[0]]!=null?'<span class="cnt">'+fa(counts[t[0]])+'</span>':'')+'</button>').join('');
 }
-function setTab(t){TAB=t;renderTabs();renderView();}
+function setTab(t){ibtnClearBusy();TAB=t;renderTabs();renderView();}
 function renderLogs(){
   var box=document.getElementById('logBox');
   if(!box)return;
@@ -8280,6 +8841,7 @@ function renderLogs(){
     '<div class="kbd">'+esc(faDateTime(l.at))+' — <b>'+esc(l.event)+'</b> '+esc(Object.entries(l).filter(([k])=>!['at','event','level'].includes(k)).map(([k,v])=>k+'='+v).join(' '))+'</div>').join('');
 }
 function renderView(){
+  TIP.hide();
   var el=document.getElementById('view');
   if(!STATE){ el.innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';return; }
   /* v1.3.4 (operator request): the KPI strip and the devices summary rail

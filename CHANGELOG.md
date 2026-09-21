@@ -3,6 +3,82 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-09-20
+
+### Added
+
+- **Periods tab (دورهها):** every reporting period is a card — name, open or
+  closed, the date range, how many cases it holds (completed / in progress /
+  closed), how many passengers are attached, how many customers it touches,
+  and the case-linked debit and credit totals. The whole card is the way in:
+  a button stretched over it carries the accessible name, so a click anywhere
+  on the card opens the detail, while the card's own actions stay clickable
+  above it and the focus ring is drawn on the target itself.
+- **Period detail dialog:** a wide dialog with a segmented switcher
+  پروندهها / مسافرها / مشتریها, a five-cell KPI strip, and tables that answer
+  per case — which customer owns it, which passenger is attached («متصل») or
+  none («بدون مسافر»), the case stage, its debit and credit columns, and a
+  بدهکار / بستانکار / تسویه mark on the balance. The passenger view also lists
+  the passengers that belong to no case at all («بدون پرونده»), so reviewing a
+  cycle is also when the operator sees who is still free.
+- **Icon action buttons:** every table row action in every tab — customers,
+  owners, owner archive, devices, completed, problem, identities, periodic
+  inquiry, ledger, reports and periods — is now an icon-only button in the
+  house SVG language. Each carries an accessible name (`aria-label`) and a
+  tooltip with the same text; destructive confirmations and dialog buttons keep
+  visible Persian labels on purpose.
+- **Shared tooltip layer:** one lazily-created `#tip[role=tooltip]`, positioned
+  fixed so a scrolling table can never clip it, flipped below its trigger when
+  there is no room above, clamped to the viewport, re-parented into an open
+  dialog (a dialog paints above every z-index on the page), shown on hover
+  after a short dwell and immediately on keyboard focus, and dismissed on
+  leave, scroll, resize, press or Escape.
+- **Micro-interactions:** 150 ms hover and 90 ms press feedback, an in-flight
+  spinner that swaps in without moving the layout, and a reduced-motion variant
+  that keeps the busy state visible without animating it.
+
+### Fixed
+
+- **The bundled chromedriver was a major behind Chrome:** the shipped driver
+  was 151 while Chrome had auto-updated to 153, which stops every robot from
+  starting. The bundle now carries the matching driver (153.0.8010.52).
+- **A period card could not be opened by clicking it:** the stretched target
+  sat below the card's own text blocks, so only the padding responded. The
+  target now sits above the text and below the action row (verified in a real
+  browser with `document.elementFromPoint`).
+- **Two icon buttons looked inert on hover:** `.ibtn.ok`/`.ibtn.warn` set their
+  own background, which out-ranked the shared hover rule; they now carry their
+  own hover response.
+- **The busy spinner was invisible under reduced motion:** the icon was hidden
+  and the animation disabled, leaving a blank button. The glyph now stays,
+  dimmed.
+- **Reset-history looked like re-inquire:** «ریست تاریخچه» now uses its own
+  glyph and the danger tint instead of sitting next to «استعلام مجدد» with a
+  near-identical circular arrow and a louder colour than the non-destructive
+  action.
+- **A cancelled delete left the row icon spinning:** customer and identity
+  deletion used the blocking native `confirm()`; they now use the styled
+  confirmation dialog, so a cancel clears the busy state like every other
+  action.
+- **Period money could be read as the period's full cash:** the card and the
+  KPI strip count only the ledger rows linked to the period's cases, which is
+  not the same set the period finance report counts. The figures are now
+  labelled «بدهکاری پروندهها / بستانکاری پروندهها» and the dialog states the
+  difference in a footer note.
+- **Tooltip lifecycle:** leaving a trigger (or the window) now takes the chip
+  down, jumping between triggers no longer leaves a stale `aria-describedby`,
+  and Escape dismisses the chip without swallowing the dialog's own Escape.
+- **A focus ring that only worked on modern engines:** the period card's focus
+  indication moved from a `:has()` rule to an outline on the target itself.
+
+### Changed
+
+- The completed tab's row actions are the icon set (edit / roll back to the
+  previous stage); the period card's duplicate «جزئیات دوره» action was dropped
+  because the card itself opens the detail.
+- Card money labels name their scope, and the period detail dialog documents
+  which rows it counts.
+
 ## [1.7.0] - 2026-09-20
 
 ### Added

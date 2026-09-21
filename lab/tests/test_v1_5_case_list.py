@@ -70,7 +70,10 @@ class CaseListSourceTests(unittest.TestCase):
         body = fn_body(self.js, "devicesHtml")
         self.assertIn("caseDetail(\\''+d.id+'\\')", body)   # row + button click
         self.assertIn("id=\"devcard-'+d.id+'\"", self.js)   # rail focus anchor
-        self.assertIn(">جزئیات</button>", body)
+        # v1.8: the row action is an icon button — it keeps the click, the
+        # accessible name moved to aria-label and the label to the tooltip
+        self.assertIn("aria-label=\"جزئیات پرونده\"", body)
+        self.assertIn("ICONS.eye", body)
         self.assertIn("maskSerial(d.serial1)", body)
         self.assertIn("ownerName(d.owner_id)", body)
         # v1.4.2: the created column renders Jalali; the «آخرین تغییر»
@@ -271,7 +274,7 @@ class CaseListHttpSmoke(_crm_api.CrmApiHarness):
         status, page, _ctype = self._get("/crm")
         self.assertEqual(status, 200)
         for marker in ("function caseDetail(id){", "maskSerial",
-                       ".tbl-wrap{overflow-x:auto}", ">جزئیات</button>",
+                       ".tbl-wrap{overflow-x:auto}", 'aria-label="جزئیات پرونده"',
                        "caseDetail(\\''+d.id+'\\')") + TABLE_HEADERS:
             self.assertIn(marker, page, marker)
         self.assertIn('id="devcard-', page)

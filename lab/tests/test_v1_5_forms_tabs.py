@@ -132,9 +132,10 @@ class FormSourceMarkerTests(unittest.TestCase):
         self.assertIn("dlgDetach(\\'", body)
         self.assertIn("قطع اتصال", body)
         self.assertIn("dev.stage!=='done'", body)
-        # حذف stays free-only
-        self.assertIn("(dev?'':'<button class=\"btn mini danger\" "
-                      "onclick=\"ownerDelete(", body)
+        # حذف stays free-only (v1.8: the row action is an icon button, so the
+        # pin is its accessible name — the visible label moved into the tooltip)
+        self.assertIn("(dev?'':'<button type=\"button\" class=\"ibtn danger\" "
+                      "aria-label=\"حذف مسافر\"", body)
 
     def test_done_tab_rows_edit_and_rollback_buttons(self):
         self.assertIn('id="devrow-', self.page)
@@ -142,7 +143,7 @@ class FormSourceMarkerTests(unittest.TestCase):
         self.assertTrue(body, "doneTabHtml body not found")
         self.assertIn("dlgDeviceEdit(", body)
         self.assertIn("doneRollback(", body)
-        self.assertIn(">ویرایش</button>", body)
+        self.assertIn('aria-label="ویرایش پرونده"', body)
 
     def test_done_rollback_strong_confirm_and_stage_back(self):
         self.assertIn("function doneRollback(id){", self.page)

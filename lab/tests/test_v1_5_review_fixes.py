@@ -501,7 +501,7 @@ class TestSourceMarkers(unittest.TestCase):
     def test_periodic_reset_button_disable_pattern(self):
         body = fn_body_js(panel.CRM_PAGE, "periodicHtml")
         start = body.index("periodicResetOne(\\'")
-        seg = body[start:body.index(">ریست تاریخچه</button>", start)]
+        seg = body[start:body.index("+ICONS.rewind+'</button>", start)]
         self.assertIn("STATE.estelam_running?'disabled':''", seg)
 
     # -- items 6+7: corrected copy present, old claims gone ----------------

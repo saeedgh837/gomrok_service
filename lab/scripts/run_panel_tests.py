@@ -76,6 +76,9 @@ DEFAULT = [
     # v1.7 round: per-case fee (U+066C intake), inquiry-order fix, owner
     # archive, reporting periods, GET safety net, period-report routes.
     "test_v1_7",
+    # v1.8 round (frontend): «دوره‌ها» tab, period detail dialog, icon
+    # action buttons + tooltip layer, the per-case money predicate.
+    "test_v1_8_periods_ui",
 ]
 
 names = sys.argv[1:] or DEFAULT
