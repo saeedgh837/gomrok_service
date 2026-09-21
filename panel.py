@@ -5399,6 +5399,14 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .btn.ok:hover{border-color:var(--pill-ok-fg);filter:brightness(.97)}
   .btn.mini{padding:4px 11px;font-size:12px;border-radius:8px;min-height:28px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
+  /* v1.8.1: the period gate marks its button aria-disabled instead of disabled
+     so it stays focusable — that is the only way a keyboard user can read the
+     reason (the tooltip chip shows on focus and the click answers with a
+     toast). It must still look and feel inert, so it shares the disabled skin
+     and its own hover delta is switched off. */
+  .btn[aria-disabled="true"]{opacity:.5;cursor:not-allowed}
+  .btn[aria-disabled="true"]:hover{filter:none;transform:none}
+  .btn.primary[aria-disabled="true"]:hover{background:var(--brand);border-color:transparent}
   /* ===== v1.8 icon action buttons =====
      The icon-only sibling of .btn.mini for row toolbars. Quiet at rest and
      brand-tinted under the pointer, because a dense row has to say which
@@ -6008,7 +6016,7 @@ function toastCtx(name, msg, ok){
    confirm dialogs are never overwritten by the sync loop). refresh() calls
    dlgCaseSync() which re-renders when the case's signature changes and
    closes the modal if the case was deleted. */
-var CASE_MODAL={id:'',sig:'',live:false};
+var CASE_MODAL={id:'',sig:'',live:false,origin:''};
 function dlgCaseSig(d){
   var e=d.estelam||{},p=d.pay||{};
   return [d.stage,d.updated,d.owner_id,d.profile_id,d.periodic_opt_out?1:0,
@@ -6032,9 +6040,12 @@ function openDlg(html){
      dismissing it (انصراف, ×, Esc) comes back to that case. Action
      confirms disarm via confirmYes; success callbacks restore (or close)
      themselves. Replacing content re-arms, so a stale return cannot
-     survive an in-flight callback. */
-  DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:'';
+     survive an in-flight callback. v1.8.1: the live period dialog arms the
+     same return, tagged «per:» so closeDlg knows which dialog to rebuild —
+     a case opened from the period view now has a way back. */
+  DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:(PER.live?'per:'+PER.pid:'');
   CASE_MODAL.live=false;
+  PER.live=false;
   document.getElementById('dlgBody').innerHTML=html;
   var dlg=document.getElementById('dlg');dlg.showModal();
   /* The modal dialog renders in the browser top layer, above every
@@ -6048,14 +6059,23 @@ function closeDlg(){
      dialog 'close' event only arrives asynchronously in Chromium (often
      long after the close), so it is a safety net, not the driver. This
      also consumes DLG_BACK so dismissed child dialogs return to their
-     case — unless the dialog being closed IS that case's own modal. */
+     case or period — unless the dialog being closed IS that own modal. */
   ibtnClearBusy();
   var back=DLG_BACK;DLG_BACK='';
-  var self=CASE_MODAL.live&&CASE_MODAL.id===back;
+  var self=(CASE_MODAL.live&&CASE_MODAL.id===back)
+        ||(PER.live&&('per:'+PER.pid)===back);
+  /* v1.8.1: a case modal is about to be restored, so its origin has to survive
+     the gap — anywhere else the case session is over and the origin is spent
+     (a stale one would make the NEXT case reopen the wrong dialog). */
+  var keepOrigin=Boolean(back)&&back.indexOf('per:')!==0&&!self;
   document.getElementById('dlg').close();
   CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
+  if(!keepOrigin)CASE_MODAL.origin='';
+  PER.live=false;
   document.body.appendChild(document.getElementById('toasts'));
-  if(back&&!self)caseDetail(back);
+  if(back&&!self){
+    if(back.indexOf('per:')===0)dlgPeriod(back.slice(4));else caseDetail(back);
+  }
 }
 /* Esc path: the native cancel never passes through closeDlg — take the
    close over and run the same synchronous bookkeeping. */
@@ -6068,7 +6088,8 @@ document.getElementById('dlg').addEventListener('cancel',function(e){
    already open and must be left alone). */
 document.getElementById('dlg').addEventListener('close',function(){
   if(this.open)return;
-  CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;
+  CASE_MODAL.id='';CASE_MODAL.sig='';CASE_MODAL.live=false;CASE_MODAL.origin='';
+  PER.live=false;
   document.body.appendChild(document.getElementById('toasts'));
 });
 /* Confirm dialog (native confirm() is blocking & unstyled): a small dialog
@@ -6326,26 +6347,46 @@ function tipHide(){TIP.hide();}
    spinner instead. Every settled action on this page ends in a toast, which is
    therefore the signal that clears the busy buttons; the timeout is the net for
    the few paths that never toast. Buttons that only open something carry
-   data-static="1" and never flip. */
-var _busyEls=[],_busyTimer=0;
+   data-static="1" and never flip.
+   v1.8.1: the busy state is kept per ACTION, not per element. The 5s list
+   re-render replaces every button node, and the spinner used to be destroyed
+   with the old node — leaving an in-flight action looking idle. ibtnRepaintBusy
+   re-marks the freshly rendered nodes, so the spinner means "still running". */
+var _busyKeys={},_busyTimer=0;
+/* Action identity, stable across re-renders: the same generated button carries
+   the same accessible name and the same handler. Two buttons sharing both are
+   the same action on the same entity and light up together — which is the
+   truth (no false "this one is idle"). */
+function ibtnKey(el){
+  return (el.getAttribute('aria-label')||'')+'|'+String(el.getAttribute('onclick')||'');
+}
+function ibtnRepaintBusy(){
+  [].forEach.call(document.querySelectorAll('.ibtn'),function(el){
+    /* an open-only button never flips, so it can never inherit a key either */
+    if(el.getAttribute('data-static')==='1')return;
+    var on=Boolean(_busyKeys[ibtnKey(el)]);
+    el.classList.toggle('busy',on);
+    if(on)el.setAttribute('aria-busy','true');else el.removeAttribute('aria-busy');
+  });
+}
 function ibtnClearBusy(){
   clearTimeout(_busyTimer);
-  _busyEls.forEach(function(el){el.classList.remove('busy');el.removeAttribute('aria-busy');});
-  _busyEls=[];
+  _busyKeys={};
+  ibtnRepaintBusy();
 }
 document.addEventListener('click',function(e){
   var el=e.target&&e.target.closest?e.target.closest('.ibtn'):null;
   if(!el||el.disabled||el.getAttribute('data-static')==='1')return;
-  if(el.classList.contains('busy'))return;
-  el.classList.add('busy');
-  el.setAttribute('aria-busy','true');
-  _busyEls.push(el);
+  var key=ibtnKey(el);
+  if(_busyKeys[key])return;
+  _busyKeys[key]=true;
   clearTimeout(_busyTimer);
   /* A press indicator, not a progress bar: the toast that ends the action
-     clears it, the 5s list re-render drops it anyway, and this net only
-     covers a handler that never toasts. Long robot runs show their state in
-     the «ربات استعلام در حال اجراست» banner, not here. */
+     clears it and this net only covers a handler that never toasts. Long robot
+     runs show their state in the «ربات استعلام در حال اجراست» banner, not
+     here. */
   _busyTimer=setTimeout(ibtnClearBusy,6000);
+  ibtnRepaintBusy();
 });
 /* v1.3.1 round 3 (operator request): the manual inquiry / telegram re-send
    / periodic-toggle tools are step-scoped inside caseDetail (steps 2/4/5)
@@ -6821,17 +6862,30 @@ function maskSerial(s){s=String(s||'');return s.length<=8?s:s.slice(0,4)+'…'+s
    period is open carry its id; the operator closes the period to lock the
    books before printing the period finance report. Computed from STATE
    (server is the source of truth) so a refresh always shows the truth. */
+/* v1.8.1 (operator rule: a case may not exist outside a period): the one
+   resolver every caller asks. The stored pointer can outlive the period it
+   names, so a period counts as open only while the server agrees — the server
+   answers a second close with a 400. */
+function activePeriod(){
+  var pid=(STATE.settings||{}).current_period_id;
+  if(!pid)return null;
+  return (STATE.periods||[]).find(p=>String(p.id)===String(pid)&&!p.closed_at)||null;
+}
+var NO_PERIOD_TIP='دورهٔ باز وجود ندارد. برای ساخت اولین پرونده، از دکمهٔ «شروع دورهٔ جدید» بالای همین صفحه یک دوره باز کنید.';
+/* Carries the blocked state AND the reason. aria-disabled rather than disabled
+   on purpose: a disabled control cannot take focus, so a keyboard user could
+   never reach the reason — and the reason IS the whole point of this gate. The
+   click answers with the same sentence as a toast (dlgDevice guards), the
+   tooltip chip shows on hover and on focus, and .btn[aria-disabled] keeps the
+   look inert. */
+function periodGateAttrs(){
+  return activePeriod()?'':' aria-disabled="true" data-tip="'+NO_PERIOD_TIP+'"';
+}
 function periodBarHtml(){
-  /* v1.7: the stored pointer can outlive the period it names, so the bar
-     only shows a period as the open one while it really is: the server
-     is the authority and answers a second close with a 400. */
-  var per=(STATE.settings||{}).current_period_id
-    ? (STATE.periods||[]).find(p=>p.id===STATE.settings.current_period_id
-                                  &&!p.closed_at)
-    : null;
+  var per=activePeriod();
   if(!per) return '<div class="row" style="margin:0 0 12px;align-items:center">'
     +'<span class="pill n">دورهٔ بسته</span>'
-    +'<span class="muted">پرونده‌های جدید بدون دوره ثبت می‌شوند.</span>'
+    +'<span class="muted">تا دورهٔ باز شروع نشود، پروندهٔ جدیدی ساخته نمی‌شود.</span>'
     +'<button class="btn primary" onclick="periodOpen()">شروع دورهٔ جدید</button></div>';
   var inPeriod=(STATE.devices||[]).filter(d=>d.period_id===per.id).length;
   return '<div class="row" style="margin:0 0 12px;align-items:center">'
@@ -6845,12 +6899,21 @@ function periodOpen(){
     .catch(e=>toast(e,false));
 }
 function periodClose(id){
+  /* v1.8.1: the confirm replaces the dialog, and confirmYes disarms the
+     return, so a close confirmed from the period's own dialog comes back to
+     it (rebuilt on the fresh state) instead of dropping the operator on the
+     tab. */
+  var fromDlg=PER.live&&String(PER.pid)===String(id);
   confirmDlg('بستن دوره','با بستن این دوره، پرونده‌های جدید به آن اضافه نمی‌شوند و گزارش مالی این دوره نهایی می‌شود. ادامه می‌دهید؟','بستن دوره',function(){
     api('/crm-period-close',{period_id:id}).then(async r=>{
       var s=r.summary;
       var msg='دوره بسته شد: '+fa(s.devices)+' پرونده';
       if(s.open_cases>0) msg+='؛ '+fa(s.open_cases)+' پرونده هنوز باز است';
-      toast(msg, s.open_cases>0?'warn':true);await refresh();})
+      toast(msg, s.open_cases>0?'warn':true);await refresh();
+      /* Only if the operator has not opened something meanwhile: the confirm
+         already closed this dialog, so the tab is interactive while the close
+         is in flight, and rebuilding over their work would be a hijack. */
+      if(fromDlg&&periodById(id)&&!document.getElementById('dlg').open)dlgPeriod(id);})
       .catch(e=>toast(e,false));
   });
 }
@@ -6860,7 +6923,7 @@ function periodClose(id){
    whether the case is finished, and its debit/credit/remaining. Everything is
    derived from the STATE the page already holds: no extra route, so the tab
    can never disagree with the case list it links to, and it opens instantly. */
-var PER={pid:'',seg:'cases'};
+var PER={pid:'',seg:'cases',live:false,sig:''};
 function periodById(pid){
   return ((STATE&&STATE.periods)||[]).find(p=>String(p.id)===String(pid))||null;
 }
@@ -6938,12 +7001,13 @@ function periodName(p){return p.label||("دورهٔ "+fa(p.number||0));}
 function periodRange(p){
   return faDateTime(p.opened_at)+(p.closed_at?' — '+faDateTime(p.closed_at):' — تا کنون');
 }
-function periodOpenCard(p){return !p.closed_at;}
 function periodSorted(){
-  var cur=(STATE.settings||{}).current_period_id;
+  /* the open period first — asked through the one resolver, so the tab can
+     never disagree with the bar about which period is open */
+  var cur=activePeriod();
+  var cid=cur?String(cur.id):'';
   return ((STATE&&STATE.periods)||[]).slice().sort(function(a,b){
-    var ao=(String(a.id)===String(cur)&&periodOpenCard(a))?0:1,
-        bo=(String(b.id)===String(cur)&&periodOpenCard(b))?0:1;
+    var ao=String(a.id)===cid?0:1, bo=String(b.id)===cid?0:1;
     return ao-bo||String(b.opened_at||'').localeCompare(String(a.opened_at||''));
   });
 }
@@ -6987,10 +7051,10 @@ function periodCardsHtml(){
   }).join('')+'</div>';
 }
 function periodsHtml(){
-  var ps=(STATE&&STATE.periods)||[];
   /* No search toolbar on this tab (TAB_SEARCH has no entry), so there is no
-     count pill to feed either. */
-  var open=ps.find(p=>!p.closed_at);
+     count pill to feed either. The «شروع دورهٔ جدید» offer asks the same
+     resolver the gate does: while a period IS open there is nothing to start. */
+  var open=activePeriod();
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +(open?'':'<button class="btn primary" onclick="periodOpen()">شروع دورهٔ جدید</button>')
     +'<span class="muted">هر پرونده‌ای که در دورهٔ باز ثبت شود عضو آن می‌شود؛ تا دوره بسته نشود ارقام نهایی نیستند.</span>'
@@ -7115,7 +7179,11 @@ function perPaint(){
 function dlgPeriod(pid){
   var p=periodById(pid);
   if(!p){toast('دورهٔ انتخاب‌شده پیدا نشد',false);return;}
-  PER={pid:String(pid),seg:'cases'};
+  /* v1.8.1: coming back from a case (or a live refresh) rebuilds the SAME
+     period — the segment the operator was reading is kept, so the return
+     lands where they left. A different period starts on its cases. */
+  PER.seg=(String(PER.pid)===String(pid)&&PER.seg)?PER.seg:'cases';
+  PER.pid=String(pid);
   openDlg('<div class="perdlg">'
     +'<div id="perHead"></div>'
     +'<div class="row" style="margin:8px 0 12px">'
@@ -7138,6 +7206,57 @@ function dlgPeriod(pid){
     +'بعداً عوض شده، ماندهٔ این‌جا با فاکتور همان پرونده یکی نیست.</p>'
     +'</div>');
   perPaint();
+  /* openDlg cleared PER.live above; re-arm only here (same contract as
+     CASE_MODAL at the end of caseDetail). */
+  PER.live=true;PER.sig=perSig(PER.pid);
+}
+/* v1.8.1: the period dialog keeps itself in sync exactly like the case modal —
+   a signature over what it renders, recomputed on every 5s refresh, so an
+   action taken anywhere else (a case attached to a passenger, a receipt booked
+   on the customer tab, the period closed from the card) shows up in an open
+   dialog instead of leaving stale numbers on screen. */
+function perSig(pid){
+  var p=periodById(pid);
+  if(!p)return '';
+  var s=[String(p.closed_at||''),String(p.label||'')];
+  periodCases(pid).slice().sort(function(a,b){
+    return String(a.id).localeCompare(String(b.id));}).forEach(function(d){
+      /* the fields the case table PRINTS — deliberately not d.updated, which
+         every robot tick stamps: that would rebuild the table every 5 seconds
+         and throw away the operator's scroll position */
+      s.push([d.id,d.name,d.stage,d.owner_id||'',d.customer_id||'',
+              d.serial1||'',d.serial2||''].join(','));
+    });
+  /* it also prints identities, not only ids, and the passenger table lists the
+     FREE passengers too — so an owner or customer renamed from another tab, or
+     an owner freed by a case in another period, must repaint this dialog. The
+     per-owner bound flag carries the whole binding state. */
+  var bound={};
+  ((STATE.devices||[])).forEach(function(d){
+    if(d.owner_id)bound[String(d.owner_id)]=true;});
+  ((STATE.owners||[])).forEach(function(o){
+    s.push(['o',o.id,o.first_name,o.last_name,o.national,o.mobile,
+            bound[String(o.id)]?'b':''].join(','));});
+  periodCustomers(pid).forEach(function(c){
+    s.push(['c',c.id,c.full_name,c.mobile].join(','));});
+  var m=periodMoney(pid);
+  s.push('m'+m.debit+'/'+m.credit);
+  return s.join('|');
+}
+function dlgPeriodSync(){
+  if(!PER.live||!PER.pid)return;
+  var p=periodById(PER.pid);
+  if(!p){closeDlg();toast('این دوره پیدا نشد؛ پنجرهٔ آن بسته شد',false);return;}
+  var sig=perSig(PER.pid);
+  if(sig===PER.sig)return;
+  /* A full rebuild (not just perPaint) so the footer follows too: the
+     «بستن دوره» button has to disappear when the period closes. The dialog
+     body is the scroller, so put the operator back where they were reading. */
+  var scroller=document.getElementById('dlgBody');
+  var keep=scroller?scroller.scrollTop:0;
+  dlgPeriod(PER.pid);
+  var fresh=document.getElementById('dlgBody');
+  if(fresh)fresh.scrollTop=keep;
 }
 
 function devicesHtml(){
@@ -7160,13 +7279,16 @@ function devicesHtml(){
     // card; the genuine empty states below stay untouched.
     if(searchActive())return periodBar+runningBanner+searchEmptyCard();
     return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px">'
-      +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-      +'<span class="muted">'+(others
-        ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
-        :'اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.')+'</span></div>'
+      +'<button class="btn primary"'+periodGateAttrs()+' onclick="dlgDevice()">+ پروندهٔ جدید</button>'
+      +'<span class="muted">'+(activePeriod()
+        ?(others
+          ?'پروندهٔ در جریانی نیست؛ پرونده‌های تکمیل‌شده، دارای اشکال و مختومه در سربرگ خودشان هستند.'
+          :'اولین پرونده را بسازید: سریال دستگاه، مشتری و در ادامه مسافر.')
+        :NO_PERIOD_TIP)+'</span></div>'
       +emptyHtml(others?'پروندهٔ در جریانی نیست':'پرونده‌ای ثبت نشده',
         others?'این‌جا فقط پرونده‌های فعال را نشان می‌دهد؛ بقیهٔ پرونده‌ها در سربرگ‌های «تکمیل شده‌ها»، «دارای اشکال» و «مختومه‌ها» هستند.'
-          :'هنوز پرونده‌ای نیست — با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.');
+          :(activePeriod()?'هنوز پرونده‌ای نیست؛ با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.'
+            :NO_PERIOD_TIP));
   }
   // B7: a clean case table — every per-case action moved into the
   // caseDetail modal (row click / «جزئیات»); rows keep the devcard-<id>
@@ -7194,7 +7316,7 @@ function devicesHtml(){
       +'<td><div class="ibacts"><button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
   }).join('');
   return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
-    +'<button class="btn primary" onclick="dlgDevice()">+ پروندهٔ جدید</button>'
+    +'<button class="btn primary"'+periodGateAttrs()+' onclick="dlgDevice()">+ پروندهٔ جدید</button>'
     +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
     +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
     +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
@@ -7210,6 +7332,14 @@ function devicesHtml(){
 function caseDetail(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d){toast('پرونده پیدا نشد',false);return;}
+  /* v1.8.1: where a close should return to. Entering from the period dialog
+     arms «per:<pid>»; a REBUILD of the same case (the 5s sync, or a restore
+     after a child dialog) keeps the origin it already had, so the way back
+     survives an action taken inside the modal. closeDlg keeps the field alive
+     for exactly as long as a case modal is being restored, and the tail of
+     this function owns DLG_BACK — openDlg cannot tell a rebuild from a fresh
+     open and would overwrite the origin with the case's own id. */
+  var origin=CASE_MODAL.origin||(PER.live&&PER.pid?'per:'+PER.pid:'');
   var est=d.estelam||{};
   var pay=d.pay||{};
   var st=d.stage;
@@ -7329,6 +7459,10 @@ function caseDetail(id){
     +'</div></div>');
   /* openDlg clears CASE_MODAL.live, so (re)arm the sync state only here. */
   CASE_MODAL.id=id;CASE_MODAL.name=d.name;CASE_MODAL.live=true;CASE_MODAL.sig=dlgCaseSig(d);
+  /* v1.8.1: and re-arm the return to where this case was opened from — a
+     rebuild that dropped it would strand the operator (openDlg armed the
+     self-return only, so this must come after it). */
+  CASE_MODAL.origin=origin;DLG_BACK=origin;
 }
 /* v1.5 B10: manual re-send of the registration handoff (case detail modal).
    The route re-checks stage/destination/passport server-side; a failed send
@@ -7983,6 +8117,12 @@ function showFieldErrors(errText){
   });
 }
 function dlgDevice(){
+  /* v1.8.1 (operator rule): no case outside a reporting period. The button in
+     the case toolbar is already inert in that state — this is the guard for
+     every other way in (a keyboard path, a page whose STATE went stale while a
+     period was closed elsewhere). The server re-checks; this only saves a
+     round-trip. */
+  if(!activePeriod()){toast(NO_PERIOD_TIP,false);return;}
   var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
     +'<p class="muted">با ثبت دستگاه، «هزینه ثبت رجیستری» به حساب مشتری بدهکار می‌شود؛ مبلغ پیش‌فرض از تب تنظیمات خوانده می‌شود و قابل تغییر است. مبلغ دریافتی نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.</p>'
@@ -8871,6 +9011,9 @@ function renderView(){
   }
   renderLogs();
   updateTabCount();
+  /* v1.8.1: the render above replaced every button node in the tab body —
+     re-mark the ones whose action is still in flight. */
+  ibtnRepaintBusy();
 }
 async function refresh(){
   try{
@@ -8884,6 +9027,7 @@ async function refresh(){
   renderTabs();
   renderView();
   dlgCaseSync();
+  dlgPeriodSync();
   if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
 renderTabs();
@@ -9234,8 +9378,17 @@ class Handler(BaseHTTPRequestHandler):
                 errors = ["کنش نامعتبر است"]
         else:  # device
             if action == "add":
+                # v1.8.1: every case belongs to a reporting period, so this is
+                # the one door the operator's intake goes through and it asks
+                # crm.add_device for the guarantee. require_period checks
+                # inside the store lock, before the inline customer is
+                # created: a period closing concurrently cannot slip a
+                # period-less case through, and a rejected intake leaves no
+                # orphan customer behind. (A stale tab and a direct API call
+                # both land here; the page itself disables the button.)
                 inline = data.get("customer") if isinstance(data.get("customer"), dict) else None
-                record, errors = crm_mod.add_device(data, customer=inline)
+                record, errors = crm_mod.add_device(data, customer=inline,
+                                                    require_period=True)
             elif action == "update":
                 record, errors = crm_mod.update_device(record_id, data)
             elif action == "delete":

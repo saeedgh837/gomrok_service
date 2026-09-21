@@ -79,6 +79,15 @@ DEFAULT = [
     # v1.8 round (frontend): «دوره‌ها» tab, period detail dialog, icon
     # action buttons + tooltip layer, the per-case money predicate.
     "test_v1_8_periods_ui",
+    # v1.8.1 round: busy state keyed to the action (survives the re-render),
+    # period dialog return + live refresh, and the no-case-without-a-period
+    # gate (button, dialog and route).
+    "test_v1_8_1_ui_fixes",
+    # entry-point naming + the device empty state's «پروندهٔ جدید» entry
+    # (v1.8.1: the harness now authenticates — it had been reading the login
+    # form since the v1.2.0 gate, and the empty-state pin had drifted onto
+    # the periods tab).
+    "test_entrypoint_ui_fixes",
 ]
 
 names = sys.argv[1:] or DEFAULT

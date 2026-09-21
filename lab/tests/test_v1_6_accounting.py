@@ -150,6 +150,13 @@ class ApiCase(StoreCase):
     def _url(self, path):
         return f"http://127.0.0.1:{self.port}{path}"
 
+    def _open_period(self):
+        """v1.8.1: a case may not exist outside a reporting period — call this
+        before any intake, the same first step the operator takes."""
+        period, errors = crm.open_period("")
+        self.assertEqual(errors, [], errors)
+        return period
+
     def _get(self, path):
         try:
             with urllib.request.urlopen(self._url(path), timeout=90) as resp:
@@ -274,6 +281,7 @@ class ReceivedOnRegisterTests(StoreCase):
 
 class ReceivedOnRegisterApiTests(ApiCase):
     def test_add_device_with_received_amount(self):
+        self._open_period()
         customer, errors = crm.add_customer(
             {"full_name": "مشتری دریافتی", "mobile": "09120000001"})
         self.assertEqual(errors, [], errors)
@@ -289,6 +297,7 @@ class ReceivedOnRegisterApiTests(ApiCase):
         self.assertEqual(txs[1]["note"], RECEIVED_NOTE)
 
     def test_add_device_rejects_negative_received_amount(self):
+        self._open_period()
         status, body = self._post("/crm-device", {
             "action": "add", "name": "Device 1",
             "serial1": synth_serial(1), "received_amount": -1})
@@ -1262,6 +1271,7 @@ class ReviewFixApiTests(ApiCase):
         # H2 composition probe: the on-register receipt, once voided, must
         # leave the case balance without it and flag the inactive rows.
         self._seed()
+        self._open_period()
         status, body = self._post("/crm-device", {
             "action": "add", "name": "گوشی ترکیبی",
             "serial1": synth_serial(1), "customer_id": "c1",

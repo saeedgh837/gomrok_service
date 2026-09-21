@@ -39,6 +39,13 @@ class EntryPointHarness(unittest.TestCase):
         crm.reset_cache()
         self.addCleanup(crm.reset_cache)
 
+        # v1.8.1: these two pages sit behind the v1.2.0 login gate, so without
+        # a session cookie `_page` only ever returned the login form and both
+        # HTTP tests had been failing against it.
+        from lab.tests import _auth_harness
+        self._token = _auth_harness.seed_test_users()
+        _auth_harness.install_auth_cookie(self, self._token)
+
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -84,13 +91,35 @@ class TestCrmEmptyState(unittest.TestCase):
         self.assertIn("dlgDevice", self.page)
 
     def test_empty_state_offers_new_case(self):
-
-        match = re.search(r"if\(!ds\.length\)\s*return\s*([^;]+);", self.page)
+        # v1.8.1: the old file-wide regex matched the FIRST `if(!ds.length)
+        # return …;` in the page — which the v1.8 periods tab introduced in
+        # perCasesHtml, long before devicesHtml. The assertion had been
+        # failing against that function ever since; scope it to the device
+        # list itself.
+        js = "\n".join(re.findall(r"<script>([\s\S]*?)</script>", self.page))
+        body = fn_body(js, "devicesHtml")
+        self.assertTrue(body, "devicesHtml not found")
+        match = re.search(r"if\(!ds\.length\)\{([\s\S]*?)\n  \}", body)
         self.assertIsNotNone(match, "devicesHtml empty branch not found")
         branch = match.group(1)
         self.assertIn("پرونده‌ای ثبت نشده", branch)
         self.assertIn("dlgDevice()", branch)
         self.assertIn("+ پروندهٔ جدید", branch)
+
+
+def fn_body(js, name):
+    """Naive brace-matched body of `function name(...){...}` ("" if absent)."""
+    match = re.search(r"function\s+" + re.escape(name) + r"\s*\([^)]*\)\{", js)
+    if not match:
+        return ""
+    depth, i = 1, match.end()
+    while i < len(js) and depth:
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+        i += 1
+    return js[match.start():i]
 
 
 if __name__ == "__main__":

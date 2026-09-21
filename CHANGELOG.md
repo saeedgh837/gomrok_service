@@ -3,6 +3,68 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-09-21
+
+### Added
+
+- **A case cannot be created outside a reporting period (operator rule):** while
+  no period is open, «+ پروندهٔ جدید» is marked unavailable (`aria-disabled`, so
+  it stays focusable and the reason is reachable without a mouse) and explains
+  itself on hover, on keyboard focus and, when clicked, in a toast —
+  `dlgDevice()` refuses the same way. The period bar and both empty states
+  (the toolbar note and the empty-list card) now state the rule instead of
+  inviting an action that cannot run, and the wording follows the page's own
+  vocabulary («دورهٔ باز», not «دورهٔ بازی»).
+
+### Fixed
+
+- **The in-flight spinner no longer dies with the list re-render:** the busy
+  state was bound to the DOM element, and the 5-second re-render replaces every
+  one of those nodes, so an action still running looked idle. It is now keyed to
+  the action itself (accessible name + handler) and re-applied to the freshly
+  rendered nodes: the spinner means "this action is still running" until the
+  toast that settles it (the 6-second net still covers handlers that never
+  toast). Open-only buttons are exempt, so they can never inherit a key.
+- **The period dialog comes back:** opening a case from the period detail used
+  to replace the dialog for good — and the case modal's own 5-second rebuild
+  made even a hand-armed return useless, because it overwrote the origin with
+  the case's id. The origin now lives on the case modal and survives a rebuild
+  and a child-dialog round trip (dismissing the case returns to the period
+  dialog, on the segment the operator was reading).
+- **The period dialog refreshes itself:** it stayed frozen while everything
+  around it updated. It now rebuilds on the same 5-second tick as the case
+  modal, but only when something it actually PRINTS changed — the case fields,
+  the customer and passenger identities, the money — so a robot stamping
+  `updated` on a case no longer rebuilds the table every tick, and the reading
+  position survives a rebuild that does happen. A vanished period closes it with
+  a toast.
+- **Closing a period from its own dialog dropped the operator on the tab:** the
+  confirm replaces the dialog and the confirm path deliberately disarms the
+  return, so the close callback now reopens it on the fresh state — unless the
+  operator opened something else while the close was in flight.
+
+### Changed
+
+- **The rule is enforced where the write happens:** POST /crm-device
+  (action=add) calls `crm.add_device(..., require_period=True)`, which checks
+  for an open period INSIDE the store lock and before anything is written —
+  a period closing concurrently can no longer slip a period-less case through,
+  and a rejected intake leaves no orphan customer. The default remains
+  `require_period=False`, so stores that predate periods, scripts and fixtures
+  keep the legacy behaviour (an empty `period_id`) and no migration is needed.
+- **Two long-broken tests repaired** (they were outside the suite runner, so
+  their drift had gone unnoticed): `test_entrypoint_ui_fixes` had been reading
+  the login form instead of the pages behind the v1.2.0 gate, and its
+  empty-state pin had drifted onto the periods tab's own `if(!ds.length)`
+  branch. Both are fixed and the module is registered in the suite.
+- **Six pins hardened after a mutation review:** a reviewer reverted each new
+  behaviour one at a time and six reverts still passed the suite (the busy
+  repaint call moved before the render, the 6-second net deleted, the
+  vanished-period branch made unreachable, the action key's handler half
+  emptied, the case sync clearing the dialog origin, and the period check
+  hoisted above the store lock). Every one of those mutations now fails the
+  suite — 18 of 18 caught, verified against a mutated copy of the source.
+
 ## [1.8.0] - 2026-09-20
 
 ### Added

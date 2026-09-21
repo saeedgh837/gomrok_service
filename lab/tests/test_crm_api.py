@@ -47,6 +47,15 @@ class CrmApiHarness(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
 
     # -- helpers ---------------------------------------------------------
+    def _open_period(self):
+        """v1.8.1: a case may not exist outside a reporting period, so every
+        test that creates one opens the period first — the same first step
+        the operator takes."""
+        import crm
+        period, errors = crm.open_period("")
+        self.assertEqual(errors, [], errors)
+        return period
+
     def _seed_green_estelam(self, device_id):
         """Seed a both-OK estelam row so the intake inquiry gate (v1.1.2)
         lets fixtures walk past `mark_ready`."""
@@ -121,13 +130,37 @@ class TestCrmRoutes(CrmApiHarness):
         self.assertTrue(any("کارت" in e for e in body["errors"]))
 
     def test_device_add_with_inline_customer(self):
+        period = self._open_period()
         status, body = self._post("/crm-device", {
             "action": "add", "name": "iPhone 13", "serial1": "356938035643809",
             "customer": {"full_name": "مریم احمدی"}})
         self.assertEqual(status, 200)
         self.assertTrue(body["device"]["customer_id"])
+        # the new case joined the open period (the v1.7 registration rule)
+        self.assertEqual(body["device"]["period_id"], period["id"])
+
+    def test_device_add_requires_an_open_period(self):
+        """v1.8.1 operator rule: no case outside a reporting period. The page
+        disables «پروندهٔ جدید»; the route refuses a stale tab or a direct
+        call, and a rejected intake must not leave the inline customer
+        behind."""
+        status, body = self._post("/crm-device", {
+            "action": "add", "name": "iPhone 13", "serial1": "356938035643809",
+            "customer": {"full_name": "مریم احمدی"}})
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        self.assertTrue(any("دوره" in e for e in body["errors"]), body)
+        _, state, _ = self._get("/crm-state")
+        self.assertEqual(state["devices"], [])
+        self.assertEqual(state["customers"], [])
+        # opening a period makes the same intake succeed
+        self._open_period()
+        status, body = self._post("/crm-device", {
+            "action": "add", "name": "iPhone 13", "serial1": "356938035643809"})
+        self.assertEqual(status, 200)
 
     def test_tick_transitions_and_rejects_invalid(self):
+        self._open_period()
         _, body = self._post("/crm-device", {
             "action": "add", "name": "x", "serial1": "356938035643809"})
         device_id = body["device"]["id"]
@@ -139,6 +172,7 @@ class TestCrmRoutes(CrmApiHarness):
 
     def test_start_payment_requires_profile_id(self):
         """Review F18/F9: never pool-claim; no profile linked -> 400."""
+        self._open_period()
         _, body = self._post("/crm-device", {
             "action": "add", "name": "x", "serial1": "356938035643809"})
         device_id = body["device"]["id"]

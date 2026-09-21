@@ -1166,10 +1166,26 @@ def _parse_fee_amount(value):
     return amount, ""
 
 
-def add_device(fields, customer=None):
+# v1.8.1 operator rule: a case may not exist outside a reporting period. The
+# page disables «پروندهٔ جدید» while no period is open and explains why on
+# hover; this is the message every other path (a stale tab, a direct API call,
+# a script) gets back.
+NO_OPEN_PERIOD_ERROR = ("دورهٔ باز وجود ندارد؛ برای ساخت اولین پرونده یک دوره "
+                        "باز کنید")
+
+
+def add_device(fields, customer=None, require_period=False):
     """Add a device. `customer` is an optional inline new-customer dict.
     `received_amount` (v1.6) books an optional receipt on the linked
-    customer's ledger in the same store write as the registry fee."""
+    customer's ledger in the same store write as the registry fee.
+
+    `require_period` (v1.8.1, opt-in) refuses the intake when no reporting
+    period is open. The check runs INSIDE the store lock, before anything is
+    written, so a period closing concurrently can never slip a period-less
+    case through and a rejected intake leaves no orphan customer behind.
+    Default False keeps the legacy behaviour — devices carry an empty
+    `period_id` — for stores that predate periods and for callers that are not
+    the operator's intake door."""
     errs = validate_device(fields)
     if errs:
         return None, errs
@@ -1182,6 +1198,8 @@ def add_device(fields, customer=None):
         return None, [fee_error]
     with STORE_LOCK:
         data = _store_read()
+        if require_period and current_period(data) is None:
+            return None, [NO_OPEN_PERIOD_ERROR]
         if customer:
             errs = validate_customer(customer)
             if errs:

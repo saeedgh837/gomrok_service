@@ -230,12 +230,21 @@ class GuideAndGroupDesignTests(unittest.TestCase):
         # (an in-flight action callback must not leave DLG_BACK armed) —
         # and any dialog opened over a LIVE case modal arms the return,
         # so انصراف/×/Esc on child dialogs comes back to the case.
+        # v1.8.1: the live PERIOD dialog arms the same return, tagged «per:»
+        # so closeDlg knows which dialog to rebuild (a case opened from the
+        # period view has a way back).
         open_body = fn_body(self.js, "openDlg")
-        self.assertIn("DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:'';", open_body)
+        self.assertIn(
+            "DLG_BACK=CASE_MODAL.live?CASE_MODAL.id:(PER.live?'per:'+PER.pid:'');",
+            open_body)
         # closing the case modal itself must NOT reopen it
-        self.assertIn("var self=CASE_MODAL.live&&CASE_MODAL.id===back;",
+        self.assertIn("var self=(CASE_MODAL.live&&CASE_MODAL.id===back)",
                       close_body)
-        self.assertIn("if(back&&!self)caseDetail(back);", close_body)
+        self.assertIn("||(PER.live&&('per:'+PER.pid)===back);", close_body)
+        self.assertIn("if(back&&!self){", close_body)
+        self.assertIn(
+            "if(back.indexOf('per:')===0)dlgPeriod(back.slice(4));"
+            "else caseDetail(back);", close_body)
         # a confirmed action never auto-returns — its callback decides
         self.assertIn(
             "function confirmYes(){var cb=_confirmCb;_confirmCb=null;"
