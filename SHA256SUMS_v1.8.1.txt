@@ -1,0 +1,2 @@
+irica-v1.8.1-win64.zip  3d91c2cfc9219e21a8e61fe02b4fb74cb57ac7027281619a8d97ef045b235bf7
+IRICA-Setup-v1.8.1.exe  657d82b5ecd6653d92ecc7ac2aae02f1f3d9af00f6a94e9848f53a67eb71b2ae
