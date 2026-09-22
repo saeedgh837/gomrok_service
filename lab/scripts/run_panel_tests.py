@@ -88,6 +88,10 @@ DEFAULT = [
     # form since the v1.2.0 gate, and the empty-state pin had drifted onto
     # the periods tab).
     "test_entrypoint_ui_fixes",
+    # v1.9.0 round: newest-first lists + passenger row numbering, the
+    # related-sites box (left corner, dismissable, server-backed links) and
+    # the UI sound engine (settings switch + header mirror + /sfx whitelist).
+    "test_v1_9_0_ux",
 ]
 
 names = sys.argv[1:] or DEFAULT

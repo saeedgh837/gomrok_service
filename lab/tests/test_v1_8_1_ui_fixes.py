@@ -135,7 +135,33 @@ class BusyActionStateTests(unittest.TestCase):
     def test_clearing_is_still_wired_to_the_settling_events(self):
         for name in ("toast", "closeDlg"):
             self.assertIn("ibtnClearBusy()", fn_body(self.js, name), name)
-        self.assertIn("function setTab(t){ibtnClearBusy();", self.js)
+        # v1.9: setTab also cues the tab switch, so the body no longer opens
+        # with ibtnClearBusy on the first character.
+        self.assertIn("function setTab(t){", self.js)
+        set_tab = fn_body(self.js, "setTab")
+        self.assertIn("ibtnClearBusy()", set_tab)
+        self.assertIn("sfx('ui-tab')", set_tab)
+
+    def test_the_cue_fires_with_the_settle_signal(self):
+        """v1.9: toast is the single choke point for success/warn/fail, so the
+        cue belongs there. The background refresh's connection-failure toast
+        is rate-limited inside sfx(), not by muting toast."""
+        body = fn_body(self.js, "toast")
+        self.assertIn("sfx(", body)
+        self.assertIn("ui-error", body)
+        self.assertIn("ui-warn", body)
+
+    def test_openDlg_cues_only_a_user_initiated_open(self):
+        """v1.9: the 5s rebuild of an already-open modal (dlgCaseSync /
+        dlgPeriodSync) replaces its content through the same openDlg, so the
+        cue would otherwise fire every tick while the server state moves.
+        openDlg takes an explicit silent flag and only the two background
+        rebuild callers pass it."""
+        body = fn_body(self.js, "openDlg")
+        self.assertIn("silent", body)
+        self.assertIn("if(!silent)sfx('ui-open')", body)
+        # every other caller still cues: a user-initiated open is a boundary
+        self.assertEqual(body.count("sfx('ui-open')"), 1)
 
 
 class PeriodDialogLifecycleTests(unittest.TestCase):
@@ -180,7 +206,12 @@ class PeriodDialogLifecycleTests(unittest.TestCase):
         self.assertTrue(sync, "dlgPeriodSync not found")
         self.assertIn("if(!PER.live||!PER.pid)return;", sync)
         self.assertIn("if(sig===PER.sig)return;", sync)
-        self.assertIn("dlgPeriod(PER.pid);", sync)
+        self.assertIn("dlgPeriod(PER.pid,true);", sync)
+        # v1.9: the rebuild is silent. The 5s tick is not a boundary anyone
+        # crossed, so it must not cue — openDlg() gained a `silent` flag for
+        # exactly this path.
+        sync_case = fn_body(self.js, "dlgCaseSync")
+        self.assertIn("caseDetail(CASE_MODAL.id,true);", sync_case)
         # a vanished period must not leave a dead dialog on screen — pinned
         # whole, because a bare "closeDlg();" somewhere in the body would pass
         # while the branch itself is unreachable

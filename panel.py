@@ -88,6 +88,30 @@ EXITBAN_ERRORS_PATH = app_paths.data_path("exitban_errors.jsonl")
 SYSTEM_LOG_DIR = app_paths.data_subdir("logs", "system")
 SYSTEM_DEBUG_CONFIG_PATH = app_paths.data_path("system_debug.json")
 HOST, PORT = "127.0.0.1", 8750
+
+# v1.9: the UI notification cues the panel plays. Exactly these seven names
+# exist on disk (built by lab/scripts/gen_sfx.py) and the /sfx/ route serves
+# nothing else. Keys are the cue families the front end asks for.
+SFX_FILES = {
+    "ui-ok.wav", "ui-error.wav", "ui-warn.wav", "ui-open.wav",
+    "ui-tab.wav", "ui-login.wav", "ui-login-error.wav",
+}
+_SFX_CACHE = {}
+
+
+def _sfx_cache(name):
+    """Read a cue once per process (~150 KB total). Never raises: a missing
+    file costs the cue, not the panel."""
+    if name in _SFX_CACHE:
+        return _SFX_CACHE[name]
+    path = os.path.join(HERE, "sfx", name)
+    try:
+        with open(path, "rb") as handle:
+            _SFX_CACHE[name] = handle.read()
+    except OSError:
+        _SFX_CACHE[name] = None
+    return _SFX_CACHE[name]
+
 _STORE_LOCK = threading.RLock()
 _STORE_LOCK_PATH = PROFILES_PATH + ".lock"
 # Akharin store-e salem (be tafkik-e masir-e file) ke movaffagh khonde/neveshte shode.
@@ -1950,7 +1974,8 @@ def crm_update_settings(fields):
             errors.append("بازهٔ استعلام باید بین ۱ تا ۷۲ ساعت باشد")
         else:
             settings["watch_interval_hours"] = hours
-    for key in ("scheduler_enabled", "auto_advance_default", "telegram_report_full_data"):
+    for key in ("scheduler_enabled", "auto_advance_default",
+                "telegram_report_full_data", "sound_enabled"):
         if key in fields:
             settings[key] = bool(fields[key])
     if "registry_fee_amount" in fields:
@@ -1988,6 +2013,37 @@ def crm_update_settings(fields):
                 errors.append(f"{label} حداکثر ۸۰ کاراکتر باشد")
             else:
                 settings[key] = value
+    # v1.9: the related-site buttons are shared with every browser, so they
+    # are stored here and not in localStorage. A link is a {name, url} pair;
+    # url is required and must be a plain http(s) link (a javascript: URL in a
+    # target=_blank button would run in the panel's own origin), and name is
+    # trimmed to what the button can actually display.
+    if "links" in fields:
+        raw_links = fields["links"]
+        cleaned = []
+        seen = set()
+        for item in raw_links if isinstance(raw_links, list) else []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not url:
+                continue
+            if not re.fullmatch(r"https?://\S{1,400}", url, flags=re.IGNORECASE):
+                errors.append("آدرس سایت باید با http یا https شروع شود")
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            cleaned.append({"name": name[:60] if name else url, "url": url})
+        # An empty list is allowed: the box is optional and the operator may
+        # want no buttons at all. _normalise_settings fills the defaults only
+        # when the key is missing/invalid, never when it is deliberately [].
+        # Assigned after the error gate below, so a rejected batch leaves the
+        # in-memory settings exactly as the caller passed them.
+        if errors:
+            return None, errors
+        settings["links"] = cleaned
     if errors:
         return None, errors
     data["settings"] = settings
@@ -5640,16 +5696,25 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .payrow a.btn{text-decoration:none;display:inline-flex;align-items:center}
   /* continue button states */
   .btn-continue:disabled{opacity:.45;cursor:not-allowed}
-  /* quick links box (bottom corner) */
-  .quickbox-wrap{position:fixed;bottom:14px;inset-inline-start:14px;z-index:60}
-  .quickbox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  /* quick links box (bottom corner). v1.9: moved to the bottom-LEFT corner —
+     in RTL, inset-inline-start is the physical right, where the toasts also
+     live, so the two stacked. inset-inline-end is the physical left and is
+     clear. The box also takes a close button now (qb-x). */
+  .quickbox-wrap{position:fixed;bottom:14px;inset-inline-end:14px;z-index:60}
+  .quickbox{position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;
     box-shadow:var(--shadow-2);padding:8px;display:flex;flex-direction:column;gap:5px;max-width:220px}
   .qb-title{font-size:11px;color:var(--muted);font-weight:600;margin:0 2px 2px}
+  .qb-x{position:absolute;top:6px;inset-inline-end:6px;background:transparent;border:0;
+    color:var(--muted);font-size:15px;line-height:1;cursor:pointer;padding:2px 5px;border-radius:6px}
+  .qb-x:hover{color:var(--txt);background:var(--card2)}
   .qb-btn{display:block;background:var(--card2);border:1px solid var(--line);border-radius:8px;
     padding:6px 10px;font-size:12px;color:var(--txt);text-decoration:none;text-align:center;
     transition:background .15s,color .15s,border-color .15s}
   .qb-btn:hover{background:var(--brand-soft);color:var(--brand)}
   #quickWrap .muted{font-size:11px}
+  /* v1.9: the header speaker toggle rides the existing iconbtn chrome. */
+  #soundBtn.on{color:var(--txt)}
+  #soundBtn.off{color:var(--muted);text-decoration:line-through}
   /* cards & tables */
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
     margin-bottom:14px;box-shadow:var(--shadow-1)}
@@ -5903,6 +5968,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
         </div>
       </div>
       <button class="iconbtn" id="themeBtn">پوسته</button>
+      <button class="iconbtn" id="soundBtn" title="صدای رویدادها" aria-pressed="false"></button>
       <button class="iconbtn" id="logoutBtn" title="خروج از حساب">خروج (__ACTOR__)</button>
     </div>
   </div>
@@ -5930,6 +5996,56 @@ var STAGE_FA = {
 };
 var STAGE_TONE = {'new':'n','inquiry':'n','problem':'bad','ready_owner':'warn','handed':'n',
   'to_payment':'ok','payment':'warn','payment_done':'ok','done':'ok','closed':'n'};
+/* v1.9: UI notification sounds. One short cue per event family, served from
+   /sfx/. The browser's autoplay policy allows Audio elements that are
+   created after the first user gesture — every cue below follows a click or
+   a submit, so nothing is blocked. A failure to play is swallowed on
+   purpose: a missing cue must never stop the action it announces. */
+var SOUND = {
+  enabled: true,                 /* mirrored from settings; login page honours it too */
+  els: {},                       /* name -> HTMLAudioElement, created once and reused */
+  last: {},                      /* name -> ms of the last play, for rate limiting */
+};
+function sfx(name){
+  if(!SOUND.enabled)return;
+  if(document.hidden)return;      /* do not beep into a tab the operator left */
+  var now=Date.now();
+  /* A repeated cue (a flapping connection re-toasting every 5s, or a fast
+     double-click) would stack into a buzz. 350 ms per family is enough for
+     the cues to be distinct and short enough to feel instant. */
+  var last=SOUND.last[name]||0;
+  if(now-last<350)return;
+  SOUND.last[name]=now;
+  try{
+    var el=SOUND.els[name];
+    if(!el){
+      el=new Audio('/sfx/'+name);
+      el.preload='auto';
+      SOUND.els[name]=el;
+    }
+    el.currentTime=0;
+    var pr=el.play();
+    if(pr&&pr.catch)pr.catch(function(){/* gesture/policy: ignore */});
+  }catch(e){/* a cue is decoration, never the signal */}
+}
+function paintSoundBtn(){
+  var b=document.getElementById('soundBtn');
+  if(!b)return;
+  var on=!!SOUND.enabled;
+  b.className='iconbtn '+(on?'on':'off');
+  b.setAttribute('aria-pressed',String(on));
+  b.textContent=on?'صدای':'بی‌صدا';
+  b.title=on?'صدای رویدادها روشن است (کلیک: خاموش)':'صدای رویدادها خاموش است (کلیک: روشن)';
+}
+function toggleSound(){
+  api('/crm-settings',{sound_enabled:!SOUND.enabled})
+    .then(function(r){
+      SOUND.enabled=r.settings.sound_enabled!==false;
+      paintSoundBtn();
+      toast(SOUND.enabled?'صدای رویدادها روشن شد.':'صدای رویدادها خاموش شد.');
+    })
+    .catch(function(e){toast(e,false);});
+}
 /* No 'payment_done' entry (v1.5 B8): completion is never gate-free -- the
    continue button at payment_done is the only path that can land on 'done'. */
 var STAGE_SKIP_NEXT = {
@@ -5998,6 +6114,11 @@ async function api(path,payload){
   return body;
 }
 function toast(msg, ok){
+  /* v1.9: the toast IS the action's settle signal (success/warn/fail all
+     funnel through here), so the cue belongs here too. The 5s background
+     refresh also toasts on a connection loss — rate limiting below keeps a
+     flapping connection from beeping once a second. */
+  sfx(ok===false?'ui-error':(ok==='warn'?'ui-warn':'ui-ok'));
   ibtnClearBusy();
   var el=document.createElement('div');
   el.className='toast'+(ok==='warn'?' warn':(ok===false?' bad':''));
@@ -6028,14 +6149,14 @@ function dlgCaseSync(){
   var d=(STATE.devices||[]).find(x=>x.id===CASE_MODAL.id);
   if(!d){var nm=CASE_MODAL.name||'';closeDlg();toastCtx(nm,'حذف شد — پنجرهٔ جزئیات بسته شد');return;}
   var sig=dlgCaseSig(d);
-  if(sig!==CASE_MODAL.sig){caseDetail(CASE_MODAL.id);}
+  if(sig!==CASE_MODAL.sig){caseDetail(CASE_MODAL.id,true);}
 }
 /* Restore the case detail after a child dialog (attach/edit) or a confirm
    flow replaced it — used by the action callbacks that know the case id. */
 function dlgCaseRestore(id){
   if(CASE_MODAL.id===id&&!CASE_MODAL.live)caseDetail(id);
 }
-function openDlg(html){
+function openDlg(html, silent){
   /* v1.3.5: any dialog opened over a LIVE case modal arms the return —
      dismissing it (انصراف, ×, Esc) comes back to that case. Action
      confirms disarm via confirmYes; success callbacks restore (or close)
@@ -6053,7 +6174,16 @@ function openDlg(html){
      the toast container inside the dialog while it is open; closeDlg
      moves it back. Fixed positioning is unaffected (the dialog has no
      transform/filter). */
-  dlg.appendChild(document.getElementById('toasts'));}
+  dlg.appendChild(document.getElementById('toasts'));
+  /* v1.9: a dialog opening is a boundary the operator crossed deliberately,
+     so it gets the softest cue of the set. confirmDlg() also lands here, so
+     a destructive confirm does not need a separate sound. `silent` is for
+     the 5s rebuild path: dlgCaseSync/dlgPeriodSync replace an already-open
+     modal from the background refresh, and that is not a boundary anyone
+     crossed — without it, an open modal would chirp every time the server
+     state moved. */
+  if(!silent)sfx('ui-open');
+}
 function closeDlg(){
   /* v1.3.5: everything a close needs happens HERE, synchronously — the
      dialog 'close' event only arrives asynchronously in Chromium (often
@@ -6113,6 +6243,13 @@ document.getElementById('themeBtn').onclick=function(){
   var next=dark?'light':'dark';
   document.documentElement.setAttribute('data-theme',next);
   localStorage.setItem('irica-theme',next);
+};
+/* v1.9: the header mirror of the settings checkbox. One click toggles and
+   saves; no confirm needed, and the cue for the toggle itself is the only
+   proof the speaker is alive. */
+document.getElementById('soundBtn').onclick=function(){
+  toggleSound();
+  if(SOUND.enabled)sfx('ui-ok');   /* the button's own announcement */
 };
 document.getElementById('logoutBtn').onclick=function(){
   fetch('/logout',{method:'POST'}).then(function(){
@@ -6712,6 +6849,23 @@ function filterDevRows(ds,extraHay){
   if(!q)return ds;
   return ds.filter(d=>tabSearchMatches(devHay(d)+' '+(extraHay?extraHay(d):''),q));
 }
+/* v1.9.0 (operator request): the lists read newest-first. The store is
+   append-only, so its raw order IS oldest-first and a list that never sorts
+   shows the oldest row on top. A COPY is sorted — reordering STATE in place
+   would leak into every other render (and filterDevRows even hands the
+   caller's own array back when no search is on).
+   The store index breaks the tie: crm._now() has second resolution, so two
+   rows really can share a stamp, and among equals the later one is the newer
+   one — the same fallback the launcher page uses. That makes the order total,
+   so the 5s re-render can never flip two rows. A missing/empty stamp counts
+   as oldest and rides the same index fallback: legacy rows stay put and
+   nothing is migrated or written back. */
+function newestFirst(rows,stamp){
+  return (rows||[]).map(function(r,i){return {r:r,i:i};}).sort(function(a,b){
+    var sa=String(stamp(a.r)||''), sb=String(stamp(b.r)||'');
+    return sa!==sb?(sb<sa?-1:1):(b.i-a.i);
+  }).map(function(x){return x.r;});
+}
 /* Friendly "no match" state — only shown while a search/filter is ACTIVE;
    a genuinely empty list keeps its own message. */
 function searchEmptyHtml(){
@@ -7102,12 +7256,16 @@ function perCasesHtml(p){
     +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
 function perOwnersHtml(p){
-  var ps=periodOwners(p.id);
+  /* v1.9.0: newest case first, so the stamp is the CASE's created. The
+     derived index breaks a tie deterministically — the list must not jump
+     between two orders on the period dialog's own 5s refresh. */
+  var ps=newestFirst(periodOwners(p.id),r=>(r.device||{}).created);
   var bound={};
   ((STATE&&STATE.devices)||[]).forEach(function(d){
     if(d.owner_id)bound[String(d.owner_id)]=true;
   });
-  var free=((STATE&&STATE.owners)||[]).filter(o=>!bound[String(o.id)]);
+  var free=newestFirst(((STATE&&STATE.owners)||[]).filter(o=>!bound[String(o.id)]),
+    o=>o.created);
   /* Reviewing a period is also when the operator wants to see who is still
      unassigned, so the free passengers ride along — clearly marked, because
      they belong to no case at all. */
@@ -7135,7 +7293,9 @@ function perOwnersHtml(p){
     +freeHtml;
 }
 function perCustomersHtml(p){
-  var cs=periodCustomers(p.id);
+  /* v1.9.0: newest customer first — the segment lists the customers of the
+     period's cases, latest first, like every other list. */
+  var cs=newestFirst(periodCustomers(p.id),c=>c.created);
   if(!cs.length)
     return emptyHtml('مشتری‌ای به پرونده‌های این دوره وصل نیست',
       'پرونده‌های بدون مشتری هم در بخش «پرونده‌ها» فهرست شده‌اند.');
@@ -7176,7 +7336,7 @@ function perPaint(){
   if(head)head.innerHTML='<h3>'+esc(periodName(p))+' '+periodPill(p)+'</h3>'
     +'<div class="kbd">'+esc(periodRange(p))+'</div>';
 }
-function dlgPeriod(pid){
+function dlgPeriod(pid, silent){
   var p=periodById(pid);
   if(!p){toast('دورهٔ انتخاب‌شده پیدا نشد',false);return;}
   /* v1.8.1: coming back from a case (or a live refresh) rebuilds the SAME
@@ -7184,7 +7344,7 @@ function dlgPeriod(pid){
      lands where they left. A different period starts on its cases. */
   PER.seg=(String(PER.pid)===String(pid)&&PER.seg)?PER.seg:'cases';
   PER.pid=String(pid);
-  openDlg('<div class="perdlg">'
+  openDlg('<div class="perdlg">', silent
     +'<div id="perHead"></div>'
     +'<div class="row" style="margin:8px 0 12px">'
     +'<div class="seg" id="perSeg">'
@@ -7254,7 +7414,7 @@ function dlgPeriodSync(){
      body is the scroller, so put the operator back where they were reading. */
   var scroller=document.getElementById('dlgBody');
   var keep=scroller?scroller.scrollTop:0;
-  dlgPeriod(PER.pid);
+  dlgPeriod(PER.pid,true);
   var fresh=document.getElementById('dlgBody');
   if(fresh)fresh.scrollTop=keep;
 }
@@ -7329,7 +7489,7 @@ function devicesHtml(){
    action refresh() runs dlgCaseSync() which re-renders this modal on state
    change, and action callbacks restore it via dlgCaseRestore(id) after a
    child dialog replaced it. */
-function caseDetail(id){
+function caseDetail(id, silent){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d){toast('پرونده پیدا نشد',false);return;}
   /* v1.8.1: where a close should return to. Entering from the period dialog
@@ -7413,7 +7573,7 @@ function caseDetail(id){
     +(d.stage==='handed'
       ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">'+ICONS.send+' ارسال مجدد به تلگرام</button>':'')
     +(acts||'');
-  openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">'
+  openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">', silent
     +'<h3 style="margin:0;padding:0">'+esc(d.name)+'</h3>'
     +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
     +'<span class="chip kbd">'+esc(d.id)+'</span></div>'
@@ -7554,6 +7714,9 @@ function customersHtml(){
   var q=tabQ();
   var cs=(STATE.customers||[]).filter(c=>tabSearchMatches(
     [c.full_name,c.mobile,c.telegram_id,c.instagram_id,c.address,c.notes].join(' '),q));
+  /* v1.9.0: newest customer on top. The filter has already run, so TAB_COUNT
+     and the rows stay in step. */
+  cs=newestFirst(cs,c=>c.created);
   TAB_COUNT=cs.length;
   var rows=cs.map(c=>
     '<tr><td><b>'+esc(c.full_name)+'</b></td><td class="kbd">'+esc(c.mobile||'—')+'</td>'
@@ -7588,10 +7751,15 @@ function ownersHtml(){
     return tabSearchMatches([o.first_name,o.last_name,o.national,o.birth,o.mobile,o.card_no,o.passport,dev?dev.name:''].join(' '),q);
   });
   var archCount=arch.length;
+  /* v1.9.0 (operator request): newest passenger on top, numbered like the
+     case table — fa(i+1) over the FILTERED, SORTED list, so the numbers start
+     at ۱ and hold still across the 5s re-render. */
+  os=newestFirst(os,o=>o.created);
   TAB_COUNT=os.length;
-  var rows=os.map(o=>{
+  var rows=os.map((o,i)=>{
     var dev=(STATE.devices||[]).find(d=>d.owner_id===o.id);
-    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
+    return '<tr><td class="kbd">'+fa(i+1)+'</td>'
+    +'<td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
     +'<td class="kbd">'+esc(o.national)+'</td><td class="kbd">'+esc(o.birth)+'</td>'
     +'<td class="kbd">'+esc(o.mobile)+'</td><td class="kbd">'+esc(o.card_no)+'</td>'
     +'<td>'+(dev?'<span class="pill n">'+esc(dev.name)+'</span> <span class="pill ok">متصل</span>':'<span class="pill warn">آزاد</span>')+'</td>'
@@ -7604,8 +7772,8 @@ function ownersHtml(){
     +'<button class="btn primary" onclick="dlgOwner(\'add\')">+ مسافر جدید</button>'
     +(archCount?'<button class="btn" onclick="setTab(\'owner_archive\')">بایگانی: '+fa(archCount)+' مسافر</button>':'')
     +'<span class="muted">کد ملی با رقم کنترلی بررسی می‌شود؛ سن ۱۵ تا ۹۹ سال مجاز است.</span></div>'
-    +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
-    +'<tbody>'+(rows||'<tr><td colspan="7">'+(searchActive()?searchEmptyHtml():(archCount?emptyInnerHtml('مسافر فعالی نیست','همهٔ مسافر‌ها در بایگانی هستند؛ به تب «بایگانی مسافر‌ها» بروید.'):emptyInnerHtml('مسافری ثبت نشده است','مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.')))+'</td></tr>')+'</tbody></table></div>';
+    +'<table><thead><tr><th>ردیف</th><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>کارت</th><th>دستگاه</th><th></th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="8">'+(searchActive()?searchEmptyHtml():(archCount?emptyInnerHtml('مسافر فعالی نیست','همهٔ مسافر‌ها در بایگانی هستند؛ به تب «بایگانی مسافر‌ها» بروید.'):emptyInnerHtml('مسافری ثبت نشده است','مشخصات مسافر برای ثبت پرونده، تحویل و ثبت‌نام لازم است.')))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= owner archive (v1.7) ================= */
@@ -7620,10 +7788,14 @@ function ownerArchiveHtml(){
       r.owner.birth,r.owner.mobile,r.owner.passport,r.device?r.device.name:'',
       r.customer_name].join(' '),q));
   TAB_COUNT=rows.length;
-  var tr=rows.map(r=>{
+  /* v1.9.0 (operator request): the same numbering as the active passenger
+     list. The ORDER is the server's — crm.archived_owners sorts by done_at
+     DESC — so numbering the filtered list is all this surface needs. */
+  var tr=rows.map((r,i)=>{
     var o=r.owner, d=r.device||{};
     var serials=[d.serial1,d.serial2].filter(Boolean).join(' / ');
-    return '<tr><td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
+    return '<tr><td class="kbd">'+fa(i+1)+'</td>'
+    +'<td><b>'+esc(o.first_name+' '+o.last_name)+'</b></td>'
     +'<td class="kbd">'+esc(o.national)+'</td>'
     +'<td class="kbd">'+esc(o.birth)+'</td>'
     +'<td class="kbd">'+esc(o.mobile||'—')+'</td>'
@@ -7639,8 +7811,8 @@ function ownerArchiveHtml(){
   return '<div class="card"><div class="row" style="margin-bottom:10px">'
     +'<span class="pill ok">'+fa(rows.length)+' مسافر تکمیل‌شده</span>'
     +'<span class="muted">مسافرانی که کد فعال‌سازی تحویل شده و پروندهٔ آن‌ها تکمیل شده است. با بازگرداندن پرونده به گام قبل، مسافر به‌صورت خودکار به لیست فعال برمی‌گردد.</span></div>'
-    +'<table><thead><tr><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>دستگاه</th><th>مشتری</th><th>تاریخ تحویل کد</th><th></th></tr></thead>'
-    +'<tbody>'+(tr||'<tr><td colspan="8">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('هنوز مسافری بایگانی نشده است','با تکمیل پروندهٔ یک مسافر، او به‌صورت خودکار اینجا ظاهر می‌شود.'))+'</td></tr>')+'</tbody></table></div>';
+    +'<table><thead><tr><th>ردیف</th><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>دستگاه</th><th>مشتری</th><th>تاریخ تحویل کد</th><th></th></tr></thead>'
+    +'<tbody>'+(tr||'<tr><td colspan="9">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('هنوز مسافری بایگانی نشده است','با تکمیل پروندهٔ یک مسافر، او به‌صورت خودکار اینجا ظاهر می‌شود.'))+'</td></tr>')+'</tbody></table></div>';
 }
 
 /* ================= periodic gomrok inquiry tab ================= */
@@ -7732,7 +7904,9 @@ function paDevices(){
 function paRender(){
   var body=document.getElementById('paBody'),nav=document.getElementById('paNav');
   if(!body)return;
-  var all=paDevices();
+  /* v1.9.0: newest case first, so page ۱ is the NEWEST page. The pager itself
+     is untouched — same PA_SIZE, same page numbers, same clamp below. */
+  var all=newestFirst(paDevices(),d=>d.created);
   var pages=Math.max(1,Math.ceil(all.length/PA_SIZE));
   if(PA_PAGE>pages)PA_PAGE=pages;
   var slice=all.slice((PA_PAGE-1)*PA_SIZE,PA_PAGE*PA_SIZE);
@@ -7830,7 +8004,9 @@ function periodicHtml(){
   var schedOn=!!settings.scheduler_enabled;
   var hours=settings.watch_interval_hours||2;
   var full=periodicDevices();
-  var all=filterDevRows(full);
+  /* v1.9.0: newest case first, but only for the ROWS — `full` keeps its store
+     order for the active/total counts printed in the toolbar. */
+  var all=newestFirst(filterDevRows(full),d=>d.created);
   TAB_COUNT=all.length;
   var rows=all.map(d=>{
     var est=d.estelam||{};
@@ -7886,32 +8062,59 @@ function periodicHtml(){
     '<tbody>'+(logs||'<tr><td colspan="4"><div class="empty"><span class="eic">'+ICONS.inbox+'</span><span class="esub">هنوز لاگی ثبت نشده است.</span></div></td></tr>')+'</tbody></table></div></div>';
 }
 /* ================= settings tab ================= */
-var CRM_LINKS_KEY='irica-crm-links';
-var CRM_LINKS_DEFAULT=[
-  {name:'استعلام گمرک (ایریكا)',url:'https://epl.irica.gov.ir/ImeiRegister?1'},
-  {name:'همتا',url:'https://hamta.ntsw.ir/'}];
+/* v1.9: the related-site buttons moved out of localStorage into settings, so
+   every browser sees the same list. The tab edits a local draft and saves it
+   in one go; the read side is STATE.settings.links. */
 function loadLinks(){
-  try{
-    var raw=localStorage.getItem(CRM_LINKS_KEY);
-    if(raw){var arr=JSON.parse(raw);if(Array.isArray(arr))return arr;}
-  }catch(e){}
-  return CRM_LINKS_DEFAULT.slice();
+  var arr=(STATE&&STATE.settings&&STATE.settings.links)||[];
+  return arr.map(function(l){return {name:String(l.name||''),url:String(l.url||'')};})
+    .filter(function(l){return !!l.url;});
 }
-function saveLinks(arr){try{localStorage.setItem(CRM_LINKS_KEY,JSON.stringify(arr));}catch(e){}}
-function settingsHtml(){
-  var settings=(STATE&&STATE.settings)||{};
-  var links=loadLinks();
-  var rows=links.map((l,i)=>'<div class="row" style="gap:6px;margin-bottom:6px">'
+function draftLinks(){
+  /* The tab's inputs are the draft of a not-yet-saved list. Reading them back
+     is what add/remove and save have in common. */
+  var out=[];
+  var i=0;
+  for(;;i++){
+    var n=document.getElementById('lnName'+i), u=document.getElementById('lnUrl'+i);
+    if(!n&&!u)break;
+    out.push({name:(n?n.value:'').trim(),url:(u?u.value:'').trim()});
+  }
+  return out;
+}
+function settingsLinkAdd(){
+  var arr=draftLinks();arr.push({name:'',url:''});settingsLinksPaint(arr);
+}
+function settingsLinkRemove(i){
+  var arr=draftLinks();arr.splice(i,1);settingsLinksPaint(arr);
+}
+function settingsLinksPaint(links){
+  /* Re-render just the link rows, not the whole tab: the operator's unsaved
+     edits in the other cards would otherwise be lost. */
+  var box=document.getElementById('linkRows');
+  if(!box)return;
+  box.innerHTML=(links||draftLinks()).map(function(l,i){
+    return '<div class="row" style="gap:6px;margin-bottom:6px">'
     +'<input id="lnName'+i+'" value="'+esc(l.name)+'" style="width:150px" placeholder="نام">'
     +'<input id="lnUrl'+i+'" value="'+esc(l.url)+'" dir="ltr" style="flex:1" placeholder="https://...">'
-    +'<button class="btn mini danger" onclick="settingsLinkRemove('+i+')">حذف</button></div>').join('');
+    +'<button class="btn mini danger" onclick="settingsLinkRemove('+i+')">حذف</button></div>';
+  }).join('')||'<div class="muted">لینکی ثبت نشده است.</div>';
+}
+function settingsHtml(){
+  var settings=(STATE&&STATE.settings)||{};
   return '<div class="card"><h3>نمایش</h3>'
   +'<div class="row" style="margin-bottom:8px">'
   +'<label class="f">پوسته<select id="stTheme" onchange="settingsApply()">'
   +'<option value="light">روشن</option><option value="dark">تاریک</option></select></label>'
   +'<label class="f">اندازهٔ متن<select id="stFs" onchange="settingsApply()">'
   +'<option value="0">معمولی</option><option value="1">بزرگ</option><option value="2">بزرگ‌تر</option></select></label>'
-  +'</div></div>'
+  +'</div>'
+  /* v1.9: a saved cue plays for save/error/warning/open/tab events. OFF is
+     not a silent error — the header speaker mirrors it, and the login page
+     honours it too, so the panel never beeps after you asked it not to. */
+  +'<div class="row"><label class="f check"><input type="checkbox" id="stSound" '+(settings.sound_enabled!==false?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">افکت صدا روشن باشد</span></label>'
+  +'<button class="btn primary" onclick="settingsSaveSound()">ذخیره</button></div>'
+  +'<p class="muted">صداهای کوتاه برای ذخیرهٔ موفق، خطا، هشدار و باز شدن پنجره‌ها. با دکمهٔ بلندگو بالای صفحه هم می‌توانید سریع قطع و وصل کنید.</p></div>'
   +'<div class="card"><h3>مالی</h3>'
   +'<div class="row"><label class="f">هزینه ثبت رجیستری (تومان)'
   +'<input id="stFee" class="ltr" inputmode="numeric" style="width:150px" value="'+fa(settings.registry_fee_amount||0)+'"></label>'
@@ -7934,10 +8137,15 @@ function settingsHtml(){
     +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
     +'<p class="muted">زمان‌بند، استعلام گمرکِ پرونده‌های تحویل‌شده را هر بازهٔ تنظیم‌شده اجرا می‌کند.</p></div>'
     +'<div class="card"><h3>دکمه‌های سایت‌های مرتبط (گوشهٔ پایین صفحه)</h3>'
-    +(rows||'<div class="muted">لینکی ثبت نشده است.</div>')
+    +'<div id="linkRows">'+(loadLinks().map(function(l,i){
+      return '<div class="row" style="gap:6px;margin-bottom:6px">'
+      +'<input id="lnName'+i+'" value="'+esc(l.name)+'" style="width:150px" placeholder="نام">'
+      +'<input id="lnUrl'+i+'" value="'+esc(l.url)+'" dir="ltr" style="flex:1" placeholder="https://...">'
+      +'<button class="btn mini danger" onclick="settingsLinkRemove('+i+')">حذف</button></div>';
+    }).join('')||'<div class="muted">لینکی ثبت نشده است.</div>')+'</div>'
     +'<div class="row" style="margin-top:8px"><button class="btn" onclick="settingsLinkAdd()">+ افزودن لینک</button>'
     +'<button class="btn primary" onclick="settingsLinksSave()">ذخیره لینک‌ها</button></div>'
-    +'<p class="muted">لینک‌ها در همین مرورگر ذخیره می‌شوند و به‌صورت دکمه در کادر پایین صفحه نمایش داده می‌شوند.</p></div>';
+    +'<p class="muted">این دکمه‌ها گوشهٔ پایین چپ صفحه هستند و در همهٔ مرورگرها یکسان نشان داده می‌شوند. برای بستن کادر، دکمهٔ × بالای خودش را بزنید؛ از همین جا دوباره فعال می‌شود.</p></div>';
 }
 function settingsApply(){
   var theme=document.getElementById('stTheme').value;
@@ -7969,25 +8177,49 @@ function settingsSave(){
     .then(async r=>{toast('تنظیمات ذخیره شد');await refresh();})
     .catch(e=>toast(e,false));
 }
-function settingsLinkAdd(){
-  var arr=loadLinks();arr.push({name:'',url:''});saveLinks(arr);renderView();
-}
-function settingsLinkRemove(i){
-  var arr=loadLinks();arr.splice(i,1);saveLinks(arr);renderView();
+function settingsSaveSound(){
+  api('/crm-settings',{sound_enabled:document.getElementById('stSound').checked})
+    .then(async r=>{
+      SOUND.enabled=r.settings.sound_enabled!==false;
+      paintSoundBtn();
+      toast(SOUND.enabled?'صدای رویدادها روشن شد.':'صدای رویدادها خاموش شد.');
+      await refresh();
+    })
+    .catch(e=>toast(e,false));
 }
 function settingsLinksSave(){
-  var arr=loadLinks().map((l,i)=>({
-    name:document.getElementById('lnName'+i).value.trim(),
-    url:document.getElementById('lnUrl'+i).value.trim()})).filter(l=>l.url);
-  saveLinks(arr);toast('لینک‌ها ذخیره شد');renderQuickBox();
+  var arr=draftLinks().filter(function(l){return !!l.url;});
+  api('/crm-settings',{links:arr})
+    .then(async r=>{
+      if(STATE&&STATE.settings)STATE.settings.links=r.settings.links||[];
+      toast('لینک‌ها ذخیره شد');await refresh();renderQuickBox();
+    })
+    .catch(e=>toast(e,false));
 }
 function renderQuickBox(){
   var wrap=document.getElementById('quickWrap');
   if(!wrap)return;
   var links=loadLinks();
-  wrap.innerHTML='<div class="quickbox" id="quickBox"><div class="qb-title">سایت‌های مرتبط</div>'
-    +(links.map(l=>l.url?'<a class="qb-btn" target="_blank" href="'+esc(l.url)+'">'+esc(l.name||l.url)+'</a>':'').join('')
+  /* v1.9: the box can be dismissed. The state is local because hiding the
+     buttons is a per-operator comfort, not a shared setting — the buttons
+     themselves are the shared part and stay configured in this tab. */
+  var hidden=false;
+  try{hidden=localStorage.getItem('irica-quickbox')==='0';}catch(e){}
+  if(hidden){wrap.innerHTML='';return;}
+  wrap.innerHTML='<div class="quickbox" id="quickBox">'
+    +'<button type="button" class="qb-x" onclick="quickBoxHide()" aria-label="بستن کادر سایت‌های مرتبط" title="بستن (از تب تنظیمات دوباره فعال می‌شود)">×</button>'
+    +'<div class="qb-title">سایت‌های مرتبط</div>'
+    +(links.map(function(l){return l.url?'<a class="qb-btn" target="_blank" href="'+esc(l.url)+'">'+esc(l.name||l.url)+'</a>':'';}).join('')
       ||'<span class="muted">لینکی ثبت نشده</span>')+'</div>';
+}
+function quickBoxHide(){
+  try{localStorage.setItem('irica-quickbox','0');}catch(e){}
+  renderQuickBox();
+  toast('کادر سایت‌های مرتبط بسته شد؛ از تب تنظیمات دوباره فعال می‌شود.');
+}
+function quickBoxShow(){
+  try{localStorage.removeItem('irica-quickbox');}catch(e){}
+  renderQuickBox();
 }
 function dueIn(d,hours){
   if(d.periodic_opt_out)return '—';
@@ -8008,6 +8240,8 @@ function identitiesHtml(){
   var q=tabQ();
   var ids=(STATE.identities||[]).filter(i=>tabSearchMatches(
     [i.label,i.national,i.birth,i.mobile].join(' '),q));
+  /* v1.9.0: newest identity first (the pool grows at the end of the store). */
+  ids=newestFirst(ids,i=>i.created);
   TAB_COUNT=ids.length;
   var rows=ids.map(i=>
     '<tr><td><b>'+esc(i.label)+'</b></td><td class="kbd">'+esc(i.national)+'</td>'
@@ -8028,7 +8262,10 @@ function ledgerHtml(){
   var q=tabQ();
   var rows='';
   var count=0;
-  (STATE.customers||[]).forEach(c=>{
+  /* v1.9.0: the newest customer's rows come first. ONLY this outer order
+     changes — the inner loop still walks each transaction array backwards,
+     because the row button hands txDetailModal the TRUE array index (idx). */
+  newestFirst((STATE.customers||[]),c=>c.created).forEach(c=>{
     var txs=c.transactions||[];
     for(var idx=txs.length-1; idx>=0; idx--){            // newest first (as before)
       var t=txs[idx];
@@ -8123,7 +8360,7 @@ function dlgDevice(){
      period was closed elsewhere). The server re-checks; this only saves a
      round-trip. */
   if(!activePeriod()){toast(NO_PERIOD_TIP,false);return;}
-  var custOpts='<option value="">— مشتری جدید —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
+  var custOpts='<option value="">مشتری جدید</option>'+newestFirst(STATE.customers||[],c=>c.created).map(c=>'<option value="'+c.id+'">'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>پروندهٔ دستگاه جدید</h3>'
     +'<p class="muted">با ثبت دستگاه، «هزینه ثبت رجیستری» به حساب مشتری بدهکار می‌شود؛ مبلغ پیش‌فرض از تب تنظیمات خوانده می‌شود و قابل تغییر است. مبلغ دریافتی نیز به‌صورت «دریافتی» در حساب همان مشتری ثبت می‌شود.</p>'
     +'<div class="grid" style="margin-bottom:8px">'
@@ -8235,7 +8472,7 @@ function doAddDevice(){
 function dlgDeviceEdit(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d){toast('پرونده پیدا نشد',false);return;}
-  var custOpts='<option value="">— بدون مشتری —</option>'+(STATE.customers||[]).map(c=>'<option value="'+c.id+'"'+(c.id===d.customer_id?' selected':'')+'>'+esc(c.full_name)+'</option>').join('');
+  var custOpts='<option value="">بدون مشتری</option>'+newestFirst(STATE.customers||[],c=>c.created).map(c=>'<option value="'+c.id+'"'+(c.id===d.customer_id?' selected':'')+'>'+esc(c.full_name)+'</option>').join('');
   openDlg('<h3>ویرایش پروندهٔ دستگاه</h3>'
     +'<div class="grid" style="margin-bottom:8px">'
     +'<label class="f">نام دستگاه *<input id="dvEName" value="'+esc(d.name||'')+'"></label>'
@@ -8285,7 +8522,8 @@ function dlgAttach(id){
      the filter (the server remains the enforcer of the 1:1). With no free
      owner the dialog says so and the attach button stays disabled. */
   var bound={};(STATE.devices||[]).forEach(d=>{if(d.owner_id)bound[d.owner_id]=true;});
-  var free=(STATE.owners||[]).filter(o=>!bound[o.id]);
+  /* v1.9.0: newest passenger first in the picker, like the passenger tab. */
+  var free=newestFirst((STATE.owners||[]).filter(o=>!bound[o.id]),o=>o.created);
   var opts=free.map(o=>{
     var label=esc(o.first_name+' '+o.last_name)+' — '+esc(o.national);
     return '<option value="'+o.id+'">'+label+'</option>';
@@ -8973,7 +9211,13 @@ function renderTabs(){
     '<button class="tab'+(TAB===t[0]?' active':'')+'" onclick="setTab(\''+t[0]+'\')">'+t[1]
     +(counts[t[0]]!=null?'<span class="cnt">'+fa(counts[t[0]])+'</span>':'')+'</button>').join('');
 }
-function setTab(t){ibtnClearBusy();TAB=t;renderTabs();renderView();}
+function setTab(t){
+  ibtnClearBusy();TAB=t;renderTabs();renderView();
+  /* v1.9: the quietest cue, because tab switching is frequent. The initial
+     render reads TAB from the URL and does not come through here, so loading
+     the panel does not beep. */
+  sfx('ui-tab');
+}
 function renderLogs(){
   var box=document.getElementById('logBox');
   if(!box)return;
@@ -9023,6 +9267,17 @@ async function refresh(){
     LOGS=(await r[1].json()).logs||[];
     STATE.periodic_logs=((await r[2].json()).logs||[]).reverse();
     LOADFAIL=false;
+    /* v1.9: the sound switch is a server setting, so every browser agrees.
+      Re-checked on every refresh — another operator turning it off here
+      silences this panel too, and vice versa. The local key is only the
+      mirror the login page reads before it has a session. */
+    var snd=(STATE.settings||{}).sound_enabled;
+    var on=snd!==false;
+    if(SOUND.enabled!==on){
+      SOUND.enabled=on;
+      paintSoundBtn();
+    }
+    try{ if(on)localStorage.removeItem('irica-sound');else localStorage.setItem('irica-sound','0'); }catch(e){}
   }catch(e){ LOADFAIL=true; }
   renderTabs();
   renderView();
@@ -9032,6 +9287,7 @@ async function refresh(){
 }
 renderTabs();
 renderQuickBox();
+paintSoundBtn();   /* the button is in the header, so the 5s refresh never touches it */
 refresh();
 setInterval(refresh, 5000);
 </script>
@@ -9828,8 +10084,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "store temporarily unreadable", "retry": True}, 503)
 
     # ------------------------------------------------------------- gate
+    # v1.9: /sfx/* is public on purpose — the login page plays the login cues
+    # before there is a session. Only the seven generated files are ever
+    # served (SFX_FILES), and the route itself re-checks the name, so nothing
+    # else in that folder is reachable.
     PUBLIC_GET_PATHS = ("/login", "/favicon.ico", "/fonts/Vazirmatn-var.woff2",
-                       "/fonts/Vazirmatn-Bold.woff2")
+                       "/fonts/Vazirmatn-Bold.woff2", "/sfx/")
 
     def _is_browser_navigation(self):
         """True for real browser navigations (typed URL, link, refresh).
@@ -9970,6 +10230,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, fh.read(), "font/woff2")
             except OSError:
                 self._send(404, b"not found", "text/plain")
+        elif route.startswith("/sfx/"):
+            # v1.9: UI notification cues. The whitelist is the seven generated
+            # files only; a name is never joined into a path unchecked, so the
+            # folder holds nothing else that is reachable. WAV is cached here
+            # once per process instead of re-reading ~150 KB on every click.
+            name = os.path.basename(route)
+            if name not in SFX_FILES:
+                self._send(404, b"not found", "text/plain")
+                return
+            data = _sfx_cache(name)
+            if data is None:
+                self._send(404, b"not found", "text/plain")
+                return
+            self._send(200, data, "audio/wav")
         elif route == "/favicon.ico":
             # v1.4.0: the IRICA brand mark (path-drawn R, from
             # lab/design/irica-brand.md) — font-independent and legible at
@@ -10812,10 +11086,28 @@ button:focus-visible { outline: none; box-shadow: var(--ring); }
 var f = document.getElementById("f");
 var btn = document.getElementById("btn");
 var err = document.getElementById("err");
+/* v1.9: the login page has no shared shell, so it carries its own cue code.
+   The switch is the server setting; before login there is no session to
+   read it from, so the last known choice is remembered locally and the
+   default is ON. The cue follows the submit click, so the browser's
+   autoplay policy allows it. */
+function sfxOn(){
+  try{ return localStorage.getItem("irica-sound") !== "0"; }catch(e){ return true; }
+}
+function sfx(name){
+  if(!sfxOn())return;
+  try{
+    var el = new Audio("/sfx/" + name);
+    el.preload = "auto";
+    var pr = el.play();
+    if(pr && pr.catch) pr.catch(function(){});
+  }catch(e){}
+}
 function fail(msg) {
   err.textContent = msg;
   err.style.display = "block";
   btn.disabled = false;
+  sfx("ui-login-error");
 }
 f.addEventListener("submit", function (ev) {
   ev.preventDefault();
@@ -10831,7 +11123,7 @@ f.addEventListener("submit", function (ev) {
     body: JSON.stringify(payload)
   }).then(function (r) {
     if (r.status === 429) { fail("تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید"); return null; }
-    if (r.ok) { window.location.replace("/"); return null; }
+    if (r.ok) { sfx("ui-login"); window.location.replace("/"); return null; }
     return r.json().then(function (j) {
       fail((j.errors && j.errors[0]) || "ورود ناموفق بود");
     }, function () { fail("ورود ناموفق بود"); });

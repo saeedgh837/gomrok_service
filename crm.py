@@ -56,7 +56,36 @@ DEFAULT_SETTINGS = {
     # Empty current_period means devices register into the implicit open
     # period (backfill safety for stores written before v1.7).
     "current_period_id": "",
+    # v1.9: UI cue volume + quick links are shared between every browser, so
+    # they live here and not in localStorage (a second machine never saw a
+    # link the operator had added). "links" ships as the built-in pair below;
+    # a store that has removed every link stores [] and that is kept as-is
+    # (see _normalise_settings) — [] is a deliberate "no buttons", not the
+    # sentinel for "not configured yet".
+    "sound_enabled": True,
+    "links": None,   # set from LINKS_DEFAULT below (defined after this dict)
 }
+
+# Known-good default for a missing/corrupt "links" entry; the settings merge
+# below uses it to keep the tab rendering even on a store from before v1.9.
+LINKS_DEFAULT = [
+    {"name": "استعلام گمرک (ایریکا)", "url": "https://epl.irica.gov.ir/ImeiRegister?1"},
+    {"name": "همتا", "url": "https://hamta.ntsw.ir/"},
+]
+
+# Flat URL list for the tests + any consumer that only needs to know the
+# default destinations (kept separate from LINKS_DEFAULT so the labels stay
+# the single source of truth).
+LINKS_DEFAULT_URLS = [link["url"] for link in LINKS_DEFAULT]
+
+# Fresh copies every time: a caller mutating its returned defaults must never
+# reach LINKS_DEFAULT itself. All consumers of the default pair go through
+# here rather than DEFAULT_SETTINGS["links"] directly.
+def _default_links():
+    return [dict(x) for x in LINKS_DEFAULT]
+
+
+DEFAULT_SETTINGS["links"] = _default_links()
 
 # Ledger note for the per-case registry charge. v1.7: the plain form is the
 # ONE operator-facing name for this charge — the same words the panel's
@@ -383,9 +412,35 @@ def _default_store_path():
     return app_paths.data_path("crm_store.json")
 
 
+def _normalise_settings(settings):
+    """v1.9: the quick-links list is shared between browsers, so it is a
+    setting, not localStorage. It is also the one setting that is a LIST, so
+    an old store (no key) or a hand-edited one (a non-list) must still render:
+    a missing or invalid list falls back to the defaults. A list that is
+    present and empty is the operator's explicit "no buttons" and is kept
+    as-is; every entry is copied so a caller cannot mutate the store's dict.
+    MUTATES and RETURNS the settings dict, so both _empty_store and the merge
+    in _store_read can call it the same way."""
+    if not isinstance(settings, dict):
+        return settings
+    links = settings.get("links")
+    if isinstance(links, list):
+        out = [dict(x) for x in links
+               if isinstance(x, dict) and isinstance(x.get("url"), str)]
+        # A present list is kept as-is, EVEN WHEN EMPTY: an operator who
+        # removed every link means "no buttons", and re-backfilling the
+        # defaults on the next read would resurrect them within the 5s
+        # refresh. Only a missing or non-list key falls back to the defaults.
+        settings["links"] = out
+        return settings
+    settings["links"] = _default_links()
+    return settings
+
+
 def _empty_store():
     return {"version": 1, "customers": [], "owners": [], "identities": [],
-            "devices": [], "periods": [], "settings": dict(DEFAULT_SETTINGS)}
+            "devices": [], "periods": [], "settings": _normalise_settings(
+                dict(DEFAULT_SETTINGS))}
 
 
 def reset_cache():
@@ -430,6 +485,10 @@ def _store_read():
             if (isinstance(device, dict) and not device.get("created")
                     and device.get("updated")):
                 device["created"] = device["updated"]
+    # v1.9: the links list is normalised for a missing/invalid key. A present
+    # list (even empty) is deliberate and is left alone — see
+    # _normalise_settings.
+    _normalise_settings(settings)
     return data
 
 

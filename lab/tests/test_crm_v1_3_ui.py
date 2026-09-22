@@ -162,15 +162,22 @@ class TestSettingsTab(unittest.TestCase):
         self.assertIn("settingsHtml", src)
         self.assertIn("crm-fs", src)          # text-size variable
         self.assertIn("data-theme", src)
-        self.assertIn("CRM_LINKS_KEY", src)   # quick-site manager
         self.assertIn("scheduler_enabled", src)
+        # v1.9: the sound toggle lives in the same «نمایش» card.
+        self.assertIn("stSound", src)
 
     def test_quick_links_box_and_defaults(self):
         src = crm_page_src()
         self.assertIn("id=\"quickBox\"", src)
-        self.assertIn("hamta.ntsw.ir", src)   # sensible default buttons
-        self.assertIn("epl.irica.gov.ir", src)
-        self.assertIn("irica-crm-links", src)
+        # v1.9: the defaults moved server-side into crm.LINKS_DEFAULT, so the
+        # page no longer carries the URLs — the store merge supplies them and
+        # every browser sees the same list.
+        self.assertIn("https://hamta.ntsw.ir/", crm.LINKS_DEFAULT_URLS)
+        self.assertIn("https://epl.irica.gov.ir/ImeiRegister?1",
+                      crm.LINKS_DEFAULT_URLS)
+        # The box is dismissable now, and the dismissal is per-browser.
+        self.assertIn("quickBoxHide", src)
+        self.assertIn("irica-quickbox", src)
 
 
 if __name__ == "__main__":

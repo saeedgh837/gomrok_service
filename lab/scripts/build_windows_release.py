@@ -86,6 +86,16 @@ APP_FILES = [
     # Bundled Vazirmatn webfont — CRM panel renders offline (no Google Fonts).
     "fonts/Vazirmatn-var.woff2 -> fonts/Vazirmatn-var.woff2",
     "fonts/Vazirmatn-Bold.woff2 -> fonts/Vazirmatn-Bold.woff2",
+    # v1.9: UI notification cues (Kenney "Interface Sounds", CC0). Served
+    # from /sfx/ by a whitelisted route; see lab/scripts/gen_sfx.py.
+    "sfx/ui-ok.wav -> sfx/ui-ok.wav",
+    "sfx/ui-error.wav -> sfx/ui-error.wav",
+    "sfx/ui-warn.wav -> sfx/ui-warn.wav",
+    "sfx/ui-open.wav -> sfx/ui-open.wav",
+    "sfx/ui-tab.wav -> sfx/ui-tab.wav",
+    "sfx/ui-login.wav -> sfx/ui-login.wav",
+    "sfx/ui-login-error.wav -> sfx/ui-login-error.wav",
+    "sfx/README.md -> sfx/README.md",
     # The [Icons] entries in irica.iss reference {app}\irica.ico; the
     # installer build copies it into dist/ but the STAGE must ship it too.
     "lab/scripts/irica.ico -> irica.ico",

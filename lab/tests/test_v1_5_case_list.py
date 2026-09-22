@@ -56,7 +56,7 @@ class CaseListSourceTests(unittest.TestCase):
         self.js = crm_js()
 
     def test_case_detail_modal_and_mask_serial_defined(self):
-        self.assertIn("function caseDetail(id){", self.js)
+        self.assertIn("function caseDetail(id, silent){", self.js)
         self.assertIn("function maskSerial(s){", self.js)
         self.assertIn("s.length<=8?s:s.slice(0,4)+'…'+s.slice(-3)", self.js)
 
@@ -273,7 +273,7 @@ class CaseListHttpSmoke(_crm_api.CrmApiHarness):
         self.assertEqual(errors, [])
         status, page, _ctype = self._get("/crm")
         self.assertEqual(status, 200)
-        for marker in ("function caseDetail(id){", "maskSerial",
+        for marker in ("function caseDetail(id, silent){", "maskSerial",
                        ".tbl-wrap{overflow-x:auto}", 'aria-label="جزئیات پرونده"',
                        "caseDetail(\\''+d.id+'\\')") + TABLE_HEADERS:
             self.assertIn(marker, page, marker)
