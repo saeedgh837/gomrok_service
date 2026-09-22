@@ -3,6 +3,60 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-09-22
+
+### Added
+
+- **Every user-visible list renders newest-first** (operator request): the store
+  is append-only, so raw array order was oldest-first and a list that never
+  sorted buried the newest row at the bottom. A `newestFirst(rows, stamp)`
+  helper now sorts a COPY by the creation stamp — customers, owners,
+  identities, the periodic-inquiry list, a period's open and closed cases, and
+  the per-customer ledger. The comparison is a total order: stamp first, then
+  the store index, because `_now()` is second-resolution and two rows really
+  can share a stamp, in which case a pure timestamp sort is unstable and the
+  list flips between two orders across the 5 s re-render. STATE is never
+  mutated (STATE.devices also feeds the robots), and the ledger's inner
+  transaction index is untouched, so only the outer customer order changes.
+- **Row numbering in the passenger lists** (operator request): each owner row
+  carries a Persian row number counting from the newest, with a matching
+  `<th>ردیف</th>` header and bumped colspans.
+- **The related-sites box sits bottom-left and is dismissable** (operator
+  request): in RTL, `inset-inline-start` is the physical right, where the toast
+  stack already lives, so the box overlapped the toasts. It moved to
+  `inset-inline-end`, gained an × (`quickBoxHide()` persists
+  `localStorage['irica-quickbox']='0'`), and is recovered from the settings
+  tab. Dismissal is per-browser — hiding the buttons is a personal comfort
+  while the list itself is shared.
+- **The related-site buttons are server-backed:** they lived in localStorage,
+  so a second machine never saw a link the operator had added and a browser
+  data wipe lost them. They are now a `links` list in the shared settings
+  (`crm.DEFAULT_SETTINGS` + a `_normalise_settings` merge that backfills the
+  defaults for a store from before v1.9). The settings tab edits a draft
+  (`draftLinks()` / `settingsLinksPaint`) that repaints only `#linkRows`, so
+  unsaved edits in sibling settings cards survive add/remove. URLs must match
+  `https?://\S{1,400}` — a `javascript:` URL in a `target=_blank` button would
+  run in the panel's own origin — and duplicates are dropped; the batch is
+  atomic, so one bad URL writes nothing. A present-but-empty list is a valid
+  deliberate "no buttons", a missing or invalid one falls back to the defaults.
+- **UI notification sounds** (operator request): one short cue per event
+  family — save success, error, warning, modal/form open, tab switch, login
+  success, login failure — served from a whitelisted `/sfx/` route (public
+  because the login page needs a cue before a session exists; only the seven
+  fixed names resolve, via basename + membership). The engine is gated by
+  `sound_enabled` (default ON) with a header speaker toggle that mirrors it,
+  rate-limited to 350 ms per family, silent when the tab is hidden, wrapped in
+  a `catch` because a cue is decoration and never the signal, and the login
+  page honours the same switch through a localStorage mirror. The 5 s
+  background refresh cues nothing. Assets: Kenney "Interface Sounds", CC0 1.0,
+  sha256-pinned and reproducible via `lab/scripts/gen_sfx.py`.
+
+### Changed
+
+- The settings tab's «نمایش» card gained the sound checkbox; the related-sites
+  card was rebuilt around the draft row container. `crm_update_settings`
+  coerces `sound_enabled` through the same boolean tuple as the other toggles.
+
 ## [1.8.1] - 2026-09-21
 
 ### Added
