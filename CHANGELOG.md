@@ -3,6 +3,119 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] - 2026-09-23
+
+### Added
+
+- **The inquiry robots now capture the result itself** (operator request):
+  until now the panel stored the verdict as text only, and the only image a
+  verdict ever produced was a captcha. Each robot now screenshots the result
+  element at the moment it renders — on hamta the SweetAlert2 modal
+  (`div.swal2-modal`), on gomrok the Wicket feedback panel
+  (`[wicketpath$="feedBack_container_error"], .feedbackPanelERROR`) — falling
+  back to the full page, and then to nothing, so a capture failure never costs
+  the verdict. A new `estelam_shot.py` module owns the path derivation, the
+  scroll, the PNG validation and the send, and is imported by both robots as a
+  sibling — `gomrok.py` is untouched. Bytes are checked against the PNG magic
+  before they are written, so a driver that returns garbage leaves no file
+  behind and reports failure instead.
+- **One newest screenshot per device per service:** the path is derived from
+  the service, the device id and the serial, so each new capture overwrites the
+  last one rather than accumulating history. The two services keep separate
+  files (`estelam_gomrok_…`, `estelam_hamta_…`) and separate store fields
+  (`gomrok_screenshot`, `hamta_screenshot`).
+- **An exact capture of the result element, and only that, reaches Telegram.**
+  The photo is attached with the report as its caption; the whole-page
+  fallback never leaves this machine, because a full-page gomrok capture
+  still shows the traveler's national ID and birth date and the send fans
+  out to every configured chat, so a page-level picture stays panel-only
+  evidence. The plain text report goes alone whenever the capture is missing,
+  is not exact, or the upload fails, and a caption is always the previous
+  report, byte for byte.
+- **Two camera icons per device row** (operator request): the inquiry page
+  renders one per service inside its own status grid (`shotBtn(svc)`, gomrok
+  and hamta separately, styled by `.stgrid .ibtn.sh`), and the CRM case list
+  renders the same pair (`caseShotBtn(d,svc)`). Clicking one opens a modal
+  with the image, a download button and a load-failure message. Where the two
+  differ is deliberate: the inquiry page reads the device's own store field,
+  because `/estelam-state` returns `estelam_load()` verbatim, while the CRM
+  state payload forwards only the booleans `has_gomrok_screenshot` and
+  `has_hamta_screenshot` (never a capture path), so that button gates on a
+  flag and the route stays the single source of truth for the path. The image
+  is served by a new containment-checked `/estelam-shot` route modelled on
+  `/artifact`: the recorded path is resolved and has to sit inside one of two
+  accepted roots, the `screenshots` subdir of the data directory or a
+  legacy `screenshots` folder inside the app's own release folder, because
+  paths recorded by an older release point inside that release folder. A store
+  field inside neither root serves nothing.
+- **Four offline suites now cover the capture path** (no browser and no
+  network): `test_v1_9_1_capture` drives `estelam_shot.capture_result` and
+  both robots against a fake driver; `test_v1_9_1_screenshot` covers the
+  store field round trip and the inquiry page's camera icon;
+  `test_v1_9_1_routes` pins the `shot_resolve` contract class by class
+  (empty field, a real file inside the root, traversal that leaves it, a
+  sibling directory whose name only starts with the root, the legacy
+  in-release root, a path on another drive) and the route's negative answers
+  over real HTTP on an ephemeral port (the 302/401/404 gate, nosniff, and
+  the log records); `test_v1_9_1_crm_shot` covers the CRM button's gate
+  on the presence flags rather than a path, the dialog's markup, and the
+  delete path, where the row goes first and a failing unlink is logged
+  instead of raised. All four are registered in `run_panel_tests.py`.
+- **Two files joined the release bundle, and their absence fails in opposite
+  ways.** `estelam_shot.py` is now in the bundle file list in
+  `build_windows_release.py` and in the release verifier's required files;
+  `log_utils.py` joined the bundle list too. A build without `estelam_shot.py`
+  fails silently: both robots import it inside the blanket handler whose whole
+  purpose is to stop a bad capture from swallowing a verdict, so the inquiry
+  still completes, each capture logs a failure line, no camera icon ever
+  appears and the reports go out as text only. A build without `log_utils.py`
+  is the loud case instead, because `panel.py` and `crm.py` import it with
+  no guard, so a clean install raises `ImportError` on the first log write.
+
+### Fixed
+
+- **Re-queuing a device no longer pins the last verdict's screenshot to it.**
+  `crm_sync_queue` reopened the status and result slots but left the evidence
+  slot populated, so a run killed before it reached its own write-back showed
+  the previous verdict's image beside a pending status. `gomrok_screenshot`
+  and `hamta_screenshot` now reset with the rest, and only for the service
+  being queued.
+- **A capture failure can no longer swallow the verdict message.** Capture and
+  Telegram are in separate `try` blocks and the outcome always carries a string
+  `shot` key, so a capture that raises still sends the text report and still
+  writes back a store field of the right type.
+- **`capture_page` no longer imports the gomrok robot.** The hamta process
+  keeps a narrow `sys.path` because `Hamta-solver/` and the gomrok `solver/`
+  package share module names (`live_solve`, `config`, `vocab`, `preprocess`,
+  `utils`); importing the robot there could alias the wrong solver. The CDP
+  call is now direct, with `save_screenshot` as the fallback.
+- **The offline test suite no longer touches the network.** `test_estelam_service`
+  inherited a real `_capture_result_shot` and was making real Telegram attempts
+  against a nonexistent PNG; the capture is now stubbed in the test harness.
+- **Deleting a device deletes its captures.** The file name is keyed by the
+  device, so a deleted row left its PNGs behind with nothing that could ever
+  reach or overwrite them. The store row is removed first and the file is
+  unlinked after it, so a failed unlink cannot keep the row alive; the failure
+  is logged and never raised into the delete.
+- **`/estelam-shot` no longer fills the robot log with false alarms.** A
+  device with no capture and a store field pointing outside the roots both
+  resolved to the same empty string, so every retry for a missing image wrote
+  a security-flavoured record; `estelam_logs.jsonl` keeps only its newest 400
+  entries, so a browser retrying a missing image could have evicted the real
+  robot diagnostics. The two cases are now told apart, and the
+  misconfiguration record carries the file name only, because the panel
+  renders this log.
+
+- **The case-detail and period-detail dialogs rendered as an empty box.**
+  `openDlg(html, silent)` was called as `openDlg('<div …>', silent
+  +'<h3>…' + …)` — the boolean `silent` was a term in the string
+  concatenation, so `html` received only the opening `<div>` tag and every
+  section after it was added to `silent` and discarded. Clicking «جزئیات
+  پرونده» opened a 54px-tall modal holding nothing but the close button, and
+  the period dialog was broken the same way. `silent` is now passed as the
+  second argument, and a design gate rejects any `openDlg` call that puts it
+  back inside the concatenation.
+
 ## [1.9.0] - 2026-09-22
 
 ### Added
