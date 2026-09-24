@@ -81,6 +81,36 @@ def _target_chat_ids(cfg, extra_chat_ids=None):
     ]))
 
 
+def report_chat_id():
+    """The optional «گزارشها» channel from the CRM settings ("" = off).
+
+    `crm` is imported here and not at module level: this module is imported by
+    the robot processes and by panel, while `crm` imports app_paths and reads
+    the store — a top-level import would be a cycle waiting to happen. The CRM
+    store is the single source of truth (the settings tab is its only writer),
+    so no second copy of the channel is kept here. A store that cannot be read
+    or holds a non-numeric value reads as "not configured" (see
+    crm.report_chat_id), which keeps delivery exactly as it was without it."""
+    try:
+        import crm
+        return str(crm.report_chat_id() or "").strip()
+    except Exception:
+        return ""
+
+
+def report_extra_chat_ids():
+    """`[channel]` when one is configured, else None — ADDITIVE destinations.
+
+    Every caller passes this as `extra_chat_ids`, never as `chat_id`: the
+    configured chat list must keep receiving reports and inquiry results, and
+    the channel only ever gets a copy. An unconfigured channel returns None so
+    the fanout target list is byte-for-byte what it was before v1.10.
+    `_target_chat_ids` de-duplicates, so a channel that is also in the
+    configured list is not messaged twice."""
+    channel = report_chat_id()
+    return [channel] if channel else None
+
+
 def _post_confirmed(method, cfg, data, files_factory=None, attempts=4, deadline=None):
     import requests
     last_error = None

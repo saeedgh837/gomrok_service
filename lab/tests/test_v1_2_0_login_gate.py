@@ -353,8 +353,13 @@ class ReportActorTests(unittest.TestCase):
     def test_report_send_passes_actor(self):
         import panel
         src = open(panel.__file__, encoding="utf-8").read()
-        self.assertIn("tg.send_message(chunk, timeout=20, actor=self.actor)",
-                      src)
+        # one call per report sender; each must name the acting user (v1.10
+        # added extra_chat_ids to the call, so the window is not line-pinned)
+        calls = src.split("tg.send_message(chunk")[1:]
+        self.assertTrue(calls, "no report send found")
+        for call in calls:
+            self.assertIn("actor=self.actor", call[:160],
+                          "a report send must name the acting user")
 
 
 class ReleaseHygieneTests(unittest.TestCase):

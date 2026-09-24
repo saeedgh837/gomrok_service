@@ -157,6 +157,12 @@ class _Stub:
         self.photos = []
         self.captions = []
         self.messages = []
+        #: v1.10: reports may add an optional channel copy. The stub mirrors
+        #: the real module's surface (default: not configured).
+        self.extras = None
+
+    def report_extra_chat_ids(self):
+        return self.extras
 
     def send_photo(self, path, caption="", **kw):
         if self.raise_:

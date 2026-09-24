@@ -2044,6 +2044,18 @@ def crm_update_settings(fields):
             settings["registration_chat_id"] = raw
         else:
             errors.append("شناسهٔ تلگرام باید عددی باشد (مثلاً -1001234567890)")
+    if "report_chat_id" in fields:
+        # v1.10 (operator request): the optional report channel. Same numeric
+        # rule as the registration destination above; empty clears it, and
+        # that means no copy anywhere — the configured chats keep getting
+        # everything (telegram_notify.report_extra_chat_ids is additive).
+        raw = str(fields.get("report_chat_id") or "").strip()
+        if not raw:
+            settings["report_chat_id"] = ""
+        elif re.fullmatch(r"-?\d+", raw):
+            settings["report_chat_id"] = raw
+        else:
+            errors.append("شناسهٔ کانال تلگرام باید عددی باشد (مثلاً -1001234567890)")
     # v1.6: optional business identity for the statement/invoice/finance
     # headers. Trimmed free text, max 80 chars; empty clears the header.
     for key, label in (("business_name", "نام کسب‌وکار"),
@@ -6302,10 +6314,12 @@ var TABS = [
 ];
 /* v1.4.0 per-tab search/filter state (session memory only — never sent to
    the server): TAB_Q keeps the query per tab, TAB_STAGE_FILTER is the
-   devices stage filter, TAB_COUNT is the filtered row count the body
+   devices stage filter, TAB_PERIOD_FILTER is the period filter every case
+   list shares (v1.10), TAB_COUNT is the filtered row count the body
    renderers report back for the result pill. */
 var TAB_Q={};
 var TAB_STAGE_FILTER='all';
+var TAB_PERIOD_FILTER='all';
 var TAB_COUNT=0;
 /* List tabs that get the search toolbar (settings/reports have no list). */
 var TAB_SEARCH={
@@ -7064,25 +7078,75 @@ function tabSearchMatches(text,q){
   return normSearch(text).indexOf(normSearch(q))>=0;
 }
 function tabQ(){return String(TAB_Q[TAB]||'').trim();}
-function searchActive(){return !!tabQ()||(TAB==='devices'&&TAB_STAGE_FILTER!=='all');}
+/* v1.10 period filter (operator request): «لیست پرونده‌ها بر اساس دوره‌ها».
+   It is a SECOND dimension over the case lists, not a replacement for the
+   stage chips: 'all' is the tab's own set (the devices tab keeps showing the
+   in-flight cases it has always shown), 'cur' is what is live right now, and a
+   period id is that period at every stage, finished cases included. */
+var PERIOD_FILTER_TABS=['devices','done_tab','problem_tab','closed_tab'];
+function periodFilterTab(){return PERIOD_FILTER_TABS.indexOf(TAB)>=0;}
+/* The one resolver every reader asks, so the chips, the lists and the result
+   pill can never disagree. Two values degrade to 'all' instead of showing an
+   empty list with no way back: a period the store no longer has (the operator
+   closed/deleted it in another browser between two 5s refreshes), and 'cur'
+   while no period is open (nothing is "current" then, and a stale 'cur' would
+   silently hide every finished case of every tab).
+   Off the case-list tabs the filter reads as 'all' — the shared toolbar state
+   is not a lie on tables that do not filter by period. */
+function periodFilterResolved(){
+  if(!periodFilterTab())return 'all';
+  if(TAB_PERIOD_FILTER==='cur')return activePeriod()?'cur':'all';
+  if(TAB_PERIOD_FILTER==='all')return 'all';
+  return periodById(TAB_PERIOD_FILTER)?TAB_PERIOD_FILTER:'all';
+}
+function periodPass(d){
+  var f=periodFilterResolved();
+  if(f==='all')return true;
+  if(f==='cur'){
+    /* the operator's rule: a case that is in flight is never hidden by the
+       period view, so the live set is the in-flight cases PLUS everything
+       registered in the open period (which is where «دورهٔ فعلی» reads as a
+       case list — its finished ones included). */
+    var per=activePeriod();
+    return isActiveCase(d)||(!!per&&String(d.period_id||'')===String(per.id));
+  }
+  return String(d.period_id||'')===String(f);
+}
+/* The devices list's base set: the in-flight cases (unchanged default) or,
+   while a period filter is on, that period's cases at every stage. */
+function periodBaseDevices(){
+  var f=periodFilterResolved();
+  var all=(STATE&&STATE.devices)||[];
+  return f==='all'?all.filter(isActiveCase):all.filter(periodPass);
+}
+function searchActive(){
+  return !!tabQ()||(TAB==='devices'&&TAB_STAGE_FILTER!=='all')
+    ||periodFilterResolved()!=='all';
+}
 /* Search haystack shared by every device-based list: id, name, serials,
    passenger and customer names. */
 function devHay(d){
   return [d.id,d.name,d.serial1,d.serial2,ownerName(d.owner_id),custName(d.customer_id)].join(' ');
 }
-/* devices tab: stage-chip filter + query over the active-case list. */
+/* devices tab: stage-chip filter + query over the period base set. The period
+   rule is applied here too, so any caller that hands in a raw list still gets
+   it — periodBaseDevices has already narrowed the set and the predicate is
+   idempotent. */
 function filterDevices(ds){
   var q=tabQ();
   return ds.filter(d=>
-    (TAB_STAGE_FILTER==='all'||(TAB_STAGE_FILTER==='need'?needsAction(d):d.stage===TAB_STAGE_FILTER))
+    periodPass(d)
+    &&(TAB_STAGE_FILTER==='all'||(TAB_STAGE_FILTER==='need'?needsAction(d):d.stage===TAB_STAGE_FILTER))
     &&tabSearchMatches(devHay(d),q));
 }
-/* done/problem/closed rows: query only (extraHay adds per-tab fields,
+/* done/problem/closed rows: period + query (extraHay adds per-tab fields,
    e.g. the closed reason). */
 function filterDevRows(ds,extraHay){
   var q=tabQ();
-  if(!q)return ds;
-  return ds.filter(d=>tabSearchMatches(devHay(d)+' '+(extraHay?extraHay(d):''),q));
+  var f=periodFilterResolved();
+  if(!q&&f==='all')return ds;
+  return ds.filter(d=>periodPass(d)
+    &&tabSearchMatches(devHay(d)+' '+(extraHay?extraHay(d):''),q));
 }
 /* v1.9.0 (operator request): the lists read newest-first. The store is
    append-only, so its raw order IS oldest-first and a list that never sorts
@@ -7111,16 +7175,21 @@ function searchEmptyHtml(){
     +'<div style="margin-top:14px"><button class="btn ghost" onclick="searchResetAll()">پاک کردن جستجو</button></div></div>';
 }
 function searchEmptyCard(){return '<div class="card">'+searchEmptyHtml()+'</div>';}
-/* Clears the query AND the stage filter from the empty-state button; the
-   input lives in the toolbar (outside #tabBody), so it is reset directly. */
+/* Clears the query, the stage filter AND the period filter from the
+   empty-state button; the input lives in the toolbar (outside #tabBody), so it
+   is reset directly. The period chips are rebuilt because clearing the period
+   filter changes which stages exist (see tabPeriodSet). */
 function searchResetAll(){
   TAB_Q[TAB]='';
   TAB_STAGE_FILTER='all';
+  TAB_PERIOD_FILTER='all';
   var inp=document.getElementById('tabQIn');
   if(inp)inp.value='';
   var box=document.getElementById('tabSrch');
   if(box)box.classList.remove('hasq');
-  syncStageChips();
+  var stages=document.getElementById('stageChips');
+  if(stages)stages.innerHTML=stageChipsHtml();
+  syncPeriodChips();
   renderBody();
   updateTabCount();
 }
@@ -7138,15 +7207,20 @@ function tabBarHtml(){
     +'</div>'
     +'<span class="pill n cntpill" id="tabCount" hidden></span>'
     +(TAB==='devices'?'<div class="tabchips" id="stageChips">'+stageChipsHtml()+'</div>':'')
+    +(periodFilterTab()?'<div class="tabchips" id="periodChips">'+periodChipsHtml()+'</div>':'')
     +'</div>';
 }
-/* Stage chips: «همه» + «نیازمند اقدام» + one per stage that actually has
-   an active case right now. */
+/* Stage chips: «همه» + «نیازمند اقدام» + one per stage the current period
+   filter can actually produce. With no period filter that is the in-flight
+   stages (exactly what it has always been); a period filter widens the base
+   set to a period's cases, so its finished stages get chips too — otherwise a
+   selected period would list done cases with no way to isolate them. */
 function stageChipsHtml(){
-  var active=(STATE&&STATE.devices||[]).filter(isActiveCase);
+  var base=periodBaseDevices();
   var stages=[];
-  ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done'].forEach(function(st){
-    if(active.some(d=>d.stage===st))stages.push(st);
+  ['new','inquiry','ready_owner','handed','to_payment','payment','payment_done',
+   'problem','done','closed'].forEach(function(st){
+    if(base.some(d=>d.stage===st))stages.push(st);
   });
   var chips=[['all','همه'],['need','نیازمند اقدام']];
   stages.forEach(function(st){chips.push([st,STAGE_FA[st]||st]);});
@@ -7155,6 +7229,36 @@ function stageChipsHtml(){
       +' onclick="tabStageSet(\''+c[0]+'\')">'+esc(c[1])+'</button>';
   }).join('');
 }
+/* Period chips (v1.10): «همهٔ دوره‌ها» keeps the tab's own set, «دورهٔ فعلی»
+   is the live set while a period is open, and the rest are one chip per
+   period, newest first — the open period is represented by «دورهٔ فعلی»
+   rather than by a second, near-identical chip. Only the newest few periods
+   are chipped: the row lives in the toolbar, and the periods tab is the place
+   to reach an old one. */
+var PERIOD_CHIP_MAX=8;
+function periodPidAttr(value){
+  /* The id reaches an onclick string literal, so it is reduced to what an id
+     can actually be (the server mints 8 hex chars). A hand-edited store that
+     holds something else loses its chip instead of injecting code. */
+  return String(value==null?'':value).replace(/[^A-Za-z0-9_\-]/g,'');
+}
+function periodChipsHtml(){
+  var f=periodFilterResolved();
+  var chips=[['all','همهٔ دوره‌ها']];
+  if(activePeriod())chips.push(['cur','دورهٔ فعلی']);
+  var hidden=0;
+  periodSorted().forEach(function(p){
+    if(String(p.id)===String((activePeriod()||{}).id))return;   /* = «دورهٔ فعلی» */
+    if(chips.length>=PERIOD_CHIP_MAX+1){hidden++;return;}
+    chips.push([periodPidAttr(p.id),periodName(p)]);
+  });
+  var html=chips.map(function(c){
+    return '<button type="button" class="chipbtn'+(f===c[0]?' active':'')+'" data-f="'+c[0]+'"'
+      +' onclick="tabPeriodSet(\''+c[0]+'\')">'+esc(c[1])+'</button>';
+  }).join('');
+  if(hidden)html+='<span class="kbd">و '+fa(hidden)+' دورهٔ قدیمی‌تر در سربرگ «دوره‌ها»</span>';
+  return html;
+}
 /* Chip clicks toggle the active class in place — the toolbar itself is
    never re-rendered while the operator works in it. */
 function syncStageChips(){
@@ -7162,9 +7266,35 @@ function syncStageChips(){
   for(var i=0;i<chips.length;i++)
     chips[i].classList.toggle('active',chips[i].getAttribute('data-f')===TAB_STAGE_FILTER);
 }
+function syncPeriodChips(){
+  var chips=document.querySelectorAll('#periodChips .chipbtn');
+  var f=periodFilterResolved();
+  for(var i=0;i<chips.length;i++)
+    chips[i].classList.toggle('active',chips[i].getAttribute('data-f')===f);
+}
 function tabStageSet(f){
   TAB_STAGE_FILTER=f;
   syncStageChips();
+  renderBody();
+  updateTabCount();
+}
+/* A stage filter is only meaningful while the new period set still has that
+   stage (picking an old period that never saw a pass-through case would
+   otherwise leave the list empty with no active chip to explain why). */
+function tabStageEnsure(){
+  if(TAB_STAGE_FILTER==='all'||TAB_STAGE_FILTER==='need')return;
+  if(periodBaseDevices().some(d=>d.stage===TAB_STAGE_FILTER))return;
+  TAB_STAGE_FILTER='all';
+}
+function tabPeriodSet(f){
+  TAB_PERIOD_FILTER=f;
+  tabStageEnsure();
+  /* The base set changed, so the stage chips are rebuilt (not just
+     re-highlighted): an old period adds its finished stages and may drop the
+     in-flight ones. The toolbar around them is left alone. */
+  var stages=document.getElementById('stageChips');
+  if(stages)stages.innerHTML=stageChipsHtml();
+  syncPeriodChips();
   renderBody();
   updateTabCount();
 }
@@ -7655,7 +7785,10 @@ function dlgPeriodSync(){
 }
 
 function devicesHtml(){
-  var ds=(STATE.devices||[]).filter(isActiveCase).sort((a,b)=>
+  /* v1.10: the base set is the in-flight cases (unchanged) unless a period
+     filter is on, in which case it is that period's cases at every stage —
+     that is what makes a closed period's cases reachable as a list here. */
+  var ds=periodBaseDevices().sort((a,b)=>
     (needsAction(b)-needsAction(a)) || String(b.updated||'').localeCompare(String(a.updated||'')));
   ds=filterDevices(ds);
   TAB_COUNT=ds.length;
@@ -8407,6 +8540,11 @@ function settingsHtml(){
   +'<input id="stRegChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.registration_chat_id||'')+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveRegChat()">ذخیره</button></div>'
   +'<p class="muted">اطلاعات دستگاه و مسافر که برای فرآیند ثبت لازم است، برای تحویل به مسئول ثبت به این کانال/گروه تلگرام ارسال می‌شود.</p></div>'
+  +'<div class="card"><h3>کانال تلگرام گزارش‌ها</h3>'
+  +'<div class="row"><label class="f">شناسهٔ عددی کانال گزارش‌ها'
+  +'<input id="stReportChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.report_chat_id||'')+'"></label>'
+  +'<button class="btn primary" onclick="settingsSaveReportChat()">ذخیره</button></div>'
+  +'<p class="muted">گزارش پرونده‌ها، گزارش مالی، صورت‌حساب و نتیجهٔ استعلام‌های گمرک و همتا، علاوه بر چت‌های فعلی، یک نسخه هم به این کانال می‌رود. برای اینکه ارسال انجام شود، ربات باید در آن کانال عضو و مدیر باشد. خالی بگذارید تا نسخه‌ای به کانال نرود.</p></div>'
   +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
     +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند فعال باشد</span></label>'
     +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
@@ -8445,6 +8583,14 @@ function settingsSaveBiz(){
 function settingsSaveRegChat(){
   api('/crm-settings',{registration_chat_id:v('stRegChat')})
     .then(async r=>{toast('شناسهٔ تلگرام ثبت مسافری ذخیره شد');await refresh();})
+    .catch(e=>toast(e,false));
+}
+/* v1.10: the report channel is read by telegram_notify (and through it by the
+   robot processes) on every report/inquiry send, so nothing else has to know
+   it changed — the next send picks up the new value. */
+function settingsSaveReportChat(){
+  api('/crm-settings',{report_chat_id:v('stReportChat')})
+    .then(async r=>{toast('شناسهٔ کانال گزارش‌ها ذخیره شد');await refresh();})
     .catch(e=>toast(e,false));
 }
 function settingsSave(){
@@ -10040,8 +10186,12 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         try:
             import telegram_notify as tg
+            # v1.10: additive — the configured chats keep receiving every
+            # chunk and a configured report channel gets a copy of each.
+            extras = tg.report_extra_chat_ids()
             for chunk in chunks:
-                if tg.send_message(chunk, timeout=20, actor=self.actor):
+                if tg.send_message(chunk, timeout=20, actor=self.actor,
+                                   extra_chat_ids=extras):
                     sent += 1
         except Exception as exc:
             crm_mod.crm_log("error", "report_telegram_failed", detail=str(exc))
@@ -10203,8 +10353,11 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         try:
             import telegram_notify as tg
+            # v1.10: additive report channel (see _crm_report_telegram).
+            extras = tg.report_extra_chat_ids()
             for chunk in chunks:
-                if tg.send_message(chunk, timeout=20, actor=self.actor):
+                if tg.send_message(chunk, timeout=20, actor=self.actor,
+                                   extra_chat_ids=extras):
                     sent += 1
         except Exception as exc:
             crm_mod.crm_log("error", "report_finance_failed", detail=str(exc))
@@ -10296,8 +10449,11 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         try:
             import telegram_notify as tg
+            # v1.10: additive report channel (see _crm_report_telegram).
+            extras = tg.report_extra_chat_ids()
             for chunk in chunks:
-                if tg.send_message(chunk, timeout=20, actor=self.actor):
+                if tg.send_message(chunk, timeout=20, actor=self.actor,
+                                   extra_chat_ids=extras):
                     sent += 1
         except Exception as exc:
             crm_mod.crm_log("error", "report_statement_failed",

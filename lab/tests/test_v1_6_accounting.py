@@ -846,8 +846,13 @@ class StatementApiTests(ApiCase):
             for i in range(80)]
         crm.store_write(_store([_customer("c1", "مشتری پرتراکنش", txs)]))
         sent = []
-        fake = type("tg", (), {"send_message": staticmethod(
-            lambda text, timeout=20, actor=None: sent.append(text) or True)})
+        # v1.10: the send path gained the optional extra destinations, so a
+        # double has to mirror the real module's surface, not just the old one
+        fake = type("tg", (), {
+            "send_message": staticmethod(
+                lambda text, timeout=20, actor=None, extra_chat_ids=None:
+                sent.append(text) or True),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-statement-telegram",
                                       {"customer_id": "c1"})
@@ -873,11 +878,13 @@ class StatementApiTests(ApiCase):
         crm.store_write(_store([_customer("c1", "مشتری", txs)]))
         calls = []
 
-        def flaky(text, timeout=20, actor=None):
+        def flaky(text, timeout=20, actor=None, extra_chat_ids=None):
             calls.append(text)
             return len(calls) == 1
 
-        fake = type("tg", (), {"send_message": staticmethod(flaky)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(flaky),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-statement-telegram",
                                       {"customer_id": "c1"})
@@ -896,10 +903,12 @@ class StatementApiTests(ApiCase):
         crm.store_write(_store([_customer("c1", "مشتری", [
             _tx("2026-09-15 09:00:00", 100000, "receipt")])]))
 
-        def boom(text, timeout=20, actor=None):
+        def boom(text, timeout=20, actor=None, extra_chat_ids=None):
             raise RuntimeError("proxy down")
 
-        fake = type("tg", (), {"send_message": staticmethod(boom)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(boom),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-statement-telegram",
                                       {"customer_id": "c1"})

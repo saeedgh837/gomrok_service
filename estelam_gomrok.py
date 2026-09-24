@@ -93,7 +93,10 @@ def _telegram(text):
     # timeout-e sakht: estelam nabayad rooye ersal-e telegram gir konad.
     try:
         import telegram_notify as tg
-        tg.send_message(text, timeout=15)
+        # v1.10: additive — the configured chats keep receiving the result and
+        # a configured report channel gets a copy of it.
+        tg.send_message(text, timeout=15,
+                        extra_chat_ids=tg.report_extra_chat_ids())
     except Exception as e:
         print(f">>> (telegram na-raft: {e})")
 

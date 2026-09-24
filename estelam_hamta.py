@@ -305,7 +305,10 @@ def _telegram(text, enabled=True):
     try:
         sys.path.insert(0, _HERE)
         import telegram_notify as tg
-        tg.send_message(text, timeout=15)
+        # v1.10: additive — the configured chats keep receiving the result and
+        # a configured report channel gets a copy of it.
+        tg.send_message(text, timeout=15,
+                        extra_chat_ids=tg.report_extra_chat_ids())
     except Exception as e:
         print(f">>> (telegram na-raft: {e})")
 

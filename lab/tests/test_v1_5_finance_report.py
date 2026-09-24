@@ -633,8 +633,11 @@ class FinanceApiTests(unittest.TestCase):
             for i in range(80)]
         self._seed_store([_customer("c1", "مشتری با تراکنش‌های زیاد", txs)])
         sent = []
-        fake = type("tg", (), {"send_message": staticmethod(
-            lambda text, timeout=20, actor=None: sent.append(text) or True)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(
+                lambda text, timeout=20, actor=None, extra_chat_ids=None:
+                sent.append(text) or True),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-finance-report-telegram",
                                       {"mode": "daily", "ref": "2026-09-15"})
@@ -674,11 +677,13 @@ class FinanceApiTests(unittest.TestCase):
         self._seed_store([_customer("c1", "مشتری", txs)])
         calls = []
 
-        def flaky(text, timeout=20, actor=None):
+        def flaky(text, timeout=20, actor=None, extra_chat_ids=None):
             calls.append(text)
             return len(calls) == 1        # first chunk lands, the rest drop
 
-        fake = type("tg", (), {"send_message": staticmethod(flaky)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(flaky),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-finance-report-telegram",
                                       {"mode": "daily", "ref": "2026-09-15"})
@@ -697,10 +702,12 @@ class FinanceApiTests(unittest.TestCase):
         self._seed_store([_customer("c1", "مشتری", [
             _tx("2026-09-15 09:00:00", 100000, "receipt")])])
 
-        def boom(text, timeout=20, actor=None):
+        def boom(text, timeout=20, actor=None, extra_chat_ids=None):
             raise RuntimeError("proxy down")
 
-        fake = type("tg", (), {"send_message": staticmethod(boom)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(boom),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-finance-report-telegram",
                                       {"mode": "daily", "ref": "2026-09-15"})

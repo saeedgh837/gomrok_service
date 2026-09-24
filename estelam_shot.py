@@ -273,7 +273,11 @@ def attach(photo_path, caption):
     """
     try:
         import telegram_notify as tg
-        tg.send_photo(photo_path, caption=caption, timeout=20)
+        # v1.10: the result screenshot is part of the inquiry report, so a
+        # configured report channel gets the same photo as the configured
+        # chats (additive — see telegram_notify.report_extra_chat_ids).
+        tg.send_photo(photo_path, caption=caption, timeout=20,
+                      extra_chat_ids=tg.report_extra_chat_ids())
         return True
     except Exception as e:
         _say(f">>> (photo send failed: {e})")

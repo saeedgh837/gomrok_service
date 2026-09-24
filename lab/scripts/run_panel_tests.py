@@ -114,6 +114,13 @@ DEFAULT = [
     # module here would collect nothing and still print OK.
     "test_estelam_hamta",
     "test_estelam_service",
+    # v1.10 round (operator requests): the period filter on the case lists
+    # («پرونده‌های دورهٔ فعلی» / «لیست پرونده‌ها بر اساس دوره‌ها») — the page
+    # functions are executed in node, not re-implemented — and the optional
+    # Telegram report channel (additive delivery, exactly-one destination for
+    # the registration handoff, gomrok.py untouched).
+    "test_v1_10_period_filter",
+    "test_v1_10_report_channel",
 ]
 
 names = sys.argv[1:] or DEFAULT

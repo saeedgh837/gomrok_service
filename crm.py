@@ -48,6 +48,13 @@ DEFAULT_SETTINGS = {
     "registry_fee_amount": 24_000_000,  # هزینه ثبت رجیستری (تومان)
     # Default only — the panel domain owns validation and use.
     "registration_chat_id": "",
+    # v1.10: optional report channel. Additive on purpose — every report and
+    # inquiry-result message keeps going to the configured chat list AND gets a
+    # copy here, so an empty value leaves delivery exactly as it was.
+    # Validated by the panel settings tab; telegram_notify.report_chat_id()
+    # is what reads it from outside the panel (the robots run as their own
+    # processes and never see panel state).
+    "report_chat_id": "",
     # v1.6: business identity for the statement/invoice/finance headers.
     # Empty string = header line omitted (same optional pattern as above).
     "business_name": "",
@@ -540,6 +547,23 @@ def store_read():
 def store_write(data):
     with STORE_LOCK:
         _store_write(data)
+
+
+def report_chat_id():
+    """The optional report-channel destination ("" = not configured).
+
+    Read-only, and deliberately forgiving: it is called by telegram_notify on
+    every report/inquiry send, including from the robot processes, and a store
+    that cannot be read or holds a hand-edited value must never be the reason a
+    message fails to reach the normal chats — an unusable value is reported as
+    "not configured" so delivery stays exactly what it was before v1.10. Only
+    the numeric shape the settings tab would have accepted is returned."""
+    try:
+        settings = _store_read().get("settings") or {}
+        value = str(settings.get("report_chat_id") or "").strip()
+    except Exception:
+        return ""
+    return value if re.fullmatch(r"-?\d+", value) else ""
 
 
 # --------------------------------------------------------------------------

@@ -52,8 +52,14 @@ class SectionSeparationSourceTests(unittest.TestCase):
             ".includes(d.stage);}", self.src)
         body = fn_body(self.js, "devicesHtml")
         self.assertTrue(body, "devicesHtml not found")
-        # filter runs BEFORE the sort so ordering never sees inactive rows
-        self.assertIn("filter(isActiveCase).sort(", body)
+        # v1.10: the grid takes its base set from the period resolver instead
+        # of filtering inline, so this pins the delegation rather than the
+        # literal. The default reading is still exactly the in-flight cases,
+        # and the base is narrowed BEFORE the sort, so ordering never sees
+        # inactive rows.
+        self.assertIn("periodBaseDevices().sort(", body)
+        self.assertIn("all.filter(isActiveCase)",
+                      fn_body(self.js, "periodBaseDevices"))
         self.assertNotIn("isActiveCase", fn_body(self.js, "kpisHtml"))
 
     def test_section_tabs_keep_their_stage_filters(self):

@@ -289,8 +289,11 @@ class TestCrmReports(CrmApiHarness):
         self._seed_device()
         import crm as crm_mod
         sent = []
-        fake = type("tg", (), {"send_message": staticmethod(
-            lambda text, timeout=20, actor=None: sent.append(text) or True)})
+        fake = type("tg", (), {
+            "send_message": staticmethod(
+                lambda text, timeout=20, actor=None, extra_chat_ids=None:
+                sent.append(text) or True),
+            "report_extra_chat_ids": staticmethod(lambda: None)})
         with patch.dict("sys.modules", {"telegram_notify": fake}):
             status, body = self._post("/crm-report-telegram", {"full_data": True})
         self.assertEqual(status, 200)
