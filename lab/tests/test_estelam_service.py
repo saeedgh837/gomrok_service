@@ -2,15 +2,38 @@
   unset PYTHONPATH VIRTUAL_ENV
   "C:/Program Files/Python310/python.exe" -m pytest lab/tests/test_estelam_service.py -q
 ya bedun-e pytest: python lab/tests/test_estelam_service.py
+ya az tarigh-e suite: python lab/scripts/run_panel_tests.py test_estelam_service
+(v1.9.1: the module is registered there; the AsUnittest adapter below is what
+makes its function-style tests visible to unittest discovery.)
 """
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
+
+# Keep every log and store this module touches inside a throwaway directory, so
+# running it the way the docstring says (directly, without the suite runner)
+# cannot append test records to the operator's live %LOCALAPPDATA%\irica. This
+# module and test_estelam_hamta were doing exactly that: their inquiries write
+# through panel.estelam_log, which resolves its path once, at import, from
+# app_paths.data_dir().
+#
+# Claimed only when nothing claimed it first, and before the first import of
+# panel/app_paths, because that resolution is cached. The suite runner points
+# IRICA_DATA_DIR at its own scratch directory before importing any test module;
+# overwriting that value leaves the tests here resolving one directory while
+# panel's import-time constants hold another, which is the invariant
+# test_app_paths pins -- it fails, and other modules start writing outside the
+# runner's scratch directory. A direct run has nothing set, so it takes the
+# throwaway directory and never reaches the operator's live one.
+if not (os.environ.get("IRICA_DATA_DIR") or "").strip():
+    os.environ["IRICA_DATA_DIR"] = tempfile.mkdtemp(
+        prefix="irica_estelam_svc_tests_")
 
 
 def _fresh_panel(tmp_store):
@@ -389,11 +412,20 @@ class _FakeDriver:
         return None
 
 
+# The tests that drive the robot reach panel.estelam_log through the robot's
+# own _elog() mirror, which writes panel.ESTELAM_LOGS_PATH -- a path fixed at
+# panel's import. Redirect it to a throwaway file for the duration of those
+# tests so a direct run cannot append to a real log even when the caller's
+# IRICA_DATA_DIR does point at a real data directory.
+_ROBOT_LOG_DIR = tempfile.mkdtemp(prefix="irica_estelam_svc_logs_")
+
+
 def _patch_robot(monkey_targets):
     """Stub-haye lazem baraye ejra-ye inquire_device bedun-e Chrome/model."""
     import captcha_collector as cc
     import estelam_gomrok as E
     import gomrok as G
+    import panel
     saved = {}
 
     def save(module, name, value):
@@ -421,6 +453,8 @@ def _patch_robot(monkey_targets):
     # v1.9.1: these tests have no browser, so stub the capture out — nothing
     # reaches the disk and the test telegram stays offline.
     save(E, "_capture_result_shot", lambda driver, device: "")
+    save(panel, "ESTELAM_LOGS_PATH",
+         os.path.join(_ROBOT_LOG_DIR, "estelam_logs.jsonl"))
     save(E, "SUBMIT_DEADLINE_SEC", 3)
     return saved
 
@@ -554,13 +588,66 @@ def test_panels_use_normal_zoom():
 def test_site_zoom_lives_in_captcha_collector():
     """Zoom-e 75%-i-ye site + captcha-ye zoom-e ma'koos dar captcha_collector ast."""
     import captcha_collector as cc
+    from unittest.mock import patch
     assert cc.SITE_ZOOM == 0.75
     js = cc.zoom_bootstrap_js()
     assert "html{zoom:" in js and "0.75" in js
     assert "img.captchaImage{zoom:" in js  # captcha andaze-ash hefz shavad
     assert hasattr(cc, "install_site_zoom")
-    src = open(os.path.join(ROOT, "captcha_collector.py"), encoding="utf-8").read()
-    assert src.count("install_site_zoom(build_") >= 2  # roo-ye Chrome va Edge
+
+    # v1.9.1: the zoom moved from two wrapper call-sites into prepare() inside
+    # build_driver, so counting "install_site_zoom(build_" pinned a shape that
+    # no longer exists. Re-pinned to the property that shape stood for: every
+    # driver build_driver hands out -- Chrome, and the Edge fallback -- comes
+    # back with the site zoom and the manual scroll already installed.
+    class _FakeDriver:
+        def __init__(self):
+            self.cdp = []
+            self.scripts = []
+
+        def execute_cdp_cmd(self, cmd, params):
+            self.cdp.append((cmd, params))
+            return {}
+
+        def execute_script(self, script):
+            self.scripts.append(script)
+
+    def prepared(failure):
+        """build_driver() where the Chrome builder either works or raises."""
+        driver = _FakeDriver()
+
+        def chrome(*args, **kwargs):
+            if failure is not None:
+                raise failure
+            return driver
+
+        with patch.object(cc, "build_chrome", side_effect=chrome), \
+                patch.object(cc, "build_edge", return_value=driver), \
+                patch.object(cc, "USE_EDGE", False):
+            handed_out = cc.build_driver()
+        assert handed_out is driver, \
+            "prepare() must return the very driver it was given"
+        zoomed = [s for s in driver.scripts if "html{zoom:" in s]
+        assert zoomed, "the site zoom was never applied to the driver"
+        assert any(str(cc.SITE_ZOOM) in s for s in zoomed)
+        assert ("Emulation.setEmitTouchEventsForMouse",
+                {"enabled": True, "configuration": "mobile"}) in driver.cdp, \
+            "the manual scroll was never installed"
+
+    prepared(None)                             # Chrome builds fine
+    prepared(RuntimeError("no chrome here"))   # falls back to Edge
+
+    # USE_EDGE short-circuits straight to the Edge builder; that driver has to
+    # be prepared as well.
+    driver = _FakeDriver()
+    with patch.object(cc, "build_chrome",
+                      side_effect=AssertionError("Chrome must not be built")), \
+            patch.object(cc, "build_edge", return_value=driver), \
+            patch.object(cc, "USE_EDGE", True):
+        assert cc.build_driver() is driver
+    assert any("html{zoom:" in s for s in driver.scripts), \
+        "the Edge path handed out an unprepared driver"
+
 
 
 def test_estelam_page_renders_jalali_dates():
@@ -585,6 +672,30 @@ def test_estelam_page_renders_jalali_dates():
     assert "fmtWhen(d.hamta_at)" in html
     # no raw timestamp passthrough is left on the display paths
     assert "esc(l.ts||'')" not in html
+
+
+class AsUnittest(unittest.TestCase):
+    """Expose the function-style tests above to unittest discovery.
+
+    Every test in this module is a plain function that ``_run_all()`` calls in
+    a loop, and ``loadTestsFromName`` collects nothing from that shape. Listing
+    this module in lab/scripts/run_panel_tests.py before this class existed
+    would have added zero coverage while still reporting green. Each ``test_*``
+    function is attached below as a real method so the suite runs it.
+    """
+
+
+def _attach_as_test(name, fn):
+    def method(self):
+        fn()
+
+    method.__name__ = name
+    method.__doc__ = fn.__doc__
+    setattr(AsUnittest, name, method)
+
+
+for _test_name in sorted(n for n in list(globals()) if n.startswith("test_")):
+    _attach_as_test(_test_name, globals()[_test_name])
 
 
 def _run_all():

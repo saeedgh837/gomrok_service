@@ -6,7 +6,9 @@ Lives under lab/scripts/ because panel.clean_project_root() deletes any
     python lab/scripts/run_panel_tests.py [test_module ...]
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,18 +107,52 @@ DEFAULT = [
     # reported as SKIPPED, so a dropped deliverable cannot pass unnoticed.
     "test_v1_9_1_routes",
     "test_v1_9_1_crm_shot",
+    # v1.9.1 follow-up: two modules that had been sitting outside this list.
+    # test_estelam_hamta needed no change; test_estelam_service is
+    # function-style, so it carries an AsUnittest adapter (in the module) that
+    # publishes its tests to unittest discovery — without it, listing the
+    # module here would collect nothing and still print OK.
+    "test_estelam_hamta",
+    "test_estelam_service",
 ]
 
 names = sys.argv[1:] or DEFAULT
+
+# Keep the whole run out of the operator's live data directory. Modules that
+# patch their own paths are unaffected; a module that forgets to now writes
+# into a throwaway directory instead of real data (test_crm_inquiry_pool was
+# appending "inquiry started" records to the live estelam log this way). This
+# must happen before anything imports app_paths, whose data_dir() is cached on
+# its first call.
+SCRATCH = tempfile.mkdtemp(prefix="irica_tests_")
+os.environ["IRICA_DATA_DIR"] = SCRATCH
+print("data dir for this run:", SCRATCH)
+
 loader = unittest.TestLoader()
 suite = unittest.TestSuite()
 missing = []
+hollow = []
 for name in names:
     if not os.path.exists(os.path.join(TESTS, name + ".py")):
         missing.append(name)
         continue
-    suite.addTests(loader.loadTestsFromName(name))
+    loaded = loader.loadTestsFromName(name)
+    # A module that is listed but yields no test cases is a hole in the suite:
+    # a script-style module (tests as plain functions, run by its own
+    # _run_all()) silently collects zero here. Fail the run rather than print
+    # OK over it — a dropped or mis-shaped module must not pass unnoticed.
+    if loaded.countTestCases() == 0:
+        hollow.append(name)
+    suite.addTests(loaded)
 if missing:
-    print("SKIPPED (not present):", ", ".join(missing))
+    print("MISSING (listed, file not present):", ", ".join(missing))
+if hollow:
+    print("EMPTY (listed, collected no tests):", ", ".join(hollow))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
-sys.exit(0 if result.wasSuccessful() else 1)
+ok = result.wasSuccessful() and not missing and not hollow
+if ok:
+    shutil.rmtree(SCRATCH, ignore_errors=True)
+else:
+    # Anything a test wrote while failing is still here to look at.
+    print("kept for debugging:", SCRATCH)
+sys.exit(0 if ok else 1)

@@ -278,9 +278,12 @@ class TestCrmReports(CrmApiHarness):
             self.assertGreater(len(raw), 500)
             self.assertEqual(raw[:4], b"%PDF")
         else:
-            # Edge missing -> HTML fallback with the print note
+            # No Edge available: the route must degrade to a printable HTML page
+            # that opens the print dialog itself.
             self.assertIn("html", ctype)
-            self.assertIn("Print", raw.decode("utf-8"))
+            page = raw.decode("utf-8")
+            self.assertIn("<table", page)
+            self.assertIn("window.print()", page)
 
     def test_telegram_honors_full_data_setting(self):
         self._seed_device()

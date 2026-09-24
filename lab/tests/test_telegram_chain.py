@@ -1,28 +1,39 @@
-"""Test-haye zanjire-ye ersal be telegram (bootstrap-e khodkar + fallback + fanout).
+"""Telegram delivery chain: panel health wire-up, the notifier fanout/retry
+contract, and the relay/proxy scripts that are still packaged.
 
-Ejra:
+Run directly:
   unset PYTHONPATH VIRTUAL_ENV
   "C:/Program Files/Python310/python.exe" lab/tests/test_telegram_chain.py
+or through the suite: python lab/scripts/run_panel_tests.py test_telegram_chain
+(v1.9.1: the module is registered there; the AsUnittest adapter below is what
+makes its function-style tests visible to unittest discovery.)
+
+Scope note: until 2026-09-10 the panel bootstrapped the local relay chain
+(proxy 18081 + relay 8752 + cloudflared named tunnel) and telegram_notify fell
+back to http://127.0.0.1:8752 whenever the configured public base was down. That
+wiring was retired -- panel now only health-checks the configured base, and the
+watchdog no longer starts a tunnel. The tests that pinned the retired wiring were
+removed with it, because they kept passing on a shape the code no longer had once
+this module stopped being collected; what remains pins behavior that is still
+live. Deadline budgeting and single-chat targeting are covered by
+test_page_probe_and_telegram_timeout and test_v1_5_handoff.
 """
-import json
 import os
 import sys
 import tempfile
+import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 
 
 # ---------------------------------------------------------------- panel side
-def test_panel_helpers_exist():
+def test_panel_health_helpers_exist():
     import panel
-    for name in ("ensure_telegram_relay_chain", "_startup_telegram_bootstrap",
-                 "_port_listening", "_process_running", "_spawn_detached",
-                 "_wait_port", "_wait_tunnel_registered", "TELEGRAM_LOCAL_BASE"):
+    for name in ("test_telegram_api", "_write_telegram_health",
+                 "_startup_telegram_bootstrap", "load_telegram_health",
+                 "load_telegram_config", "TELEGRAM_HEALTH_PATH"):
         assert hasattr(panel, name), name
-    assert panel.TELEGRAM_LOCAL_BASE == "http://127.0.0.1:8752"
-    assert panel.RELAY_PROXY_PORT == 18081
-    assert panel.RELAY_API_PORT == 8752
 
 
 def test_startup_calls_bootstrap_not_bare_test():
@@ -31,134 +42,103 @@ def test_startup_calls_bootstrap_not_bare_test():
     assert "target=test_telegram_api" not in src
 
 
-def test_port_listening_detects_real_socket():
-    import socket
-    import panel
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(1)
-        port = srv.getsockname()[1]
-        assert panel._port_listening(port) is True
-    assert panel._port_listening(port) is False
+def test_panel_health_uses_configured_base_only():
+    """The public base from telegram_config.json is the ONLY endpoint probed.
 
-
-def test_process_running_true_for_python_false_for_fake():
-    import panel
-    assert panel._process_running("python.exe") is True
-    assert panel._process_running("definitely-not-a-real-process-xyz.exe") is False
-
-
-def test_health_falls_back_to_local_relay(monkey=None):
-    """Agar api_base-e omoomi bishkanad vali relay-e mohalli javab bedahad,
-    natije bayad ok bashad va used_base = relay-e mohalli."""
+    PITFALL this replaces: the retired relay-era code also tried
+    http://127.0.0.1:8752 on failure, so a dead public base could still report
+    ok = True from a local process. Reintroducing that fallback would make the
+    operator's connectivity report lie, so the probe must stay single-target.
+    """
     import panel
     import requests
 
-    calls = []
+    seen = []
 
     class FakeResponse:
-        def __init__(self, payload, ok=True, status=200):
-            self._payload = payload
-            self.ok = ok
-            self.status_code = status
+        ok = True
+        status_code = 200
 
         def json(self):
-            return self._payload
+            return {"ok": True, "result": {"username": "ir_hermes_bot"}}
 
     def fake_get(url, timeout=None):
-        calls.append(url)
-        if url.startswith("https://"):
-            raise requests.exceptions.ConnectionError("tunnel down")
-        return FakeResponse({"ok": True, "result": {"username": "ir_hermes_bot"}})
+        seen.append(url)
+        return FakeResponse()
 
     old_get = requests.get
+    old_cfg = panel.load_telegram_config
     old_health = panel.TELEGRAM_HEALTH_PATH
-    tmp = tempfile.mkdtemp()
-    panel.TELEGRAM_HEALTH_PATH = os.path.join(tmp, "h.json")
+    panel.TELEGRAM_HEALTH_PATH = os.path.join(tempfile.mkdtemp(), "health.json")
+    panel.load_telegram_config = lambda: {"api_base": "https://tg.example",
+                                          "bot_token": "T"}
     requests.get = fake_get
     try:
         result = panel.test_telegram_api(attempts=1)
     finally:
         requests.get = old_get
+        panel.load_telegram_config = old_cfg
         panel.TELEGRAM_HEALTH_PATH = old_health
     assert result["ok"] is True, result
-    assert result["used_base"] == "http://127.0.0.1:8752", result
-    assert "رله محلی" in result["message"], result["message"]
-    assert any(u.startswith("https://") for u in calls)
-    assert any(u.startswith("http://127.0.0.1:8752") for u in calls)
+    assert result["used_base"] == "https://tg.example", result
+    assert seen == ["https://tg.example/botT/getMe"], seen
 
 
-def test_health_reports_failure_when_both_paths_down():
+def test_panel_health_reports_failure_when_base_is_down():
     import panel
     import requests
 
     def fake_get(url, timeout=None):
         raise requests.exceptions.ConnectionError("all down")
 
-    old_get, old_health = requests.get, panel.TELEGRAM_HEALTH_PATH
-    tmp = tempfile.mkdtemp()
-    panel.TELEGRAM_HEALTH_PATH = os.path.join(tmp, "h.json")
+    old_get = requests.get
+    old_cfg = panel.load_telegram_config
+    old_health = panel.TELEGRAM_HEALTH_PATH
+    panel.TELEGRAM_HEALTH_PATH = os.path.join(tempfile.mkdtemp(), "health.json")
+    panel.load_telegram_config = lambda: {"api_base": "https://tg.example",
+                                          "bot_token": "T"}
     requests.get = fake_get
     try:
         result = panel.test_telegram_api(attempts=1)
     finally:
         requests.get = old_get
+        panel.load_telegram_config = old_cfg
         panel.TELEGRAM_HEALTH_PATH = old_health
-    assert result["ok"] is False
-    assert "ناموفق" in result["message"]
+    assert result["ok"] is False, result
     assert result["used_base"] == ""
+    assert "ناموفق" in result["message"], result["message"]
 
 
-def test_ensure_chain_is_idempotent_when_up():
-    """Agar hame chiz bala bashad, hich process-e jadid start nemishavad."""
+def test_panel_health_requires_a_complete_config():
     import panel
-    old_port, old_proc = panel._port_listening, panel._process_running
-    spawned = []
-    panel._port_listening = lambda port, host="127.0.0.1", timeout=0.4: True
-    panel._process_running = lambda name: True
-    old_spawn = panel._spawn_detached
-    panel._spawn_detached = lambda *a, **k: spawned.append(a) or None
-    try:
-        status = panel.ensure_telegram_relay_chain(wait_tunnel=False)
-    finally:
-        panel._port_listening, panel._process_running = old_port, old_proc
-        panel._spawn_detached = old_spawn
-    assert status["started"] == []
-    assert spawned == []
-    assert status["proxy"] and status["relay"] and status["tunnel"]
 
-
-def test_ensure_chain_starts_missing_parts():
-    import panel
-    old_port, old_proc, old_spawn = (panel._port_listening, panel._process_running,
-                                     panel._spawn_detached)
-    old_wait, old_waitt = panel._wait_port, panel._wait_tunnel_registered
-    spawned = []
-    panel._port_listening = lambda port, host="127.0.0.1", timeout=0.4: False
-    panel._process_running = lambda name: False
-    panel._spawn_detached = lambda command, cwd=None: spawned.append(command[-1])
-    panel._wait_port = lambda port, timeout=20.0: True
-    panel._wait_tunnel_registered = lambda log_path, timeout=30: True
+    old_cfg = panel.load_telegram_config
+    old_health = panel.TELEGRAM_HEALTH_PATH
+    panel.TELEGRAM_HEALTH_PATH = os.path.join(tempfile.mkdtemp(), "health.json")
+    panel.load_telegram_config = lambda: {"api_base": "", "bot_token": ""}
     try:
-        status = panel.ensure_telegram_relay_chain(wait_tunnel=False)
+        result = panel.test_telegram_api(attempts=1)
     finally:
-        (panel._port_listening, panel._process_running, panel._spawn_detached,
-         panel._wait_port, panel._wait_tunnel_registered) = (
-            old_port, old_proc, old_spawn, old_wait, old_waitt)
-    assert any("cloudflare_http_proxy.py" in x for x in spawned), spawned
-    assert any("telegram_api_relay.py" in x for x in spawned), spawned
-    assert "http_proxy:18081" in status["started"]
-    assert "telegram_relay:8752" in status["started"]
+        panel.load_telegram_config = old_cfg
+        panel.TELEGRAM_HEALTH_PATH = old_health
+    assert result["ok"] is False, result
+    assert "کامل نیست" in result["message"], result["message"]
 
 
 # ------------------------------------------------------------ notifier side
-def test_notifier_has_local_fallback_base():
+def test_notifier_bases_is_only_the_configured_base():
+    """No endpoint is invented: an empty api_base means no base at all.
+
+    Known gap (follow-up, needs a source change and a re-release): a
+    whitespace-only api_base is NOT normalized away -- ``_bases`` returns
+    ``["   "]`` and every send burns its attempts on a garbage URL. Only the
+    empty case is asserted here, because that is the contract today.
+    """
     import telegram_notify as tg
-    cfg = {"api_base": "https://telegram.techbysaeed.ir", "bot_token": "T"}
-    bases = tg._bases(cfg)
-    assert bases[0] == "https://telegram.techbysaeed.ir"
-    assert "http://127.0.0.1:8752" in bases
-    assert tg._api("getMe", cfg, bases[1]) == "http://127.0.0.1:8752/botT/getMe"
+    cfg = {"api_base": "https://tg.example/", "bot_token": "T"}
+    assert tg._bases(cfg) == ["https://tg.example"]      # trailing slash trimmed
+    assert tg._bases({}) == []
+    assert tg._api("getMe", cfg, tg._bases(cfg)[0]) == "https://tg.example/botT/getMe"
 
 
 def test_permanent_chat_error_detection():
@@ -170,13 +150,13 @@ def test_permanent_chat_error_detection():
 
 
 def test_fanout_survives_one_broken_chat():
-    """chat-e 'not found' nabayad ersal be chat-e salem ra kharab konad."""
+    """A 'chat not found' destination must not break delivery to a healthy one."""
     import telegram_notify as tg
     old_post, old_cfg = tg._post_confirmed, tg.ensure_config
     tg.ensure_config = lambda: {"api_base": "http://x", "bot_token": "T",
                                 "chat_ids": ["good", "bad"]}
 
-    def fake_post(method, cfg, data, files_factory=None, attempts=4):
+    def fake_post(method, cfg, data, files_factory=None, attempts=4, deadline=None):
         if data["chat_id"] == "bad":
             raise RuntimeError("Bad Request: chat not found")
         return {"ok": True, "result": {"message_id": 11}}
@@ -207,53 +187,32 @@ def test_fanout_raises_only_when_all_chats_fail():
     assert raised
 
 
-def test_post_confirmed_rotates_bases_and_skips_retry_on_permanent():
+def test_post_confirmed_does_not_retry_a_permanent_chat_error():
+    """Retrying a dead / blocked chat only wastes the send budget."""
     import telegram_notify as tg
+    import requests
 
     class FakeResponse:
-        def __init__(self, payload, status=200):
-            self._payload = payload
-            self.status_code = status
+        status_code = 400
 
         def json(self):
-            return self._payload
+            return {"ok": False, "description": "Bad Request: chat not found"}
 
         def raise_for_status(self):
-            if self.status_code >= 400:
-                raise RuntimeError(f"{self.status_code} Client Error")
+            raise RuntimeError("400 Client Error")
 
     urls = []
 
-    import requests
-    old_post = requests.post
-
     def fake_post(url, data=None, files=None, timeout=None):
         urls.append(url)
-        if url.startswith("https://"):
-            raise requests.exceptions.ConnectionError("tunnel down")
-        return FakeResponse({"ok": True, "result": {"message_id": 7}})
+        return FakeResponse()
 
+    old_post = requests.post
     requests.post = fake_post
     try:
-        cfg = {"api_base": "https://pub", "bot_token": "T"}
-        body = tg._post_confirmed("sendMessage", cfg, {"chat_id": "1", "text": "x"})
-    finally:
-        requests.post = old_post
-    assert body["result"]["message_id"] == 7
-    assert urls[0].startswith("https://pub")
-    assert urls[1].startswith("http://127.0.0.1:8752")
-
-    # khata-ye permanent -> hich retry
-    urls.clear()
-
-    def fake_post_bad(url, data=None, files=None, timeout=None):
-        urls.append(url)
-        return FakeResponse({"ok": False, "description": "Bad Request: chat not found"}, 400)
-
-    requests.post = fake_post_bad
-    try:
         try:
-            tg._post_confirmed("sendMessage", {"api_base": "https://pub", "bot_token": "T"},
+            tg._post_confirmed("sendMessage", {"api_base": "https://tg",
+                                               "bot_token": "T"},
                                {"chat_id": "1", "text": "x"})
             raised = False
         except RuntimeError as exc:
@@ -264,14 +223,60 @@ def test_post_confirmed_rotates_bases_and_skips_retry_on_permanent():
     assert len(urls) == 1, urls
 
 
+def test_post_confirmed_retries_the_configured_base():
+    import telegram_notify as tg
+    import requests
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "result": {"message_id": 7}}
+
+        def raise_for_status(self):
+            return None
+
+    urls = []
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        urls.append(url)
+        if len(urls) == 1:
+            raise requests.exceptions.ConnectionError("tunnel down")
+        return FakeResponse()
+
+    old_post = requests.post
+    requests.post = fake_post
+    try:
+        body = tg._post_confirmed("sendMessage",
+                                  {"api_base": "https://tg.example", "bot_token": "T"},
+                                  {"chat_id": "1", "text": "x"}, attempts=2)
+    finally:
+        requests.post = old_post
+    assert body["result"]["message_id"] == 7
+    assert set(urls) == {"https://tg.example/botT/sendMessage"}, urls
+
+
+def test_notifier_upload_timeout_is_generous():
+    src = open(os.path.join(ROOT, "telegram_notify.py"), encoding="utf-8").read()
+    assert "request_timeout = 150 if files_factory else 20" in src
+    # a single request must never outlive the remaining budget
+    assert "request_timeout = min(request_timeout, remaining)" in src
+
+
+# ------------------------------------------- relay / proxy scripts (packaged)
 def test_watchdog_bat_uses_literal_findstr():
-    """PITFALL: findstr /R \"PAT WITH SPACE\" = do OR-pattern -> hamishe match."""
-    bat = open(os.path.join(ROOT, "start_telegram_relay_chain.bat"), encoding="utf-8").read()
+    """PITFALL: findstr /R "PAT WITH SPACE" = do OR-pattern -> hamishe match."""
+    bat = open(os.path.join(ROOT, "start_telegram_relay_chain.bat"),
+               encoding="utf-8").read()
     assert '/C:":18081 .*LISTENING"' in bat
     assert '/C:":8752 .*LISTENING"' in bat
     assert 'findstr /R ":18081' not in bat
     assert 'findstr /R ":8752' not in bat
-    assert 'tasklist /FI "IMAGENAME eq cloudflared.exe"' in bat
+    assert "cloudflare_http_proxy.py" in bat
+    assert "telegram_api_relay.py" in bat
+    # the cloudflared named tunnel was retired on 2026-09-10; the watchdog must
+    # not try to start it again.
+    assert "cloudflared.exe" not in bat
 
 
 def test_http_proxy_tunnel_stays_blocking():
@@ -293,9 +298,28 @@ def test_relay_retries_more_for_large_bodies():
     assert "for _attempt in range(max_attempts):" in src
 
 
-def test_notifier_upload_timeout_is_generous():
-    src = open(os.path.join(ROOT, "telegram_notify.py"), encoding="utf-8").read()
-    assert "timeout=150 if files else 20" in src
+class AsUnittest(unittest.TestCase):
+    """Expose the function-style tests above to unittest discovery.
+
+    Every test in this module is a plain function that ``_run_all()`` calls in a
+    loop, and ``loadTestsFromName`` collects nothing from that shape. The module
+    is listed in lab/scripts/run_panel_tests.py, so before this class existed it
+    contributed zero coverage while the suite still reported green. Each
+    ``test_*`` function is attached below as a real method.
+    """
+
+
+def _attach_as_test(name, fn):
+    def method(self):
+        fn()
+
+    method.__name__ = name
+    method.__doc__ = fn.__doc__
+    setattr(AsUnittest, name, method)
+
+
+for _test_name in sorted(n for n in list(globals()) if n.startswith("test_")):
+    _attach_as_test(_test_name, globals()[_test_name])
 
 
 def _run_all():

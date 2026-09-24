@@ -17,9 +17,13 @@ class CrmInquiryCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.estelam = os.path.join(self.tmp.name, "estelam_store.json")
+        self.estelam_logs = os.path.join(self.tmp.name, "estelam_logs.jsonl")
         self.crm_store = os.path.join(self.tmp.name, "crm_store.json")
         self._patches = [
             patch.object(panel, "ESTELAM_PATH", self.estelam),
+            # Starting an inquiry writes an "info" record through estelam_log;
+            # without this patch the run appends to the operator's live log.
+            patch.object(panel, "ESTELAM_LOGS_PATH", self.estelam_logs),
             patch.dict(os.environ, {"IRICA_CRM_STORE": self.crm_store}),
         ]
         for item in self._patches:

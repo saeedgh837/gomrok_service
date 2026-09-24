@@ -5,11 +5,24 @@ Ejra:
 """
 import os
 import sys
+import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _ROOT)
+
+# Keep the robot's logs out of the operator's live %LOCALAPPDATA%\irica when
+# this module is run directly, the way its docstring says. Claimed only when
+# nothing claimed it first: the suite runner points IRICA_DATA_DIR at its own
+# scratch directory before importing any test module, and overwriting that
+# value leaves these tests resolving one directory while panel's import-time
+# constants hold another -- test_app_paths pins that invariant and fails. It
+# has to happen before estelam_hamta is imported, because app_paths caches the
+# resolved directory on its first call.
+if not (os.environ.get("IRICA_DATA_DIR") or "").strip():
+    os.environ["IRICA_DATA_DIR"] = tempfile.mkdtemp(
+        prefix="irica_estelam_hamta_tests_")
 
 import estelam_hamta as H  # noqa: E402
 
@@ -145,13 +158,22 @@ class TestLogFile(unittest.TestCase):
 
     def setUp(self):
         import tempfile
+        import panel
         self._orig = H._LOG_PATH
+        self._orig_panel_log = panel.ESTELAM_LOGS_PATH
         self._tmp = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
         self._tmp.close()
         H._LOG_PATH = self._tmp.name
+        # _elog() mirrors every record into panel.estelam_log, which writes
+        # panel.ESTELAM_LOGS_PATH -- a path fixed at panel's import. Redirect
+        # that too, or the mirror lands in a real log even though H._LOG_PATH
+        # does not.
+        panel.ESTELAM_LOGS_PATH = self._tmp.name
 
     def tearDown(self):
+        import panel
         H._LOG_PATH = self._orig
+        panel.ESTELAM_LOGS_PATH = self._orig_panel_log
         try:
             os.unlink(self._tmp.name)
         except OSError:

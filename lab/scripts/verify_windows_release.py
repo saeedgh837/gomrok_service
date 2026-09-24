@@ -171,6 +171,21 @@ def _spawned_scripts(panel_src: str) -> set[str]:
     return names
 
 
+def _read_or_empty(path: Path) -> str:
+    """Read a bundle file that may be missing, without killing the run.
+
+    Both callers use the text to DERIVE a check's inputs. A missing panel.py is
+    a real release failure that the required-file row already reports; it has to
+    land as one more FAIL row, not as a FileNotFoundError traceback that
+    replaces the whole report. An empty file reads the same way on purpose: it
+    is just as broken as an absent one for both callers.
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
 def check_completeness(dist: Path) -> None:
     missing = [r for r in REQUIRED if not (dist / r).exists()]
     check("every required file is present", not missing, str(missing))
@@ -178,13 +193,21 @@ def check_completeness(dist: Path) -> None:
     # Root-cause guard, not another hand-maintained name: panel.py spawns robots
     # as subprocesses, so ANY script it names must be inside the bundle. This is
     # what caught profile_inquiry.py being absent while panel.py called it.
-    panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
+    panel_src = _read_or_empty(dist / "panel.py")
     spawned = _spawned_scripts(panel_src)
     absent = sorted(s for s in spawned if not (dist / s).exists())
+    # Zero names found is not a clean bundle: panel.py is the spawner, and it
+    # names scripts. An empty result means the file was absent or empty and the
+    # guard never ran.
     check(f"every script panel.py spawns is bundled ({len(spawned)} found)",
-          not absent, str(absent))
+          bool(spawned) and not absent,
+          str(absent) or "panel.py is absent or empty in the bundle")
+    site_packages = dist / "python" / "Lib" / "site-packages"
+    # A glob over a directory that is not there yields nothing, which would
+    # report this row as a pass over zero evidence.
     check("no torch inside the bundle",
-          not list((dist / "python" / "Lib" / "site-packages").glob("torch*")))
+          site_packages.is_dir() and not list(site_packages.glob("torch*")),
+          "" if site_packages.is_dir() else f"{site_packages.name}/ missing")
     check("no .pt checkpoint shipped (ONNX only)",
           not list(dist.rglob("*.pt")))
     version = (dist / "VERSION").read_text().strip() if (dist / "VERSION").exists() else ""
@@ -217,7 +240,7 @@ def check_importable_modules(dist: Path) -> None:
     same failure, a file that is present but no longer parses or has lost one of
     its public names.
     """
-    panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
+    panel_src = _read_or_empty(dist / "panel.py")
     # Only names the project itself defines are candidates, so the stdlib and
     # third-party imports sitting in those same functions are never reported.
     project = {p.stem for p in dist.glob("*.py")} | {p.stem for p in ROOT.glob("*.py")}
@@ -236,8 +259,13 @@ def check_importable_modules(dist: Path) -> None:
             r"import_module\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", body))
         candidates |= {n for n in lazy if n in project}
     absent = sorted(n for n in candidates if not (dist / f"{n}.py").exists())
+    # Same reasoning as the spawn row: the panel is where most of these lazy
+    # imports live, so a readable panel.py is a precondition of this check
+    # meaning anything.
     check(f"every module a bundled robot or the panel imports lazily is bundled "
-          f"({len(candidates)} found)", not absent, str(absent))
+          f"({len(candidates)} found)",
+          bool(panel_src) and not absent,
+          str(absent) or "panel.py is absent or empty in the bundle")
 
     shot = dist / "estelam_shot.py"
     api = ("shot_path", "capture_element", "capture_page", "capture_result",

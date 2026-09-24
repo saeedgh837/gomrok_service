@@ -36,10 +36,29 @@ class SeedTests(unittest.TestCase):
                          ["arsalan", "hasan", "saeed"])
 
     def test_seed_file_has_no_plaintext_passwords(self):
+        """No password may be stored in any form.
+
+        A raw-substring scan of the file cannot test that: salt and hash are
+        long RANDOM hex strings, so a short numeric password's digits turn up
+        inside them by chance (a 4-digit one lands in a 64-char hash about once
+        in a few hundred seeds) and the test fails with nothing wrong. Mixed
+        case/symbol passwords cannot occur in hex at all, so they are still
+        scanned as substrings; every password is additionally compared as a
+        whole value, and the key set is pinned so no password field can be
+        added later.
+        """
         with open(self.path, encoding="utf-8") as fh:
             raw = fh.read()
-        for secret in ("Sgh@1994@", "8080", "Aa1111"):
+            fh.seek(0)
+            users = json.load(fh)
+        for secret in ("Sgh@1994@", "Aa1111"):      # cannot appear in hex output
             self.assertNotIn(secret, raw)
+        plaintexts = {"Sgh@1994@", "8080", "Aa1111"}
+        for user in users:
+            self.assertEqual(sorted(user),
+                             ["hash", "iters", "salt", "username"], user)
+            for field, value in user.items():
+                self.assertNotIn(str(value).strip(), plaintexts, (field, value))
 
     def test_seed_file_format(self):
         users = panel_auth.load_users(self.path)
