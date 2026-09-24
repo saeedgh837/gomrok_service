@@ -92,6 +92,19 @@ DEFAULT = [
     # related-sites box (left corner, dismissable, server-backed links) and
     # the UI sound engine (settings switch + header mirror + /sfx whitelist).
     "test_v1_9_0_ux",
+    # v1.9.1 round: result-element capture in the inquiry robots (element
+    # screenshot + page fallback, PNG validation, photo-first telegram with a
+    # text fallback, store fields hamta_screenshot / gomrok_screenshot) and
+    # the panel side (containment-checked /estelam-shot route, camera icon
+    # per service, shot modal).
+    "test_v1_9_1_capture",
+    "test_v1_9_1_screenshot",
+    # v1.9.1 round, second half: the /estelam-shot route and its containment
+    # rule, and the CRM side (presence flags, per-service camera icon, shot
+    # modal, screenshot cleanup on delete). A file listed here but absent is
+    # reported as SKIPPED, so a dropped deliverable cannot pass unnoticed.
+    "test_v1_9_1_routes",
+    "test_v1_9_1_crm_shot",
 ]
 
 names = sys.argv[1:] or DEFAULT

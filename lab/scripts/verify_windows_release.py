@@ -17,6 +17,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -55,6 +56,9 @@ REQUIRED = [
     "app_paths.py", "crm.py", "panel_auth.py",
     "run_panel.bat", "install.bat", "FIRST_RUN.txt", "README.md", "VERSION",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
+    # v1.9.1: imported by both inquiry robots at capture time; missing from a
+    # bundle it is a hard crash on the first result after an upgrade.
+    "estelam_shot.py",
     "telegram_config.example.json",
     "solver/onnx_solve.py", "solver/live_solve.py", "solver/preprocess.py",
     "solver/checkpoints/best_real_v2.onnx",
@@ -159,6 +163,14 @@ def check_safety(dist: Path) -> None:
               "PII check skipped")
 
 
+def _spawned_scripts(panel_src: str) -> set[str]:
+    """Script names panel.py hands to a subprocess, by the shapes it uses."""
+    names = set(re.findall(r'HERE,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
+    names |= set(re.findall(r'\(\s*"([A-Za-z0-9_]+\.py)"\s*,\s*\[', panel_src))
+    names |= set(re.findall(r'_robot_command\([^,]+,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
+    return names
+
+
 def check_completeness(dist: Path) -> None:
     missing = [r for r in REQUIRED if not (dist / r).exists()]
     check("every required file is present", not missing, str(missing))
@@ -167,9 +179,7 @@ def check_completeness(dist: Path) -> None:
     # as subprocesses, so ANY script it names must be inside the bundle. This is
     # what caught profile_inquiry.py being absent while panel.py called it.
     panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
-    spawned = set(re.findall(r'HERE,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
-    spawned |= set(re.findall(r'\(\s*"([A-Za-z0-9_]+\.py)"\s*,\s*\[', panel_src))
-    spawned |= set(re.findall(r'_robot_command\([^,]+,\s*"([A-Za-z0-9_]+\.py)"', panel_src))
+    spawned = _spawned_scripts(panel_src)
     absent = sorted(s for s in spawned if not (dist / s).exists())
     check(f"every script panel.py spawns is bundled ({len(spawned)} found)",
           not absent, str(absent))
@@ -180,6 +190,69 @@ def check_completeness(dist: Path) -> None:
     version = (dist / "VERSION").read_text().strip() if (dist / "VERSION").exists() else ""
     check("VERSION matches the repo", version == (ROOT / "VERSION").read_text().strip(),
           version)
+
+    check_importable_modules(dist)
+
+
+# Modules the panel loads into its own process rather than into a robot
+# subprocess. Their lazy imports run there, so one missing from the bundle is a
+# clean-install crash the first time that code path runs: v1.9.1 shipped without
+# log_utils.py, which panel.py:1286, panel.py:2489 and crm.py:530 import only
+# inside their log helpers. An upgraded install had the file left over from an
+# older version, so only a clean install would have failed.
+ENTRYPOINTS = ("panel.py", "crm.py")
+
+
+def check_importable_modules(dist: Path) -> None:
+    """Modules a bundled script imports lazily must be bundled AND loadable.
+
+    v1.9.1: both inquiry robots and the panel's discard button import
+    estelam_shot only when a verdict arrives, so the spawn gate above never
+    sees it and the bundled-probe import list never pulled it in. A bundle
+    shipping a truncated or unparsable copy therefore verified clean and then
+    crashed on the first real result after an upgrade. The first row is derived,
+    not hand-maintained: any project module a bundled robot OR the panel's own
+    entrypoint imports, however it imports it, must sit next to it in the
+    bundle. The second row is import-free and catches the other shape of the
+    same failure, a file that is present but no longer parses or has lost one of
+    its public names.
+    """
+    panel_src = (dist / "panel.py").read_text(encoding="utf-8", errors="ignore")
+    # Only names the project itself defines are candidates, so the stdlib and
+    # third-party imports sitting in those same functions are never reported.
+    project = {p.stem for p in dist.glob("*.py")} | {p.stem for p in ROOT.glob("*.py")}
+    candidates: set[str] = set()
+    for name in sorted(_spawned_scripts(panel_src) | set(ENTRYPOINTS)):
+        src = dist / name
+        if not src.exists():
+            continue  # reported by the required-file or spawn row above
+        body = src.read_text(encoding="utf-8", errors="ignore")
+        # An indented `import x` is an in-function (lazy) import; the end anchor
+        # leaves `import x as y` and `from x import y` to the other shapes.
+        lazy = set(re.findall(
+            r"(?m)^[ \t]+import[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*$", body))
+        # The other shape a lazy import takes in this codebase.
+        lazy |= set(re.findall(
+            r"import_module\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", body))
+        candidates |= {n for n in lazy if n in project}
+    absent = sorted(n for n in candidates if not (dist / f"{n}.py").exists())
+    check(f"every module a bundled robot or the panel imports lazily is bundled "
+          f"({len(candidates)} found)", not absent, str(absent))
+
+    shot = dist / "estelam_shot.py"
+    api = ("shot_path", "capture_element", "capture_page", "capture_result",
+           "discard", "attach")
+    try:
+        tree = ast.parse(shot.read_text(encoding="utf-8"))
+        defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        missing, detail = [n for n in api if n not in defined], ""
+    except (OSError, SyntaxError, UnicodeDecodeError, ValueError) as exc:
+        # ValueError as well as SyntaxError: ast.parse rejects null bytes with
+        # it, and a crash here would hide the FAIL row this gate exists to print.
+        missing, detail = list(api), f"{type(exc).__name__}: {exc}"
+    check(f"bundled estelam_shot.py parses and defines its public API "
+          f"({len(api)} names)", not missing,
+          (str(missing) + (f" {detail}" if detail else "")) if missing else "")
 
 
 def check_function(dist: Path) -> None:
@@ -229,6 +302,20 @@ def check_function(dist: Path) -> None:
         "hr = hs.read_bgr(np.zeros((90,380,3), np.uint8))\n"
         "assert set(hr) == {'number','text','confidence','snap_distance'}, hr\n"
         "assert 'torch' not in sys.modules, 'torch leaked via hamta'\n"
+        # v1.9.1: estelam_shot is imported lazily, at capture time, by both
+        # inquiry robots and by the panel's discard button, so nothing above
+        # ever touched it -- a truncated or unparsable copy in the bundle passed
+        # every gate here and then died on the first real verdict after an
+        # upgrade. Import it under the bundled interpreter and touch its public
+        # surface. capture_result is only asserted callable: calling it needs a
+        # live driver.
+        "import estelam_shot as es\n"
+        "for _name in ('shot_path','capture_element','capture_page',\n"
+        "              'capture_result','discard','attach'):\n"
+        "    assert callable(getattr(es, _name, None)), 'estelam_shot.' + _name\n"
+        "assert es.shot_path('gomrok', '', '') == '', es.shot_path('gomrok', '', '')\n"
+        "_shot = es.shot_path('gomrok', 'dev-1', 'sn-1')\n"
+        "assert _shot.endswith('.png') and 'screenshots' in _shot, _shot\n"
         # profile_inquiry.py is spawned by the panel's inquiry button; import it
         # and drive its store-building helper so a missing dependency inside the
         # bundle surfaces here rather than as a dead button on the user's machine.

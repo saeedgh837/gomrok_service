@@ -106,8 +106,11 @@ _RESULT_FA = {
 }
 
 
-def _telegram_result(device, person, status, result_text):
-    """Natije-ye estelam-e har dastgah + serial-e aval/dovom + zaman ra be telegram mifrestad."""
+def _telegram_result(device, person, status, result_text, shot_path="",
+                     shot_exact=False):
+    """Send one device's inquiry result to Telegram: verdict, first/second
+    serial and timestamp. v1.9.1 sends it as a photo caption when a result
+    screenshot was captured, and as plain text otherwise."""
     s1 = str((device or {}).get("serial1") or "").strip() or "—"
     s2 = str((device or {}).get("serial2") or "").strip()
     when = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -124,7 +127,39 @@ def _telegram_result(device, person, status, result_text):
     if result_text:
         lines.append(f"پیام سامانه: {result_text}")
     lines.append(f"زمان استعلام: {when}")
-    _telegram("\n".join(lines))
+    text = "\n".join(lines)
+    # v1.9.1: try the photo (text as its caption) first and fall back to the
+    # plain text message, so a capture or upload failure never costs the
+    # operator the verdict itself.
+    #
+    # Only an exact capture of the verdict panel is attached. The full-page
+    # fallback also shows the form above it, which still holds the traveler's
+    # birth date, and this send fans out to every configured chat — so a
+    # page-level picture stays panel-only evidence.
+    if shot_path and shot_exact:
+        import estelam_shot
+        if estelam_shot.attach(shot_path, text):
+            return
+    _telegram(text)
+
+
+# --- v1.9.1: result screenshot at the verdict moment ------------------------
+GOMROK_RESULT_SELECTOR = '[wicketpath$="feedBack_container_error"], .feedbackPanelERROR'
+
+
+def _capture_result_shot(driver, device):
+    """Capture the gomrok message panel (the verdict) on page 1, at the moment
+    the verdict is on screen.
+
+    Returns (path, exact) — "" and False on any failure. `exact` is False when
+    only the whole-page fallback succeeded, which the caller needs in order to
+    keep that picture off Telegram.
+    """
+    import estelam_shot
+    return estelam_shot.capture_result(driver, "gomrok",
+                                       (device or {}).get("id") or "",
+                                       (device or {}).get("serial1") or "",
+                                       element_selector=GOMROK_RESULT_SELECTOR)
 
 
 def _elog(status, message, serial="", device_id=""):
@@ -409,9 +444,26 @@ def inquire_device(driver, wait, solver, person, device, no_confirm_check=False)
     (serial-e aval/dovom + zaman) — har chahar masir-e natije pooshesh dade shode."""
     outcome = _inquire_device(driver, wait, solver, person, device,
                               no_confirm_check=no_confirm_check)
+    # v1.9.1: capture the verdict while it is still on screen (for Telegram
+    # and the panel). The capture sits in its OWN try so that a failing
+    # capture can never swallow the inquiry result message.
+    outcome.setdefault("shot", "")
+    shot_exact = False
+    try:
+        outcome["shot"], shot_exact = _capture_result_shot(driver, device)
+    except Exception as exc:
+        # print() itself can raise here (a console without UTF-8 when the robot
+        # is run by hand, a full disk), and this handler runs inside the
+        # inquiry's own blanket handler: an escaping exception would overwrite
+        # a verdict that was already determined with "robot error".
+        try:
+            print(f">>> (result screenshot capture failed: {exc})")
+        except Exception:
+            pass
     try:
         _telegram_result(device, person, outcome.get("status", ""),
-                         outcome.get("result", ""))
+                         outcome.get("result", ""), shot_path=outcome["shot"],
+                         shot_exact=shot_exact)
     except Exception as exc:
         print(f">>> (telegram-e natije na-raft: {exc})")
     return outcome
@@ -652,7 +704,12 @@ def main():
             device_id = device.get("id")
             serials = _serials(device)
             print(f"\n=== [{index}/{len(devices)}] device {device_id} serial={serials} ===")
-            _panel_set_device(device_id, status="running", result="")
+            # v1.9.1: the evidence slot is reopened with the status slot. The
+            # capture overwrites the same file, but a run that ends without one
+            # (crash, unreachable element) would otherwise leave the previous
+            # verdict's picture pinned to a fresh result.
+            _panel_set_device(device_id, status="running", result="",
+                              gomrok_screenshot="")
             _elog("running", f"شروع استعلام دستگاه {index} از {len(devices)}",
                   serial=serials[0] if serials else "", device_id=device_id or "")
             outcome = None
@@ -693,7 +750,8 @@ def main():
             _panel_set_device(device_id,
                               status=(outcome or {}).get("status") or "error",
                               result=(outcome or {}).get("result") or "",
-                              messages=(outcome or {}).get("messages") or [])
+                              messages=(outcome or {}).get("messages") or [],
+                              gomrok_screenshot=(outcome or {}).get("shot") or "")
             print(f">>> natije-ye device {device_id}: {(outcome or {}).get('status')}")
     finally:
         try:

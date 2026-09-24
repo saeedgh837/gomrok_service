@@ -320,7 +320,8 @@ _STATUS_FA = {
 }
 
 
-def _telegram_result(serial, status, result_text, enabled=True):
+def _telegram_result(serial, status, result_text, enabled=True,
+                     shot_path="", shot_exact=False):
     when = time.strftime("%Y-%m-%d %H:%M:%S")
     head = _STATUS_FA.get(status, status)
     lines = [
@@ -331,7 +332,79 @@ def _telegram_result(serial, status, result_text, enabled=True):
     if result_text:
         lines.append(f"پیام سامانه: {result_text}")
     lines.append(f"زمان استعلام: {when}")
-    _telegram("\n".join(lines), enabled=enabled)
+    if not enabled:
+        return
+    text = "\n".join(lines)
+    # v1.9.1: try the photo (text as its caption) first and fall back to the
+    # plain text message, so a capture or upload failure never costs the
+    # operator the verdict itself. Only an exact capture of the result modal
+    # is attached; see estelam_shot.capture_result.
+    if shot_path and shot_exact:
+        import estelam_shot
+        if estelam_shot.attach(shot_path, text):
+            return
+    _telegram(text)
+
+
+# --- capture: result screenshot at the verdict moment ----------------------
+def _say(text):
+    """Diagnostic that cannot become the reason an inquiry failed.
+
+    A full disk, or a console without UTF-8 when this robot is run by hand
+    rather than by the panel, makes print() itself raise. In the capture paths
+    below that exception would reach run_from_store's blanket handler and
+    overwrite a verdict already determined with "robot error".
+    """
+    try:
+        print(text)
+    except Exception:
+        pass
+
+
+def _is_form_modal(driver):
+    """True when the visible swal2 modal is the inquiry FORM, not a verdict.
+
+    The captcha-retry branch dismisses the result swal and re-opens the form,
+    so once the retry loop gives up, the only modal on screen is a fresh blank
+    form. Capturing it would file a picture of an empty input as the evidence
+    for that verdict.
+    """
+    try:
+        for el in driver.find_elements("css selector", SEL_M_IMEI):
+            if el.is_displayed():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _capture_result_shot(driver, serial, device_id=""):
+    """Capture the hamta result modal (swal2) at the moment of the verdict.
+
+    Returns (path, exact) — "" and False on any failure, and also when the
+    form is on screen instead of a result, because there is no verdict to
+    photograph in that state.
+    """
+    if _is_form_modal(driver):
+        _say(">>> (no screenshot: the inquiry form is on screen, not a result)")
+        return "", False
+    import estelam_shot
+    return estelam_shot.capture_result(driver, "hamta", device_id, serial,
+                                       element_selector=SEL_MODAL)
+
+
+def _safe_capture(driver, serial, device_id=""):
+    """_capture_result_shot with a hard guarantee that it cannot raise.
+
+    Mirrors the invariant gomrok's inquire_device states: a failing capture
+    must never swallow, or worse overwrite, an inquiry result the robot has
+    already determined.
+    """
+    try:
+        return _capture_result_shot(driver, serial, device_id)
+    except Exception as exc:
+        _say(f">>> (result screenshot capture failed: {exc})")
+        return "", False
 
 
 # --- driver -----------------------------------------------------------------
@@ -591,19 +664,19 @@ def submit_and_read(driver, wait):
 
 
 # --- yek estelam ------------------------------------------------------------
-def inquire(driver, wait, solver, serial, telegram=True):
+def inquire(driver, wait, solver, serial, telegram=True, device_id=""):
     """Yek serial ra estelam migirad. natije: dict."""
     serial = str(serial).strip()
     if not open_page_healthy(driver, wait):
         _elog("error", "safhe-ye hamta salem load nashod (dokme-ye estelam peyda nashod)",
               serial=serial)
         _telegram_result(serial, "error", "صفحه همتا سالم باز نشد", enabled=telegram)
-        return {"status": "error", "result": "", "serial": serial}
+        return {"status": "error", "result": "", "serial": serial, "shot": ""}
 
     if not open_modal(driver, wait):
         _elog("error", "modal-e estelam baz/kamel nashod", serial=serial)
         _telegram_result(serial, "error", "مودال استعلام باز نشد", enabled=telegram)
-        return {"status": "error", "result": "", "serial": serial}
+        return {"status": "error", "result": "", "serial": serial, "shot": ""}
 
     # IMEI ra yek bar por mikonim (captcha momken ast chand bar refresh shavad)
     _set_input(driver, SEL_M_IMEI, serial)
@@ -653,8 +726,14 @@ def inquire(driver, wait, solver, serial, telegram=True):
                       serial=serial, extra={"raw": txt})
             else:
                 _elog(status, txt, serial=serial)
-            _telegram_result(serial, status, txt, enabled=telegram)
-            return {"status": status, "result": txt, "serial": serial}
+            shot, shot_exact = _safe_capture(driver, serial, device_id)
+            try:
+                _telegram_result(serial, status, txt, enabled=telegram,
+                                 shot_path=shot, shot_exact=shot_exact)
+            except Exception as exc:
+                _say(f">>> (result telegram failed: {exc})")
+            return {"status": status, "result": txt, "serial": serial,
+                    "shot": shot}
 
         if cls in ("captcha_wrong", "captcha_expired", "transient"):
             # VAGHE'IYAT-e live (probe): swal-e khata modal-e FORM ra kamelan
@@ -676,8 +755,15 @@ def inquire(driver, wait, solver, serial, telegram=True):
 
     _elog("error", f"ba'd az {MAX_CAPTCHA_TRIES} talash natije nagerftim: {last_txt}",
           serial=serial, extra={"raw": last_txt})
-    _telegram_result(serial, "error", last_txt or "بدون پاسخ", enabled=telegram)
-    return {"status": "error", "result": last_txt, "serial": serial}
+    shot, shot_exact = _safe_capture(driver, serial, device_id)
+    try:
+        _telegram_result(serial, "error", last_txt or "بدون پاسخ",
+                         enabled=telegram, shot_path=shot,
+                         shot_exact=shot_exact)
+    except Exception as exc:
+        _say(f">>> (result telegram failed: {exc})")
+    return {"status": "error", "result": last_txt, "serial": serial,
+            "shot": shot}
 
 
 def run_from_store(device_id=None, telegram=True):
@@ -709,17 +795,24 @@ def run_from_store(device_id=None, telegram=True):
                 _panel_set_device(did, hamta_status="error",
                                   hamta_result="سریال اول خالی است")
                 continue
-            _panel_set_device(did, hamta_status="running", hamta_result="")
+            # v1.9.1: the evidence slot is reopened with the status slot. The
+            # capture overwrites the same file, but a run that ends without one
+            # (crash, captcha exhaustion) would otherwise leave the previous
+            # verdict's picture pinned to a fresh result.
+            _panel_set_device(did, hamta_status="running", hamta_result="",
+                              hamta_screenshot="")
             _elog("running", f"شروع استعلام همتا ({index} از {len(devices)})",
                   serial=serial, extra={"device_id": did or ""})
             try:
-                res = inquire(driver, wait, solver, serial, telegram=telegram)
+                res = inquire(driver, wait, solver, serial, telegram=telegram,
+                              device_id=did or "")
             except Exception as e:
                 msg = str(e).splitlines()[0] if str(e) else type(e).__name__
                 print(f">>> khata-ye robot: {msg}")
                 res = {"status": "error", "result": f"خطای ربات: {msg}"}
             _panel_set_device(did, hamta_status=res.get("status") or "error",
-                              hamta_result=res.get("result") or "")
+                              hamta_result=res.get("result") or "",
+                              hamta_screenshot=res.get("shot") or "")
             print(f">>> natije-ye hamta {did}: {res.get('status')}")
     finally:
         try:
@@ -751,7 +844,8 @@ def main():
     driver = build_driver()
     wait = WebDriverWait(driver, MODAL_WAIT_SEC)
     try:
-        res = inquire(driver, wait, solver, a.serial, telegram=not a.no_telegram)
+        res = inquire(driver, wait, solver, a.serial,
+                      telegram=not a.no_telegram, device_id="")
         print(">>> NATIJE:", json.dumps(res, ensure_ascii=False))
     finally:
         if a.keep_open:

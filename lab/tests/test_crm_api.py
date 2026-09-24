@@ -116,6 +116,26 @@ class TestCrmRoutes(CrmApiHarness):
             "action": "delete", "id": customer_id, "force": True})
         self.assertEqual(status, 200)
 
+    def test_crm_state_returns_screenshot_slot_flags(self):
+        """CRM devices need path-free capture flags so their camera buttons render."""
+        self._open_period()
+        status, body = self._post("/crm-device", {
+            "action": "add", "name": "x", "serial1": "356938035643809"})
+        self.assertEqual(status, 200)
+        device_id = body["device"]["id"]
+        with open(self.estelam_store, "w", encoding="utf-8") as handle:
+            json.dump({"person": {}, "devices": [{
+                "id": device_id,
+                "gomrok_screenshot": "C:/safe/screenshots/gomrok.png",
+                "hamta_screenshot": "C:/safe/screenshots/hamta.png"}]}, handle)
+        status, state, _ = self._get("/crm-state")
+        self.assertEqual(status, 200)
+        row = next(d for d in state["devices"] if d["id"] == device_id)
+        self.assertTrue(row["estelam"]["has_gomrok_screenshot"])
+        self.assertTrue(row["estelam"]["has_hamta_screenshot"])
+        self.assertNotIn("gomrok_screenshot", row["estelam"])
+        self.assertNotIn("hamta_screenshot", row["estelam"])
+
     def test_customer_validation_error_400(self):
         status, body = self._post("/crm-customer", {"action": "add", "full_name": " "})
         self.assertEqual(status, 400)
@@ -225,6 +245,17 @@ class TestCrmPageUi(CrmApiHarness):
         cust = next(c for c in state["customers"] if c["id"] == cid)
         self.assertEqual(len(cust["transactions"]), 2)
         self.assertEqual(sum(t["amount"] for t in cust["transactions"]), 1000000)
+
+    def test_case_rows_expose_capture_actions(self):
+        status, body, _ = self._get("/crm")
+        self.assertEqual(status, 200)
+        self.assertIn("function caseShotBtn(d,svc)", body)
+        self.assertIn("function showCaseShot(id,svc)", body)
+        self.assertIn("has_hamta_screenshot", body)
+        self.assertIn("has_gomrok_screenshot", body)
+        self.assertIn("/estelam-shot?id=", body)
+        self.assertIn('id="case-shot-download"', body)
+        self.assertIn('download="estelam-', body)
 
 
 class TestCrmReports(CrmApiHarness):

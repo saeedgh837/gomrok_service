@@ -81,6 +81,11 @@ lab/scripts/diag_imei.py
 lab/scripts/diag_imei2.py
 lab/tests/page.html
 
+# ---- agent scratch (never commit: holds demo case ids and tool traces) ----
+.Codex/
+.playwright-mcp/
+AGENTS.md
+
 # ---- OS ----
 Thumbs.db
 desktop.ini

@@ -74,7 +74,19 @@ RUNTIME_REQS = [
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
     "app_paths.py", "crm.py", "jalali.py", "panel_auth.py",
+    # Shared JSONL appender, imported lazily by panel.py and crm.py on every
+    # log write. Absent from the bundle, a CLEAN install raises ImportError on
+    # the first log line; an existing install only looks healthy because the
+    # file survives there from an older version and installs upgrade in place.
+    "log_utils.py",
     "estelam_all.py", "estelam_gomrok.py", "estelam_hamta.py", "exitban.py",
+    # v1.9.1: shared result-screenshot helper imported by both inquiry robots.
+    # Absent here, every capture fails SILENTLY rather than loudly: both robots
+    # call it inside a blanket handler (estelam_gomrok.py:452, estelam_hamta.py:403)
+    # whose whole purpose is to stop a bad capture from swallowing a verdict that
+    # was already determined. The inquiry still completes, so the operator sees
+    # no camera icon and text-only reports instead of an error.
+    "estelam_shot.py",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
     "browser_window.py", "browser_visibility.py",

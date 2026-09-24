@@ -236,6 +236,21 @@ class QuickBoxTests(unittest.TestCase):
         self.assertNotIn("CRM_LINKS_KEY", panel.CRM_PAGE)
         self.assertIn("STATE.settings.links", fn_body(self.js, "loadLinks"))
 
+    def test_the_box_is_painted_after_the_state_lands(self):
+        """The links are a server setting, so the box has nothing to render
+        until the first fetch resolves. Painting it at boot (before refresh)
+        showed «لینکی ثبت نشده» for the whole first 5s. It now paints inside
+        the fetch's try block, so a failed fetch leaves the previous box
+        standing rather than clearing it."""
+        refresh = fn_body(self.js, "refresh")
+        self.assertIn("renderQuickBox()", refresh)
+        boot = self.js[self.js.rfind("renderTabs();"):]
+        self.assertNotIn("renderQuickBox()", boot)
+        # and it must be inside the try, not the catch — a flapping
+        # connection must not wipe the buttons
+        self.assertLess(refresh.index("renderQuickBox()"),
+                        refresh.index("}catch(e){ LOADFAIL=true; }"))
+
     def test_the_box_stays_closed_and_is_recoverable(self):
         body = fn_body(self.js, "renderQuickBox")
         self.assertIn("getItem('irica-quickbox')", body)

@@ -418,6 +418,9 @@ def _patch_robot(monkey_targets):
     save(cc, "wait_for_new_captcha", lambda *a, **k: True)
     save(cc, "is_captcha_empty", lambda *a, **k: False)
     save(E, "_telegram", lambda text: monkey_targets.setdefault("telegram", []).append(text))
+    # v1.9.1: these tests have no browser, so stub the capture out — nothing
+    # reaches the disk and the test telegram stays offline.
+    save(E, "_capture_result_shot", lambda driver, device: "")
     save(E, "SUBMIT_DEADLINE_SEC", 3)
     return saved
 

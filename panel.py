@@ -30,6 +30,24 @@ import webbrowser
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+# The embedded Windows runtime may inherit a cp1252 stream even though the panel
+# emits Persian diagnostics. One unguarded print would then abort startup (or the
+# clean-shutdown path) before the HTTP server can keep serving the UI.
+def _configure_output_stream(stream):
+    if stream is None or not hasattr(stream, "reconfigure"):
+        return
+    # backslashreplace cannot itself raise on an undecodable byte, so a single
+    # attempt covers a read-only or already-closed host stream as well.
+    try:
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+_configure_output_stream(sys.stdout)
+_configure_output_stream(sys.stderr)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The packaged release runs on an embedded CPython that is ISOLATED (see
 # python*._pth): PYTHONPATH is ignored and the script's directory is NOT added to
@@ -1439,6 +1457,14 @@ def crm_state_payload():
         row["estelam"] = {k: est_row.get(k, "") for k in
                           ("status", "result", "hamta_status", "hamta_result",
                            "gomrok_at", "hamta_at", "updated")}
+        # v1.9.1: the camera icon renders only when the device carries a capture
+        # slot, so the slot's presence must travel with the state payload.
+        # /estelam-shot resolves the path itself from estelam_store, so only the
+        # presence flag is forwarded — never the path (the route stays the
+        # single source of truth for it).
+        row["estelam"].update(
+            {"has_gomrok_screenshot": bool(est_row.get(_SHOT_FIELD["gomrok"])),
+             "has_hamta_screenshot": bool(est_row.get(_SHOT_FIELD["hamta"]))})
         profile = pay_by_pid.get(str(device.get("profile_id") or ""))
         row["pay"] = {k: (profile or {}).get(k, "" if k != "browser_visible"
                                              else False) for k in
@@ -1487,7 +1513,22 @@ def crm_sync_queue(device_id, service="gomrok"):
     if service in ("hamta", "all"):
         reset_keys += ["hamta_status", "hamta_result"]
     if not reset_keys:
+        # Unknown or empty service falls back to the gomrok slot. Normalise it
+        # here rather than repeating the fallback below, so the status reset and
+        # the screenshot reset can never disagree about which slot was re-queued
+        # (they did: an unknown service used to reopen gomrok's status while
+        # leaving gomrok's screenshot pinned).
+        service = "gomrok"
         reset_keys = ["status", "result"]
+    # v1.9.1: the evidence slot is reopened with the status slot. A run killed
+    # before it reaches its own _panel_set_device would otherwise leave last
+    # verdict's screenshot pinned to a re-queued device, and the file is
+    # overwritten by the new capture anyway, so only the dangling reference
+    # would survive.
+    if service in ("gomrok", "all"):
+        reset_keys.append(_SHOT_FIELD["gomrok"])
+    if service in ("hamta", "all"):
+        reset_keys.append(_SHOT_FIELD["hamta"])
     reset_keys = tuple(reset_keys)
     est = estelam_load()
     row = next((d for d in est.get("devices", [])
@@ -2120,8 +2161,27 @@ def estelam_add_device(device):
 
 def estelam_delete_device(device_id):
     data = estelam_load()
-    data["devices"] = [d for d in data["devices"] if str(d.get("id")) != str(device_id)]
-    return estelam_save(data)
+    keep, gone = [], []
+    for d in data["devices"]:
+        (gone if str(d.get("id")) == str(device_id) else keep).append(d)
+    data["devices"] = keep
+    # v1.9.1: the captures are keyed by device id, so a deleted row leaves its
+    # PNGs behind with nothing that can ever reach or overwrite them. Delete
+    # the store row first: an unlink failure must not keep the row alive.
+    result = estelam_save(data)
+    for d in gone:
+        for key in _SHOT_FIELD.values():
+            path = shot_resolve(d.get(key))
+            if path:
+                try:
+                    import estelam_shot
+                    if not estelam_shot.discard(path):
+                        estelam_log("shot", f"could not delete the capture for "
+                                            f"{device_id!r}: the file is still on disk")
+                except Exception as exc:
+                    estelam_log("shot", f"could not delete the capture for "
+                                        f"{device_id!r}: {exc}")
+    return result
 
 
 # Vaziat-haye NAHAYI (na 'pending'/'running') — residan be in-ha ya'ni yek estelam
@@ -2186,6 +2246,37 @@ ESTELAM_SERVICES = {
     "all": ("estelam_all.py", []),
 }
 ESTELAM_SERVICE_FA = {"gomrok": "گمرک", "hamta": "همتا", "all": "همه استعلام‌ها"}
+# v1.9.1: the store field holding a service's result image. One map for the
+# re-queue reset, the CRM presence flags and the /estelam-shot route.
+_SHOT_FIELD = {"gomrok": "gomrok_screenshot", "hamta": "hamta_screenshot"}
+
+
+def shot_resolve(raw):
+    """Resolve a recorded capture path, or "" if it is not inside the roots.
+
+    The store field is never trusted: it is the only capture input that is not
+    recomputed, so every reader (the /estelam-shot route, the delete path) has
+    to prove containment before opening or unlinking the file.
+
+    Screenshots live in the data directory, but paths recorded by an older
+    release point inside that release folder, so both roots are accepted --
+    containment is still enforced against each of them (same contract as
+    /artifact). realpath("") returns the CWD, so an empty field is rejected
+    before resolving rather than looking like an escape attempt.
+    """
+    raw = str(raw or "")
+    if not raw:
+        return ""
+    path = os.path.realpath(raw)
+    for root in (app_paths.data_subdir("screenshots"),
+                 os.path.join(HERE, "screenshots")):
+        try:
+            if os.path.commonpath([os.path.realpath(root), path]) == \
+                    os.path.realpath(root):
+                return path
+        except (ValueError, OSError):
+            continue
+    return ""
 
 
 def start_estelam_process(device_id=None, service="gomrok", person=None,
@@ -4472,11 +4563,29 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
     #dev-list td.c-num{display:none}
     #dev-list td.res{max-width:none}
   }
-  /* status grid: (hamta/gomrok) x (label, badge, inquiry time) — no nested
-     tables so the main table's row selectors stay intact */
-  .stgrid{display:grid;grid-template-columns:auto auto 1fr;gap:5px 8px;align-items:center}
+  /* status grid: (hamta/gomrok) x (label, badge, shot icon, inquiry time) —
+     no nested tables so the main table's row selectors stay intact */
+  .stgrid{display:grid;grid-template-columns:auto auto auto 1fr;gap:5px 8px;align-items:center}
   .stgrid .slab{color:var(--muted);font-size:10.5px;white-space:nowrap}
   .stgrid .when{color:var(--faint);font-size:11px;white-space:nowrap}
+  /* v1.9.1: the shot icon sits in its own grid cell (a wrapper keeps the
+     ibtn from stretching to the row height). The `.ibtn` base lives in
+     PAGE_HEAD and CRM_PAGE, which this page does not include, so the icon
+     needs its own minimal definition here -- without it the camera renders
+     as a native grey button. Same reason the tooltip is a plain `title`:
+     the `data-tip` layer (CSS ::after in PAGE_HEAD, JS in CRM_PAGE) is not
+     part of this page either. */
+  .stgrid .shot-w{display:inline-flex;align-items:center}
+  .stgrid .ibtn.sh{width:26px;height:26px;min-width:26px;padding:0;
+    display:inline-flex;align-items:center;justify-content:center;
+    border:1px solid var(--line-strong);border-radius:8px;
+    background:var(--card);color:var(--muted);cursor:pointer;
+    transition:color .13s,border-color .13s,background .13s}
+  .stgrid .ibtn.sh:hover{color:var(--brand);border-color:var(--brand);
+    background:var(--brand-soft)}
+  .stgrid .ibtn.sh:focus-visible{outline:none;border-color:var(--brand);
+    box-shadow:0 0 0 3px var(--brand-soft)}
+  .stgrid .ibtn.sh .ic{width:13px;height:13px}
   /* serials one and two stacked in a single column (less width) */
   .mono.sn1,.mono.sn2{direction:ltr;text-align:left;font-family:Consolas,ui-monospace,monospace;line-height:1.5}
   .mono.sn2{color:var(--muted);font-size:12px;margin-top:2px}
@@ -4658,6 +4767,23 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div class="modal" id="shot-modal" role="dialog" aria-modal="true" aria-labelledby="shot-modal-title"
+     onclick="if(event.target===this)closeShotModal()">
+  <div class="box">
+    <div class="hd">
+      <div>
+        <h3 id="shot-modal-title">عکس نتیجهٔ استعلام</h3>
+        <div class="sn" id="shot-modal-sn"></div>
+      </div>
+      <button type="button" class="x" onclick="closeShotModal()" aria-label="بستن">×</button>
+    </div>
+    <div class="bd" id="shot-modal-body"><img id="shot-modal-img" alt="عکس نتیجهٔ استعلام" style="max-width:100%;height:auto;border-radius:10px;border:1px solid var(--line)"></div>
+    <div class="ft">
+      <button type="button" class="ghost" id="shot-modal-dl" onclick="shotDownload()"><span id="shot-modal-dl-ic"></span><span>دانلود عکس</span></button>
+      <button type="button" onclick="closeShotModal()">بستن</button>
+    </div>
+  </div>
+</div>
 <header class="topbar">
   <div class="tb-in">
     <div class="brand">
@@ -4810,6 +4936,8 @@ var IC={
   save:icsvg('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>'),
   check:icsvg('<polyline points="20 6 9 17 4 12"/>'),
   eye:icsvg('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'),
+  camera:icsvg('<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>'),
+  download:icsvg('<path d="M12 3.5v11M7.5 10 12 14.5 16.5 10"/><path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/>'),
   okc:icsvg('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
   oct:icsvg('<polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
   tri:icsvg('<path d="M10.29 3.86L.86 18a2 2 0 0 0 1.71 3h16.86a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
@@ -4864,6 +4992,20 @@ function renderDevices(){
            esc(HAMTA_FA[hs]||hs)+'</span>';
     // zir-sotoon-e DOVVOM-e vaziat: zaman-e estelam ('--' agar anjam nashode)
     var ht=fmtWhen(d.hamta_at), gt=fmtWhen(d.gomrok_at);
+    // The camera appears only when the store holds a capture for this slot.
+    // /estelam-state returns estelam_load() verbatim, so the path sits at the
+    // device top level -- and showShotModal below tests exactly this field, so
+    // the icon can never render for something the click would then report as
+    // missing.
+    function shotBtn(svc){
+      var field=svc==='hamta'?'hamta_screenshot':'gomrok_screenshot';
+      if(!d[field])return '';
+      var fa=svc==='hamta'?'همتا':'گمرک';
+      return '<span class="shot-w">'+
+        '<button type="button" class="ibtn sh" title="مشاهدهٔ عکس نتیجهٔ '+fa+'"'+
+        ' aria-label="مشاهدهٔ عکس نتیجهٔ '+fa+'"'+
+        ' onclick="showShotModal(\''+esc(d.id)+'\',\''+svc+'\')">'+IC.camera+'</button></span>';
+    }
     // sotoon-e natije: 80 character-e aval +dokme-ye «مشاهده کامل» (modal).
     // (natije-ye HAMTA momken ast sad-ha character bashad va jadval ra bekeshad)
     var res;
@@ -4877,8 +5019,8 @@ function renderDevices(){
     return '<tr><td class="c-num">'+toFa(idx+1)+'</td>'+
       '<td>'+nm+sn+'</td>'+
       '<td><div class="stgrid">'+
-          '<span class="slab">همتا</span>'+hb+'<span class="when">'+esc(ht)+'</span>'+
-          '<span class="slab">گمرک</span>'+gb+'<span class="when">'+esc(gt)+'</span>'+
+          '<span class="slab">همتا</span>'+hb+shotBtn('hamta')+'<span class="when">'+esc(ht)+'</span>'+
+          '<span class="slab">گمرک</span>'+gb+shotBtn('gomrok')+'<span class="when">'+esc(gt)+'</span>'+
           '</div></td>'+
       '<td class="res">'+res+'</td>'+
       '<td><button class="ghost" onclick="startOne(\''+esc(d.id)+'\')">'+
@@ -4936,6 +5078,86 @@ function copyResModal(){
   }
 }
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeResModal();});
+
+/* --- v1.9.1: inquiry-result picture modal (same shape as res-modal) ------- */
+var SHOT_URL='';
+var SHOT_NAME='';
+function showShotModal(id,svc){
+  var d=(STATE.devices||[]).filter(function(x){return String(x.id)===String(id);})[0];
+  if(!d)return;
+  var field=svc==='hamta'?'hamta_screenshot':'gomrok_screenshot';
+  if(!d[field]){showToast(false,'عکس نتیجهٔ این استعلام موجود نیست');return;}
+  // Every capture overwrites the same path, so the URL never changes and the
+  // browser served the previous verdict's picture from cache. `cb` busts it;
+  // the route ignores parameters it does not know.
+  SHOT_URL='/estelam-shot?id='+encodeURIComponent(id)+'&svc='+svc
+    +'&cb='+Date.now();
+  document.getElementById('shot-modal-title').textContent=
+    'عکس نتیجهٔ استعلام — '+(svc==='hamta'?'همتا':'گمرک');
+  document.getElementById('shot-modal-sn').textContent=
+    (d.serial1||'')+(d.serial2?(' / '+d.serial2):'');
+  SHOT_NAME='estelam-'+svc+'-'+String(id).replace(/[^0-9A-Za-z_-]+/g,'_')+'.png';
+  var img=document.getElementById('shot-modal-img');
+  var body=document.getElementById('shot-modal-body');
+  var dl=document.getElementById('shot-modal-dl');
+  // onerror puts Persian text where the picture was and takes the img out of
+  // the body; re-opening the modal must put it back -- otherwise the previous
+  // src sits on top of the error text and loading again errors again.
+  if(!img){
+    /* v1.9.1: clear the body BEFORE appendChild -- an innerHTML='' after it
+       would wipe the very img just created, and the modal would have to be
+       rebuilt on every open. */
+    body.innerHTML='';
+    img=document.createElement('img');
+    img.id='shot-modal-img';
+    img.style.maxWidth='100%';
+    img.style.height='auto';
+    img.style.borderRadius='10px';
+    img.style.border='1px solid var(--line)';
+    body.appendChild(img);
+  }else{
+    // v1.9.1: drop the previous visit's error text, but not the img itself.
+    // body.textContent='' removes every child including the img meant for
+    // reuse; a src set on a detached img never loaded, so the modal had to be
+    // rebuilt on each open.
+    for(var k=body.childNodes.length-1;k>=0;k--){
+      var nd=body.childNodes[k];
+      if(nd!==img)body.removeChild(nd);
+    }
+  }
+  // v1.9.1: one alt for every open -- the static markup, a reused img and a
+  // rebuilt one must all read the same Persian string.
+  img.alt='عکس نتیجهٔ استعلام';
+  img.style.display='';
+  dl.style.display='';
+  document.getElementById('shot-modal-dl-ic').innerHTML=IC.download;
+  img.onerror=function(){
+    /* The recorded path is gone (data cleared, or the robot failed) -- show
+       Persian text instead of a broken image. */
+    document.getElementById('shot-modal-body').textContent=
+      'عکس بارگذاری نشد — فایل پیدا نیست';
+    dl.style.display='none';
+    img.onerror=null;
+  };
+  img.src=SHOT_URL;
+  document.getElementById('shot-modal').classList.add('show');
+}
+function closeShotModal(){document.getElementById('shot-modal').classList.remove('show');}
+function shotDownload(){
+  if(!SHOT_URL)return;
+  /* The route answers image/png with no Content-Disposition, so window.open
+     would just render the picture in a new tab. A temporary anchor carrying
+     `download` is what actually saves a file, and it keeps the same-origin
+     session cookie that a fetch-and-revoke dance would have to re-create. */
+  var a=document.createElement('a');
+  a.href=SHOT_URL;
+  a.download=SHOT_NAME||'estelam.png';
+  a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotModal();});
 
 /* chips-e gomrok hamun vajegan-e badge ra estefade mikonad (yek-dast ba hamta) */
 var RUN_STATE_FA=BADGE_FA;
@@ -5223,11 +5445,11 @@ var LOGS=[];
 var LOG_FILTER='all';
 var LOG_OPEN={};
 var LOG_ICON={healthy:IC.okc,problem:IC.oct,advanced:IC.tri,retry:IC.rot,running:IC.play,
-              error:IC.xc,warn:IC.tri,info:IC.info};
+              error:IC.xc,warn:IC.tri,info:IC.info,shot:IC.camera};
 var LOG_FA={healthy:'سالم',problem:'اشکال',advanced:'هشدار مهم',retry:'تلاش مجدد',
-            running:'در حال اجرا',error:'خطا',warn:'هشدار',info:'اطلاع'};
+            running:'در حال اجرا',error:'خطا',warn:'هشدار',info:'اطلاع',shot:'عکس'};
 var LOG_TABS=[['all','همه'],['healthy','سالم'],['problem','اشکال'],
-              ['retry','تلاش مجدد'],['advanced','هشدار'],['error','خطا']];
+              ['retry','تلاش مجدد'],['advanced','هشدار'],['error','خطا'],['shot','عکس']];
 
 function renderLogFilters(){
   document.getElementById('log-filters').innerHTML=LOG_TABS.map(function(t){
@@ -5876,6 +6098,18 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .dlg-x{position:absolute;top:10px;inset-inline-end:10px;background:transparent;border:0;
     color:var(--muted);font-size:20px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:8px}
   .dlg-x:hover{color:var(--txt);background:var(--card2)}
+  /* v1.9.1: the inquiry-result picture dialog. The capture is whatever the
+     remote site rendered, so its height is unbounded -- the frame caps it and
+     scrolls instead of pushing the download button off the viewport, and the
+     width cap keeps a wide full-page fallback from stretching the dialog. */
+  .case-shot-dialog{min-width:min(560px,86vw);max-width:min(860px,92vw)}
+  .case-shot-frame{max-height:min(62dvh,620px);overflow:auto;
+    border-radius:10px;background:var(--card2);padding:6px;
+    display:flex;justify-content:center}
+  /* `download` only works on an anchor, and .btn is written for <button>:
+     without this the control renders as an underlined inline link. */
+  a.btn{text-decoration:none;display:inline-flex;align-items:center;
+    justify-content:center}
   .err{color:var(--danger);font-size:12.5px;white-space:pre-line}
   /* states */
   /* one empty-state pattern everywhere: icon tile + bold title + muted
@@ -6381,6 +6615,7 @@ var ICONS = {
   globe:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>',
   fileText:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="3.5" width="15" height="17" rx="2"/><path d="M8.5 8.5h7M8.5 12.5h7M8.5 16.5h4"/></svg>',
   download:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v11M7.5 10 12 14.5 16.5 10"/><path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/></svg>',
+  camera:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
   x:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18"/></svg>',
   money:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 12h.01M17.5 12h.01"/></svg>',
   rewind:'<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3.5 2"/></svg>',
@@ -7344,7 +7579,7 @@ function dlgPeriod(pid, silent){
      lands where they left. A different period starts on its cases. */
   PER.seg=(String(PER.pid)===String(pid)&&PER.seg)?PER.seg:'cases';
   PER.pid=String(pid);
-  openDlg('<div class="perdlg">', silent
+  openDlg('<div class="perdlg">'
     +'<div id="perHead"></div>'
     +'<div class="row" style="margin:8px 0 12px">'
     +'<div class="seg" id="perSeg">'
@@ -7364,7 +7599,7 @@ function dlgPeriod(pid, silent){
     +'وصل‌شده به پرونده‌های همین دوره را می‌شمارد؛ گزارش مالی این دوره ممکن است '
     +'ردیف‌های دستی (بدون پرونده) را هم داشته باشد، و برای پرونده‌ای که مشتری‌اش '
     +'بعداً عوض شده، ماندهٔ این‌جا با فاکتور همان پرونده یکی نیست.</p>'
-    +'</div>');
+    +'</div>', silent);
   perPaint();
   /* openDlg cleared PER.live above; re-arm only here (same contract as
      CASE_MODAL at the end of caseDetail). */
@@ -7473,7 +7708,8 @@ function devicesHtml(){
         +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
       +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
       +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
-      +'<td><div class="ibacts"><button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
+      +'<td><div class="ibacts">'+caseShotBtn(d,'hamta')+caseShotBtn(d,'gomrok')+
+        '<button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
   }).join('');
   return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary"'+periodGateAttrs()+' onclick="dlgDevice()">+ پروندهٔ جدید</button>'
@@ -7481,6 +7717,41 @@ function devicesHtml(){
     +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
     +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
     +rows+'</tbody></table></div></div>';
+}
+function caseShotBtn(d,svc){
+  var e=d.estelam||{}, has=svc==='hamta'?e.has_hamta_screenshot:e.has_gomrok_screenshot;
+  if(!has)return '';
+  var fa=svc==='hamta'?'همتا':'گمرک';
+  return '<button type="button" class="ibtn" data-static="1" aria-label="مشاهدهٔ عکس نتیجهٔ '+fa+'"'
+    +' data-tip="مشاهدهٔ عکس نتیجهٔ '+fa+'" onclick="event.stopPropagation();showCaseShot(\''+d.id+'\',\''+svc+'\')">'+ICONS.camera+'</button>';
+}
+function showCaseShot(id,svc){
+  var d=(STATE.devices||[]).find(function(x){return String(x.id)===String(id);});
+  var e=d&&d.estelam||{};
+  var has=svc==='hamta'?e.has_hamta_screenshot:e.has_gomrok_screenshot;
+  if(!d||!has){toast('عکس نتیجهٔ این استعلام موجود نیست',false);return;}
+  var fa=svc==='hamta'?'همتا':'گمرک';
+  /* Every capture overwrites the same file, so the URL never changes and the
+     browser would serve the previous verdict's picture from cache. `cb` busts
+     it; the route ignores parameters it does not know. */
+  var src='/estelam-shot?id='+encodeURIComponent(id)+'&svc='+svc+'&cb='+Date.now();
+  openDlg('<div class="case-shot-dialog">'
+    +'<h3 style="margin:0 0 12px">عکس نتیجهٔ استعلام — '+fa+'</h3>'
+    +'<div class="muted kbd" style="margin-bottom:12px">'+esc(d.serial1||'')+
+      (d.serial2?' / '+esc(d.serial2):'')+'</div>'
+    /* The error text lives inside the frame so a missing file replaces the
+       picture in place, rather than leaving an empty frame above it. */
+    +'<div class="case-shot-frame"><img id="case-shot-img" alt="عکس نتیجهٔ استعلام"'
+      +' style="max-width:100%;height:auto;border-radius:10px;border:1px solid var(--line)">'
+      +'<div id="case-shot-error" class="muted" hidden>عکس بارگذاری نشد — فایل پیدا نیست</div></div>'
+    +'<div class="row" style="margin-top:12px"><a id="case-shot-download" class="btn mini ghost"'
+      +' download="estelam-'+svc+'-'+esc(id)+'.png" href="'+src+'">دانلود عکس</a></div>'
+    +'</div>');
+  var img=document.getElementById('case-shot-img');
+  var download=document.getElementById('case-shot-download');
+  var err=document.getElementById('case-shot-error');
+  img.onerror=function(){img.hidden=true;download.hidden=true;err.hidden=false;};
+  img.src=src;
 }
 /* Case detail modal (v1.5 B7): every per-case action that used to sit on
    the card opens here — next-step continue card, step tools, quiet row
@@ -7573,7 +7844,11 @@ function caseDetail(id, silent){
     +(d.stage==='handed'
       ?'<button class="btn mini ghost" onclick="crmHandoffResend(\''+d.id+'\')">'+ICONS.send+' ارسال مجدد به تلگرام</button>':'')
     +(acts||'');
-  openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">', silent
+  /* v1.9.1: `silent` must be the SECOND argument, not a term in the string
+     concatenation. Placed here it was added to the boolean and the whole
+     modal body never reached dlgBody — the dialog opened as an empty 54px
+     box with only the close button. */
+  openDlg('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;padding-inline-end:34px">'
     +'<h3 style="margin:0;padding:0">'+esc(d.name)+'</h3>'
     +'<span class="pill '+(STAGE_TONE[st]||'n')+'">'+(STAGE_FA[st]||esc(st))+'</span>'
     +'<span class="chip kbd">'+esc(d.id)+'</span></div>'
@@ -7616,7 +7891,7 @@ function caseDetail(id, silent){
     +(STAGE_SKIP_WARN[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__skip\')">رد کردن این مرحله</button>':'')
     +((st==='inquiry'||st==='problem')?'<button class="btn mini danger" onclick="devTick(\''+d.id+'\',\'__close_case\')">مختومه کردن</button>':'')
     +'<button class="btn mini danger" onclick="devDelete(\''+d.id+'\')">حذف پرونده</button>'
-    +'</div></div>');
+    +'</div></div>', silent);
   /* openDlg clears CASE_MODAL.live, so (re)arm the sync state only here. */
   CASE_MODAL.id=id;CASE_MODAL.name=d.name;CASE_MODAL.live=true;CASE_MODAL.sig=dlgCaseSig(d);
   /* v1.8.1: and re-arm the return to where this case was opened from — a
@@ -9278,6 +9553,9 @@ async function refresh(){
       paintSoundBtn();
     }
     try{ if(on)localStorage.removeItem('irica-sound');else localStorage.setItem('irica-sound','0'); }catch(e){}
+    /* v1.9: the box is painted after STATE lands (the links are a server
+       setting, so there is nothing to show before the first fetch). */
+    renderQuickBox();
   }catch(e){ LOADFAIL=true; }
   renderTabs();
   renderView();
@@ -9286,8 +9564,10 @@ async function refresh(){
   if(LOADFAIL)toast('ارتباط با پنل برقرار نشد — تلاش مجدد…',false);
 }
 renderTabs();
-renderQuickBox();
 paintSoundBtn();   /* the button is in the header, so the 5s refresh never touches it */
+/* v1.9: the box reads STATE.settings.links, which is empty until the first
+   fetch lands. Painting it here would show «لینکی ثبت نشده» for the whole
+   first 5s; refresh() repaints it once STATE is loaded. */
 refresh();
 setInterval(refresh, 5000);
 </script>
@@ -9455,6 +9735,12 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        # v1.9.1: never let a browser second-guess the declared type. The
+        # inquiry-result images are bytes the robots captured from a remote
+        # site, and /estelam-shot serves them to a logged-in operator, so a
+        # sniffed content type is the one way those bytes could be treated as
+        # anything but an image.
+        self.send_header("X-Content-Type-Options", "nosniff")
         # v1.3.6: pages must never come from browser cache — after a panel
         # update the operator kept seeing the previous version otherwise.
         # Static assets (fonts) keep their normal caching.
@@ -10322,6 +10608,65 @@ class Handler(BaseHTTPRequestHandler):
             if profile and allowed and os.path.isfile(path):
                 with open(path, "rb") as f:
                     self._send(200, f.read(), "image/png")
+            else:
+                self._send(404, b"not found", "text/plain")
+        elif route == "/estelam-shot":
+            # v1.9.1: inquiry result image. The recorded path is never trusted
+            # directly; it must resolve inside the screenshots data subdir.
+            from urllib.parse import parse_qs, urlsplit
+            q = parse_qs(urlsplit(self.path).query)
+            did = (q.get("id") or [""])[0]
+            svc = (q.get("svc") or [""])[0]
+            # Both values come from the query string and both end up in records
+            # in a log the panel renders and that keeps only its newest entries.
+            # `did` is used in full for the store lookup below, but every record
+            # written about it is bounded too: one request carrying a huge id
+            # would otherwise evict the real robot diagnostics.
+            did_log = did[:64]
+            key = _SHOT_FIELD.get(svc)
+            path = ""
+            if not key:
+                # Bounded for the same reason as did_log above.
+                estelam_log("shot", f"unknown service {svc[:32]!r}",
+                            device_id=did_log)
+            else:
+                try:
+                    device = next((d for d in estelam_load().get("devices", [])
+                                   if str(d.get("id")) == str(did)), None)
+                except Exception:
+                    device = None
+                raw = str((device or {}).get(key) or "")
+                # A device without a capture is a normal state, not a
+                # diagnostic: shot_resolve returns "" for both an empty field
+                # and an escaping one, so the two are told apart here. Without
+                # that distinction every request for a capture-less device
+                # would write a security-flavoured record into
+                # estelam_logs.jsonl, which keeps only the newest 400 entries
+                # -- a browser retrying a missing image could evict every real
+                # robot diagnostic.
+                path = shot_resolve(raw)
+                if not device:
+                    estelam_log("shot", f"unknown device {did_log!r} ({svc})")
+                elif raw and not path:
+                    # A store field pointing outside both roots is a
+                    # misconfiguration, not a missing capture — log it
+                    # distinctly. Only the file name goes into the record: the
+                    # operator can read the full value in the store, and the
+                    # panel renders this log, so there is no reason to copy
+                    # install paths into it.
+                    estelam_log("shot", f"{key} for {did_log!r} is outside the "
+                                        f"screenshots roots: "
+                                        f"{os.path.basename(raw)!r}")
+            if path and os.path.isfile(path):
+                try:
+                    with open(path, "rb") as f:
+                        self._send(200, f.read(), "image/png")
+                except OSError as exc:
+                    # Basename only, for the same reason as the containment
+                    # record above: this log is rendered in the panel.
+                    estelam_log("shot", f"unreadable "
+                                        f"{os.path.basename(path)!r}: {exc}")
+                    self._send(404, b"not found", "text/plain")
             else:
                 self._send(404, b"not found", "text/plain")
         elif route == "/crm":

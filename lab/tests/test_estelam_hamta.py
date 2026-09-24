@@ -127,7 +127,8 @@ class TestTelegramMessage(unittest.TestCase):
 
     def test_no_telegram_flag_respected(self):
         H._telegram_result("1", "good", "x", enabled=False)
-        self.assertEqual(self.sent[0][1], False)
+        # v1.9.1: nothing is sent at all — neither the photo nor the text.
+        self.assertEqual(self.sent, [])
 
 
 class TestConfidenceGate(unittest.TestCase):

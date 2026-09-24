@@ -599,11 +599,51 @@ class InquiryOrderTests(unittest.TestCase):
              "customer_id": cust["id"]})
         panel.estelam_save({"devices": [{
             "id": dev["id"], "status": "healthy", "result": "ok",
+            "gomrok_screenshot": "/shots/gomrok_old.png",
             "hamta_status": "good", "hamta_result": "x"}]})
         panel.crm_sync_queue(dev["id"], service="")
         row = panel.estelam_load()["devices"][0]
         self.assertEqual(row["status"], "pending")
         self.assertEqual(row["hamta_status"], "good")
+        # v1.9.1: the fallback must reopen the gomrok screenshot slot as well.
+        # An unknown service used to reopen gomrok's status while leaving
+        # gomrok's screenshot pinned, so the reset disagreed with itself.
+        self.assertEqual(row["gomrok_screenshot"], "")
+
+    def test_requeue_also_reopens_the_screenshot_slot(self):
+        """v1.9.1: the evidence slot follows the status slot. A run killed
+        before its own _panel_set_device would otherwise leave the previous
+        verdict's picture pinned to a device that is about to be inquired
+        again, and the capture overwrites the same file anyway."""
+        cust, _ = crm.add_customer({"full_name": "c"})
+        dev, _ = crm.add_device(
+            {"name": "A", "serial1": "356938035643809",
+             "customer_id": cust["id"]})
+        panel.estelam_save({"devices": [{
+            "id": dev["id"], "status": "healthy", "result": "ok",
+            "gomrok_screenshot": "/shots/gomrok_old.png",
+            "hamta_status": "good", "hamta_result": "x",
+            "hamta_screenshot": "/shots/hamta_old.png"}]})
+        panel.crm_sync_queue(dev["id"], service="gomrok")
+        row = panel.estelam_load()["devices"][0]
+        self.assertEqual(row["gomrok_screenshot"], "")
+        # the slot that is not about to run keeps its evidence
+        self.assertEqual(row["hamta_screenshot"], "/shots/hamta_old.png")
+
+    def test_service_all_reopens_both_screenshot_slots(self):
+        cust, _ = crm.add_customer({"full_name": "c"})
+        dev, _ = crm.add_device(
+            {"name": "A", "serial1": "356938035643809",
+             "customer_id": cust["id"]})
+        panel.estelam_save({"devices": [{
+            "id": dev["id"], "status": "healthy", "result": "ok",
+            "gomrok_screenshot": "/shots/gomrok_old.png",
+            "hamta_status": "good", "hamta_result": "x",
+            "hamta_screenshot": "/shots/hamta_old.png"}]})
+        panel.crm_sync_queue(dev["id"], service="all")
+        row = panel.estelam_load()["devices"][0]
+        self.assertEqual(row["gomrok_screenshot"], "")
+        self.assertEqual(row["hamta_screenshot"], "")
 
 
 class FinanceReportApiTests(unittest.TestCase):

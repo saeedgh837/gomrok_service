@@ -53,5 +53,85 @@ class CrmFontRoute(unittest.TestCase):
         self.assertIn('"/fonts/Vazirmatn-Bold.woff2"', src)
 
 
+class DialogArgumentGates(unittest.TestCase):
+    """openDlg(html, silent): `silent` is the SECOND argument.
+
+    A call of the shape `openDlg('<div>', silent +'<h3>...' + ...)` parses
+    fine and silently renders an almost-empty modal: `html` receives only
+    the opening tag, and the entire dialog body is concatenated onto the
+    boolean `silent` and discarded. v1.9.1 shipped for a long time with
+    both big dialogs (caseDetail, dlgPeriod) opening as a 54px box holding
+    nothing but the close button, because nothing structural rejected this.
+    """
+
+    src = open(panel.__file__, encoding="utf-8").read()
+
+    def _balanced_call(self, start):
+        """Return the text from `openDlg(` through its matching close paren."""
+        depth, i = 0, start
+        while i < len(self.src):
+            c = self.src[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    return self.src[start:i + 1]
+            i += 1
+        raise AssertionError("unbalanced openDlg( at offset %d" % start)
+
+    def test_silent_is_not_a_term_of_the_html_concatenation(self):
+        import re
+        bad = []
+        for m in re.finditer(r"openDlg\(", self.src):
+            call = self._balanced_call(m.start())
+            # The html argument is the string up to the first top-level comma.
+            depth, comma = 0, None
+            for i, c in enumerate(call):
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                elif c == "," and depth == 1:
+                    comma = i
+                    break
+            if comma is None:
+                continue
+            first = call[:comma]
+            # A bare `, silent` (whitespace/newline only between comma and name)
+            # is correct. `'<div>', silent +'<h3>'` is the bug: the + makes the
+            # rest of the body part of the SECOND argument.
+            rest = call[comma + 1:]
+            if re.match(r"\s*silent\s*=[^,)]", rest) or re.match(r"\s*silent\s*\+", rest):
+                bad.append(first[-60:])
+        self.assertEqual(bad, [], "openDlg calls with `silent` inside the "
+                         "html concatenation render an empty modal: %r" % bad)
+
+    def test_both_main_dialogs_pass_their_body_to_html(self):
+        for name in ("caseDetail", "dlgPeriod"):
+            i = self.src.find("function %s(" % name)
+            self.assertGreater(i, 0, "%s not found" % name)
+            call_start = self.src.find("openDlg(", i)
+            call = self._balanced_call(call_start)
+            self.assertRegex(call, r",\s*silent\)$",
+                             "%s must close its openDlg call with `, silent)`"
+                             % name)
+
+
+class PanelOutputEncoding(unittest.TestCase):
+    """Startup diagnostics must not crash on Windows cp1252 streams."""
+
+    def test_persian_diagnostic_survives_a_cp1252_stream(self):
+        import io
+
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        self.addCleanup(stream.close)
+        panel._configure_output_stream(stream)
+        stream.write("پنل اجرا شد\n")
+        stream.flush()
+        self.assertIn("پنل اجرا شد", raw.getvalue().decode("utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
