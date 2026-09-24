@@ -3,6 +3,45 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] - 2026-09-25
+
+### Fixed
+
+- **The payment-stage receipt message now reaches every destination.**
+  `_fanout` handed every chat the SAME absolute deadline and `_post_confirmed`
+  gave the first one the whole remaining budget, so the ~1.4 MB receipt capture
+  burned it on a slow link and the remaining chats raised "deadline reached
+  after 0 attempts" — never attempted — while the call still returned success
+  and the robot printed «ersal shod» with nothing in `logs.jsonl`. The ~150 KB
+  payment-link screenshot fit the budget, which is why that one arrived and the
+  receipt did not. Each destination now gets its own equal slice of what is
+  left of the caller's budget, through the existing `deadline=` kwarg;
+  `_post_confirmed` is unchanged.
+- **A big photo is shrunk before it is uploaded** (2000 px longest edge, JPEG
+  quality 85, only above 300 KiB), once per `send_photo` and not per attempt.
+  The file on disk stays byte-identical and any transcode failure falls back to
+  uploading the original, so a missing or broken Pillow cannot break a send.
+  A full-page receipt capture (~1.4 MB) leaves as under a sixth of that.
+- **A missed destination is no longer silent**: one `>>> telegram [NAGHS]` line
+  plus one JSONL record in `telegram_delivery.jsonl` (capped at 400 lines) when
+  at least one destination did not take the message. A send that reached
+  everyone writes nothing, exactly as before.
+- **The bot token can no longer reach a log, a record or a raised message**:
+  `requests` embeds `/bot<token>/<method>` in its exception text, so the token
+  and its URL-quoted form are redacted before truncation in the per-destination
+  line, the delivery record and the exception detail.
+
+### Tests
+
+- 32 new tests under `lab/tests/`: budget slices and starvation, the shrink path
+  and its fallbacks, the delivery record, the token redaction, and the receipt
+  path end to end through `gomrok._telegram_deliver` over a loopback fake API.
+- `test_telegram_fanout_budget.py` loads the immutable pre-fix blob of
+  `telegram_notify.py` (blob id + sha256 pinned, hard error on mismatch) and
+  fails against it with the exact "0 attempts" text the colleagues saw.
+- Suite: `Ran 1357 tests` before, `Ran 1389 tests` after, no MISSING/EMPTY,
+  with the live data directory byte-identical over every run.
+
 ## [1.10.0] - 2026-09-24
 
 ### Added
