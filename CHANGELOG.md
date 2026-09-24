@@ -3,6 +3,44 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-09-24
+
+### Added
+
+- **A period filter on every case list** (operator request): the four case-list
+  tabs — devices, done, problem and closed — share a second filter dimension
+  beside the stage chips. «همهٔ دوره‌ها» is the tab's own set and therefore the
+  unchanged default; «دورهٔ فعلی» is the live set (in-flight cases plus
+  everything registered in the open period, its finished ones included); and
+  each period gets a chip, newest first, so a closed period's cases are
+  reachable as a list at every stage. Both filters compose with the per-tab
+  search, and the query survives a period change.
+- **The stage chips follow the period filter.** The chip row is built from the
+  filtered base set rather than from the in-flight stages alone, so a selected
+  period gains chips for its finished stages (problem / done / closed) —
+  without them a period that holds no in-flight case would list its rows with
+  no way to isolate one. A stage filter that the new period set cannot produce
+  is released to «همه» instead of leaving an empty list with no active chip.
+- **An optional Telegram report channel** (operator request): a new
+  `report_chat_id` setting, editable in the settings tab, receives a copy of
+  every report — the cases report, the finance report, the customer statement —
+  and of every inquiry-result message and result screenshot from the gomrok and
+  hamta robots.
+
+### Changed
+
+- **Report delivery is additive.** `telegram_notify.send_message` and
+  `send_photo` gained `extra_chat_ids`; the configured chat list keeps
+  receiving everything it received before, and a configured channel only ever
+  gets an additional copy. An empty setting leaves the target list byte for
+  byte what it was, a destination that is also in the configured list is
+  deduplicated, and one dead destination cannot take a report down with it
+  (`_fanout` reports that destination's failure and still delivers to the
+  rest).
+- **The registration handoff keeps its single destination.** It passes
+  `chat_id` (exactly one recipient, extras ignored), because it carries
+  passenger personal data; `gomrok.py` is untouched.
+
 ## [1.9.1] - 2026-09-23
 
 ### Added
