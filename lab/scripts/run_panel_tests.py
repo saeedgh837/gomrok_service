@@ -121,6 +121,16 @@ DEFAULT = [
     # the registration handoff, gomrok.py untouched).
     "test_v1_10_period_filter",
     "test_v1_10_report_channel",
+    # v1.10.1 round: the Telegram delivery fix in telegram_notify.py — each
+    # destination gets its own slice of the caller's budget (the starved
+    # receipt target), a missed destination is reported in one summary line
+    # plus one JSONL record, an oversized receipt is shrunk once per call, and
+    # a permanently dead chat is not retried. All three drive the real HTTP
+    # path against lab/tests/_telegram_fake.py (loopback fake, no real token);
+    # test_telegram_receipt_path is the slow one (~70 s).
+    "test_telegram_delivery_fix",
+    "test_telegram_fanout_budget",
+    "test_telegram_receipt_path",
 ]
 
 names = sys.argv[1:] or DEFAULT

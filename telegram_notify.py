@@ -8,13 +8,16 @@ import json
 import os
 import random
 import sys
+import tempfile
 import time
+import urllib.parse
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import app_paths  # noqa: E402  (needs _HERE on sys.path first)
+import log_utils  # noqa: E402  (same)
 
 _CFG_PATH = app_paths.data_path("telegram_config.json")
 
@@ -171,24 +174,122 @@ def _is_permanent_chat_error(error):
     return any(marker in text for marker in _PERMANENT_CHAT_ERRORS)
 
 
+def _redact(text, token):
+    """Replace the bot token with *** wherever it appears in `text`.
+
+    requests builds the request URL as /bot<token>/<method> and puts that URL
+    into its exception text ("Max retries exceeded with url: ..."), which then
+    reaches the per-destination stdout line, the delivery record and the
+    exception `_fanout` raises for the caller's own log. A token is a
+    credential, so none of those sinks may carry it. The token pattern
+    ([0-9]+:[A-Za-z0-9_-]+) survives requests' URL quoting unchanged -- verified
+    against requests.utils.requote_uri -- but the quoted form is redacted too so
+    a token can never come back with a future api_base. Everything else in the
+    text (host, port, exception type, "Max retries exceeded", "deadline reached
+    after N attempts", "read timeout=...") is left intact: the diagnostics are
+    the point of the message. Returns `text` unchanged for an empty/placeholder
+    token."""
+    text = str(text or "")
+    token = str(token or "").strip()
+    if not token or _is_placeholder(token):
+        return text
+    for needle in (token, urllib.parse.quote(token, safe="")):
+        if needle:
+            text = text.replace(needle, "***")
+    return text
+
+
+def _error_line(exc):
+    """First line of an error's message ("" when it has none)."""
+    lines = str(exc).splitlines()
+    return lines[0] if lines else ""
+
+
+def delivery_log_path():
+    """Path of the delivery audit log (JSONL, one record per missed send)."""
+    return app_paths.data_path("telegram_delivery.jsonl")
+
+
+def _report_missed_destinations(method, total, delivered, failures, elapsed, budget,
+                                token=None):
+    """One summary line + one JSONL record for a fanout that missed someone.
+
+    _fanout reports success as soon as ONE destination has taken the message,
+    so a destination that received nothing is invisible to the caller — that is
+    how the starved receipt target went unnoticed. Error text is redacted of the
+    token before it is stored; the record carries ids and error text only: no
+    api_base, no message body. `delivered` is the list of chat_ids that DID
+    receive it; this only runs when at least one did not."""
+    note = f"{budget:.1f}s budge" if budget is not None else "biz budge"
+    missed = ", ".join(str(chat_id) for chat_id, _exc in failures)
+    print(f">>> telegram [NAGHS] {len(failures)} az {total} maghsad ersal nashod "
+          f"({method}, {note}): {missed}")
+    failed = []
+    for chat_id, exc in failures:
+        failed.append({"chat_id": str(chat_id),
+                       "error": _redact(_error_line(exc), token)[:200],
+                       "permanent": _is_permanent_chat_error(exc)})
+    record = {
+        "ts": time.time(),
+        "event": "telegram_delivery",
+        "method": method,
+        "ok": False,
+        "total": total,
+        "delivered": [str(chat_id) for chat_id in delivered],
+        "failed": failed,
+        "elapsed_sec": elapsed,
+        "budget_sec": budget,
+    }
+    try:
+        log_utils.append_jsonl(delivery_log_path(), record)
+    except Exception:
+        pass   # a log that cannot be written must never break a send
+
+
 def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=None):
     """Be hame-ye chat-ha mifrestad. chat-e kharab (chat not found / block) baes-e
     shekast-e KOL-e ersal nemishavad — faghat agar HICH chat-i movaffagh nashod
-    exception partab mishavad. `deadline` (monotonic) budge-ye zamani-ye koll ast."""
+    exception partab mishavad. `deadline` (monotonic) budge-ye zamani-ye koll ast.
+
+    Each destination gets its own slice of the caller's budget (see target_deadline
+    below): one slow destination must not eat the whole budget and leave the rest
+    never attempted. With `deadline=None` the behaviour is unchanged."""
     results = []
+    delivered = []
     failures = []
-    for chat_id in chat_ids:
+    started = time.monotonic()      # same clock as `deadline`
+    clock = time.perf_counter()     # monotonic is ~15ms-granular on Windows
+    total = len(chat_ids)
+    token = cfg.get("bot_token")    # never let it reach stdout / the record / the raise
+    for index, chat_id in enumerate(chat_ids):
+        # Anti-starvation: an equal slice of what is LEFT, per destination
+        # still to go. Without a caller budget nothing changes.
+        target_deadline = deadline
+        if deadline is not None:
+            now = time.monotonic()
+            target_deadline = min(deadline,
+                                  now + (deadline - now) / (total - index))
         try:
             results.append(_post_confirmed(method, cfg, payload_for(chat_id),
                                            files_factory=files_factory,
-                                           deadline=deadline))
+                                           deadline=target_deadline))
+            delivered.append(chat_id)
         except Exception as exc:
             failures.append((chat_id, exc))
             level = "NA-MOTABAR" if _is_permanent_chat_error(exc) else "KHATA"
-            print(f">>> telegram [{level}] chat_id={chat_id}: {str(exc).splitlines()[0][:150]}")
+            # redact BEFORE truncating: a cut-off token is still a secret
+            print(f">>> telegram [{level}] chat_id={chat_id}: "
+                  f"{_redact(_error_line(exc), token)[:150]}")
+    if failures:
+        _report_missed_destinations(
+            method, total, delivered, failures,
+            elapsed=time.perf_counter() - clock,
+            budget=(deadline - started) if deadline is not None else None,
+            token=token)
     if results:
         return results
-    detail = "; ".join(f"{cid}: {exc}" for cid, exc in failures) or "no chat_ids configured"
+    detail = "; ".join(f"{cid}: {_redact(exc, token)}"
+                       for cid, exc in failures) or "no chat_ids configured"
     if failures and all(isinstance(exc, TimeoutError) for _cid, exc in failures):
         raise TimeoutError(f"Telegram delivery timed out for all chats: {detail}")
     raise RuntimeError(f"Telegram delivery failed for all chats: {detail}")
@@ -234,18 +335,83 @@ def send_message(text, parse_mode="HTML", extra_chat_ids=None, timeout=None,
                    deadline=deadline)
 
 
+PHOTO_MAX_EDGE = 2000
+PHOTO_JPEG_QUALITY = 85
+PHOTO_SHRINK_MIN_BYTES = 300 * 1024
+
+
+def _remove_file(path):
+    """Best-effort delete; a leftover temp file must never break a send."""
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _shrink_photo(photo_path):
+    """(upload_path, temp_path) — a smaller copy of a big photo, original otherwise.
+
+    A full-page receipt capture is ~1.4 MB against ~150 KB for a payment-link
+    shot, and every destination only gets a slice of the caller's budget: on a
+    slow link the big upload can burn a whole slice and lose that destination.
+    Downscaling to PHOTO_MAX_EDGE and saving JPEG keeps the upload inside it.
+
+    NEVER raises and NEVER modifies `photo_path` (the file on disk stays
+    byte-identical): a missing/unreadable file, a file already below
+    PHOTO_SHRINK_MIN_BYTES, a missing Pillow, a decode or an encode error all
+    return (photo_path, None), and the caller uploads the original."""
+    try:
+        if not photo_path or not os.path.isfile(photo_path):
+            return photo_path, None
+        if os.path.getsize(photo_path) < PHOTO_SHRINK_MIN_BYTES:
+            return photo_path, None
+        from PIL import Image
+        with Image.open(photo_path) as image:
+            image.load()
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
+            width, height = image.size
+            longest = max(width, height)
+            if longest > PHOTO_MAX_EDGE:
+                scale = PHOTO_MAX_EDGE / float(longest)
+                image = image.resize((max(1, int(round(width * scale))),
+                                      max(1, int(round(height * scale)))),
+                                     Image.LANCZOS)
+            handle, temp_path = tempfile.mkstemp(prefix="tg_photo_",
+                                                 suffix=".jpg")
+            os.close(handle)
+            try:
+                image.save(temp_path, format="JPEG", quality=PHOTO_JPEG_QUALITY)
+            except Exception:
+                _remove_file(temp_path)
+                return photo_path, None
+        return temp_path, temp_path
+    except Exception:
+        return photo_path, None
+
+
 def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None,
                timeout=None, actor=None):
     """Aks mifrestad. `timeout` (saniye) budge-ye koll ast; agar bogozarad
-    TimeoutError partab mishavad (aks az ghabl mahali zakhire shode)."""
+    TimeoutError partab mishavad (aks az ghabl mahali zakhire shode).
+
+    A big photo is shrunk ONCE per call, not per attempt: every attempt uploads
+    the same bytes and the encode is the expensive part. The temp copy is
+    removed in the finally below, also when the send raises."""
     cfg = ensure_config()
     caption = actor_prefix(actor) + caption
     deadline = (time.monotonic() + timeout) if timeout else None
-    return _fanout("sendPhoto", cfg, _target_chat_ids(cfg, extra_chat_ids),
-                   lambda chat_id: {"chat_id": chat_id, "caption": caption,
-                                    "parse_mode": parse_mode},
-                   files_factory=lambda: {"photo": open(photo_path, "rb")},
-                   deadline=deadline)
+    upload_path, temp_path = _shrink_photo(photo_path)
+    try:
+        return _fanout("sendPhoto", cfg, _target_chat_ids(cfg, extra_chat_ids),
+                       lambda chat_id: {"chat_id": chat_id, "caption": caption,
+                                        "parse_mode": parse_mode},
+                       files_factory=lambda: {"photo": open(upload_path, "rb")},
+                       deadline=deadline)
+    finally:
+        _remove_file(temp_path)
 
 
 def rand5():
