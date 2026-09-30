@@ -131,6 +131,24 @@ DEFAULT = [
     "test_telegram_delivery_fix",
     "test_telegram_fanout_budget",
     "test_telegram_receipt_path",
+    # v1.11 round: automatic ChromeDriver update. chromedriver_updater.py
+    # fetches the driver matching the installed Chrome from Chrome-for-Testing
+    # through the Cloudflare proxy (never a direct connection), verifies the
+    # archive and the binary's --version before an atomic replace, and is
+    # covered offline here — fake catalogue payload, locally built zip, no
+    # network and no live data dir.
+    "test_chromedriver_updater",
+    # v1.11 round, the hook side: which driver copy the updater refreshes
+    # (bundled always, an existing override too, never a created one), the
+    # one-attempt-per-process latch and the cross-process cooldown, and that
+    # check_driver_compat clears its Persian warning once a swap succeeds.
+    "test_driver_autoupdate_hook",
+    # v1.11 round, the panel side: the launch page's «به‌روزرسانی درایور مرورگر»
+    # button, its /driver-update route (behind the login gate like every other
+    # POST), and captcha_collector.update_chromedriver_now — the manual entry
+    # point that ignores the automatic attempt's latch and cooldown. Served by
+    # the real handler over loopback; the updater itself is stubbed.
+    "test_driver_update_panel",
 ]
 
 names = sys.argv[1:] or DEFAULT

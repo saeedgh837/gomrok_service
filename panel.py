@@ -4288,12 +4288,14 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   .btn:disabled{opacity:.55; cursor:wait; transform:none;}
   .btn:focus-visible{outline:none; box-shadow:var(--ring);}
   .b-open{background:linear-gradient(135deg,var(--brand),#7c5cf5);}
-  .b-estelam,.b-open2{background:var(--card); color:var(--txt); border:1px solid var(--line-strong);}
-  .b-estelam:hover,.b-open2:hover{filter:none; border-color:var(--brand);
+  .b-estelam,.b-open2,.b-driver{background:var(--card); color:var(--txt); border:1px solid var(--line-strong);}
+  .b-estelam:hover,.b-open2:hover,.b-driver:hover{filter:none; border-color:var(--brand);
     background:var(--brand-soft); color:var(--brand);}
   .b-stop{background:var(--danger-soft); color:var(--danger);
     border:1px solid rgba(217,55,82,.25);}
   .b-stop:hover{filter:none; background:rgba(217,55,82,.16);}
+  .note{display:none; text-align:center; font-size:12.5px; font-weight:700;
+    color:var(--muted); line-height:1.9; padding:0 0 10px;}
   .foot{margin-top:14px; display:flex; align-items:center; justify-content:space-between;
     font-size:11px; color:var(--muted); direction:ltr;}
   .badge{padding:2px 9px; border-radius:99px; border:1px solid var(--line);
@@ -4322,9 +4324,13 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   <button class="btn b-open2" id="btn-open" onclick="location.href='/site-1'">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="m12 2 8 5H4l8-5Z"/></svg>
     پنل قدیمی رجیستری</button>
+  <button class="btn b-driver" id="btn-driver">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    به‌روزرسانی درایور مرورگر</button>
   <button class="btn b-stop" id="btn-stop">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
     بستن سرویس</button>
+  <div class="note" id="drv-note"></div>
   <div class="off-msg" id="off-msg">سرویس خاموش شد.<br>این صفحه را ببندید؛ برای اجرای دوباره، میان‌بر دسکتاپ را اجرا کنید.</div>
   <div class="foot">
     <span>127.0.0.1:8750</span>
@@ -4361,6 +4367,34 @@ document.getElementById('btn-stop').onclick=function(){
     document.getElementById('off-msg').style.display='block';
   }).catch(function(){
     b.disabled=false; b.innerHTML=orig;
+  });
+};
+document.getElementById('btn-driver').onclick=function(){
+  var b=this; var orig=b.innerHTML; var note=document.getElementById('drv-note');
+  var msgs={
+    'updated':['درایور مرورگر به‌روز شد','var(--ok)'],
+    'up-to-date':['درایور مرورگر از قبل به‌روز بود','var(--ok)'],
+    'disabled':['به‌روزرسانی خودکار درایور غیرفعال است','var(--muted)'],
+    'no-browser-version':['نسخه Chrome نصب‌شده خوانده نشد','var(--danger)'],
+    'busy':['یک به‌روزرسانی درایور در حال اجراست؛ چند لحظه بعد دوباره تلاش کنید','var(--muted)'],
+    'driver-in-use':['فایل درایور در حال استفاده است؛ ابتدا ربات‌ها را ببندید و دوباره تلاش کنید','var(--danger)']
+  };
+  b.disabled=true; b.textContent='در حال به‌روزرسانی…';
+  note.style.display='none'; note.removeAttribute('title');
+  fetch('/driver-update',{method:'POST'}).then(function(r){return r.json()}).then(function(res){
+    b.disabled=false; b.innerHTML=orig;
+    var pair=msgs[res.status]||['به‌روزرسانی درایور ناموفق بود؛ اتصال پروکسی را بررسی کنید','var(--danger)'];
+    var text=pair[0]+(res.version?' (نسخه '+res.version+')':'');
+    if(res.status==='updated'||res.status==='up-to-date'){text+=' ✓';}
+    note.textContent=text;
+    note.title=res.detail||'';
+    note.style.color=pair[1];
+    note.style.display='block';
+  }).catch(function(){
+    b.disabled=false; b.innerHTML=orig;
+    note.textContent='ارتباط با سرویس برقرار نشد';
+    note.style.color='var(--danger)';
+    note.style.display='block';
   });
 };
 </script>
@@ -10881,7 +10915,27 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _do_post_body(self):
-        from urllib.parse import urlsplit
+        if self.path == "/driver-update":
+            # Operator-triggered repair of the ChromeDriver the robots launch.
+            # Deliberately bypasses the auto-update latch and cooldown: a person
+            # clicked the button and is waiting for the verdict. captcha_collector
+            # owns driver resolution, so it is imported here rather than
+            # duplicating those rules in the panel.
+            #
+            # Handled before load_store(): repairing the driver has nothing to
+            # do with the profile store, and were profiles.json momentarily
+            # unreadable the route would answer 500 and the page would report a
+            # proxy problem. Every outcome here leaves as JSON -- the page reads
+            # the verdict to say what happened, so a raised exception must
+            # arrive as a status it understands, never as an HTML error body.
+            try:
+                import captcha_collector
+                result = captcha_collector.update_chromedriver_now()
+            except Exception as exc:
+                result = {"status": "failed", "detail": str(exc),
+                          "target": "", "version": ""}
+            self._json(result)
+            return
         try:
             store = load_store()
         except StoreUnreadableError:

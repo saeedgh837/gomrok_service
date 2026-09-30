@@ -89,6 +89,13 @@ APP_FILES = [
     "estelam_shot.py",
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
+    # v1.11.0: captcha_collector imports this lazily on the launch path
+    # (captcha_collector.py:811 and :858), so a bundle without it imports the
+    # panel fine and only fails the first time a robot launch needs the driver
+    # refreshed -- after Chrome auto-updated, which is exactly when the repair
+    # is wanted. verify_windows_release.py derives lazy imports and would fail
+    # the build; keeping it here is what makes the bundle correct.
+    "chromedriver_updater.py",
     "browser_window.py", "browser_visibility.py",
     "cloudflare_http_proxy.py",
     "telegram_api_relay.py",
@@ -172,12 +179,23 @@ FIRST_RUN_TXT = """Before the first run
 1) Install Google Chrome.
 
 2) chromedriver: a matching copy is bundled in .tools\\chromedriver.exe, so
-   normally nothing to do. Only if Chrome auto-updated to a NEW major version
-   and the robots warn about a version mismatch, download the matching
-   chromedriver.exe from
-   https://googlechromelabs.github.io/chrome-for-testing/
-   and save it as  C:\\chromedriver.exe  (the override the robots check first;
-   check your Chrome version at chrome://settings/help.)
+   normally nothing to do.
+
+   If Chrome auto-updates to a NEW major version, the service repairs itself:
+   on the next robot launch it notices the mismatch, downloads the matching
+   driver from Google's Chrome-for-Testing service THROUGH THE SAME TUNNEL the
+   rest of the service uses, and swaps it in. There is nothing to download by
+   hand. The driver file is only ever replaced by a copy that passed a version
+   check first, so a failed download leaves the working driver untouched.
+
+   If that automatic repair could not reach Google (the tunnel was down, for
+   instance), open the panel's launch page and click
+   "به‌روزرسانی درایور مرورگر" to try again on demand. It reports what
+   happened either way.
+
+   Do NOT download chromedriver yourself. The Chrome-for-Testing site is not
+   directly reachable from Iran, and the service already knows how to fetch
+   the right build.
 
 3) Double-click install.bat once to verify the bundled runtime.
 
