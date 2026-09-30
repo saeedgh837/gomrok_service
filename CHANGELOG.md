@@ -3,6 +3,69 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-09-30
+
+### Added
+
+- **The service repairs its own ChromeDriver.** When Chrome auto-updates, the
+  bundled driver goes stale by one major and every robot dies with
+  `SessionNotCreatedException`; until now the operator had to find and replace
+  `chromedriver.exe` by hand. `check_driver_compat` now gives a detected
+  mismatch one bounded chance to repair itself before it prints the Persian
+  warning, and `maybe_update_chromedriver` runs on the robot launch path. A
+  repair never raises: a failure is reported and the launch proceeds against
+  the old driver.
+- **`chromedriver_updater.py`**, which resolves the installed Chrome's major
+  from the catalogue in `last-known-good-versions-with-downloads.json` /
+  `latest-versions-per-milestone-with-downloads.json`, fetches the matching
+  `win64` build from Chrome-for-Testing, and installs it. Every request goes
+  through the local HTTP CONNECT proxy (`127.0.0.1:18081`) that the Telegram
+  service already runs. There is deliberately **no** direct-connection
+  fallback: Chrome-for-Testing answers a direct request from Iran with 403, so
+  a missing proxy is a reported error and never a silent downgrade.
+- **A «به‌روزرسانی درایور مرورگر» button** on the launch page, posting to a new
+  `/driver-update` route backed by `update_chromedriver_now`. The route answers
+  JSON for every outcome — `updated`, `up-to-date`, `busy`, `disabled`,
+  `no-browser-version`, `driver-in-use`, `failed` — and the page renders the
+  verdict beside the button. A manual click bypasses the per-process latch and
+  the cross-process cooldown (a person asked and is waiting) but not the
+  in-process busy latch nor the cross-process lock, so it can never download
+  alongside a robot already doing so.
+- **`IRICA_NO_DRIVER_UPDATE=1`** turns the whole feature off.
+
+### Changed
+
+- **Atomic install.** The archive is downloaded to a temp file, checked to be a
+  zip, checked to hold `chromedriver.exe`, and that binary's `--version` is
+  checked to equal the exact CfT build that was requested; only then is the
+  current file staged as `.bak` and `os.replace`d in place. A failed download
+  can never leave a half-written `chromedriver.exe`. `PermissionError` on the
+  replace is split by `winerror` (32/33 = the image is running, 5 = read-only
+  destination) so the operator gets the right advice.
+- **Cross-process single-flight.** An `msvcrt` byte-range lock beside the
+  cooldown marker, refused immediately with `LK_NBLCK`; the kernel releases it
+  when the holder dies, so a robot killed mid-update cannot wedge the updater.
+  An unopenable lock file still allows the attempt, so a read-only data
+  directory degrades to "no lock" rather than "never update".
+- **Bounded fetch.** One wall-clock budget per attempt, five attempts with
+  jittered exponential backoff, permanent statuses (400/401/403/404/405/410/451)
+  not retried. `requests`' timeout is a per-read stall allowance rather than a
+  total, so every request is handed `min(nominal, budget left)`; the launch path
+  therefore never allows the nominal 180 s. The automatic path gets a 90 s
+  budget, and a 15-minute cooldown follows an attempt.
+- `build_windows_release.py` ships `chromedriver_updater.py` in the bundle and
+  `run_panel_tests.py` registers the new test modules.
+
+### Tests
+
+- 100 new tests: version resolution and catalogue parsing, the mandatory-proxy
+  rule, the verification chain and atomic swap, cleanup after a failed
+  download, the `.bak` staging and the `winerror` split, the cross-process lock
+  (including release when the holder is killed, and the unopenable-lock
+  degradation), the kill switch, the launch-path hook with its latch and
+  cooldown, and the panel route and button verdicts.
+- Suite: `Ran 1389 tests` before, `Ran 1489 tests` after, all green.
+
 ## [1.10.1] - 2026-09-25
 
 ### Fixed
