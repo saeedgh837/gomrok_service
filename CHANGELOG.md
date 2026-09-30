@@ -3,6 +3,62 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.11.1] - 2026-09-30
+
+### Fixed
+
+- **A POST the panel answered no longer reaches the browser as a connection
+  error.** The body was read only by the routes that wanted one, so three exits
+  answered with the request's bytes still sitting in the socket: the login
+  gate's 401, `/driver-update` (whose handler never looks at a body), and
+  `do_POST`'s own exception handler. Windows closes a socket that still holds
+  unread receive data with RST rather than FIN, and the client's in-flight read
+  then dies with `WSAECONNABORTED` — the page showed a bare network failure
+  where the route had sent a real status. Pressing «به‌روزرسانی درایور
+  مرورگر» with an expired session was the case that reproduced it (16 runs in
+  30). `_consume_body` now reads the body once, before any route runs, and every
+  route shares the copy; the reads that used to happen per route are unchanged
+  in behaviour (no `Content-Length`, or `0`, still parses to `{}`).
+- **That read is bounded on both axes.** A declared `Content-Length` above
+  `MAX_POST_BODY_BYTES` (1 MiB) is answered `413` before a single byte is read —
+  refused, not truncated, since a truncated body would reach the route as valid
+  JSON that had silently lost fields — and a body that stops arriving is given
+  up on after `POST_BODY_READ_TIMEOUT` (10 s) with `408` instead of holding a
+  worker thread for as long as the client keeps the socket open. Both answers
+  are deliberate RST cases: waiting out a body the panel has already refused is
+  what the cap exists to prevent.
+- **A missing `chromedriver_updater` no longer silences the repair.**
+  `maybe_update_chromedriver` imported the module *after* recording the attempt,
+  so a bundle shipped without it burned the 15-minute cooldown and returned
+  `None` with nothing anywhere to say why: no repair for the rest of the window,
+  and no way to connect a launch that failed on a version mismatch to a missing
+  file. The import now comes first (an `ImportError` costs no cooldown) and
+  prints `!!! ChromeDriver auto-update is unavailable`. The per-process latch
+  stays claimed, so it is one line per process, not one per launch.
+- `verify_windows_release.py` walks lazy imports transitively. Scanning only the
+  spawned scripts and the entrypoints missed a whole class of bundle defect: a
+  module reached *through* another lazily-imported module was never derived, and
+  `chromedriver_updater.py` sits exactly there. Measured on the v1.11.0 bundle:
+  the old derivation found 8 candidates and reported nothing absent with the
+  file withheld; the new one finds 10 and reports `['chromedriver_updater']`.
+  The `APP_FILES` comment in `build_windows_release.py` also named the wrong
+  line numbers for the two lazy imports (they are `captcha_collector.py:911`
+  and `:971`) and claimed the verifier row made the entry redundant, which is
+  false: the row checks the bundle, `APP_FILES` is what builds it.
+
+### Tests
+
+- `test_driver_update_panel` gains 5 tests over the drain: the body is already
+  read when the gate runs (so the 401 path is covered), a rejected POST is
+  drained, a bodyless POST still reaches the route, an oversized declared body
+  is answered `413` without being read, and a body that stops mid-delivery is
+  answered `408`.
+- `test_driver_autoupdate_hook` gains the missing-module case: no cooldown
+  marker, no cooling-down state, one Persian-free `!!!` line on stdout.
+- Suite: `Ran 1489 tests` before, `Ran 1495 tests` after, all green.
+  `test_driver_update_panel` run 20× in a row: 0 failures (the RST symptom was
+  16/30 before the fix).
+
 ## [1.11.0] - 2026-09-30
 
 ### Added
