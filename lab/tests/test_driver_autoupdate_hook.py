@@ -164,6 +164,28 @@ class HookTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("boom", result["detail"])
 
+    def test_a_missing_updater_module_burns_no_cooldown_and_says_so(self):
+        """A bundle shipped without chromedriver_updater imports the panel fine
+        and only fails here, the first time a robot launch needs the driver
+        refreshed. Recording the attempt before the import would have silenced
+        the repair for the whole cooldown window with nothing in the log to
+        explain it: the operator would just see launches fail on a version
+        mismatch they have no way to connect to a missing file."""
+        # None in sys.modules is how a failed `import x` is simulated: it makes
+        # the statement raise ImportError rather than return the loaded module.
+        with patch.dict(sys.modules, {"chromedriver_updater": None}):
+            with patch("builtins.print") as printed:
+                result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+        self.assertIsNone(result)
+        # No attempt was recorded, so no cooldown started: the next process is
+        # free to repair the driver rather than waiting out a window that was
+        # never used.
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertFalse(cc._driver_update_cooling_down())
+        said = " ".join(str(a) for call in printed.call_args_list
+                        for a in call.args)
+        self.assertIn("ChromeDriver auto-update is unavailable", said)
+
     def test_the_automatic_attempt_gets_a_tight_budget(self):
         """The hook runs on the launch path: it must ask the updater for a
         budget well under the updater's own default, or a slow tunnel would

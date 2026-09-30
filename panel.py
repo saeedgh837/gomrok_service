@@ -107,6 +107,16 @@ SYSTEM_LOG_DIR = app_paths.data_subdir("logs", "system")
 SYSTEM_DEBUG_CONFIG_PATH = app_paths.data_path("system_debug.json")
 HOST, PORT = "127.0.0.1", 8750
 
+# The panel reads every POST body before any route runs, so that read needs
+# limits on both axes. The largest body the panel's own forms send is a few KB
+# of JSON, so a megabyte is generous headroom, and no client on loopback needs
+# longer than a moment to deliver one. Both limits exist to bound what a single
+# request can cost the server, not to validate the payload: a body over the cap
+# is refused rather than truncated, and a body that stops arriving is given up
+# on. See Handler._consume_body.
+MAX_POST_BODY_BYTES = 1024 * 1024
+POST_BODY_READ_TIMEOUT = 10.0
+
 # v1.9: the UI notification cues the panel plays. Exactly these seven names
 # exist on disk (built by lab/scripts/gen_sfx.py) and the /sfx/ route serves
 # nothing else. Keys are the cue families the front end asks for.
@@ -9909,8 +9919,24 @@ def crm_statement_params(customer_id, from_text, to_text, fmt):
     return customer_id, from_date, to_date, fmt, errors
 
 
+class RequestBodyRejected(Exception):
+    """The POST body could not be read within the panel's resource limits.
+
+    Carries the status the client should get: a body the panel will not accept
+    and a body that never finishes arriving are different answers, and neither
+    is the server error that a bare failure here would otherwise become.
+    """
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
 class Handler(BaseHTTPRequestHandler):
     actor = "system"  # set by the login gate for authenticated requests
+    # The POST body this request arrived with, read once by _consume_body().
+    _request_body = None
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         self.send_response(code)
@@ -9935,12 +9961,70 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, body, "application/json; charset=utf-8")
 
     def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
+        raw = self._consume_body()
         try:
-            return json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
             return {}
+
+    def _consume_body(self):
+        """Read this request's body exactly once; every route shares the copy.
+
+        Windows closes a socket that still holds unread receive bytes with RST
+        instead of FIN, and the client's in-flight read then dies with
+        WSAECONNABORTED -- so a browser got a raw network error where the route
+        had sent a real status. Three exits used to leave those bytes behind:
+        the login gate's 401, the /driver-update reply (which never looks at
+        its body), and do_POST's own exception handler. Reading here, before
+        any route runs, drains the socket for every POST whatever route it
+        takes; the copy is what keeps the routes that DO need the body working.
+        Caching is per handler instance, and the panel never sets
+        protocol_version, so HTTP/1.0 gives one request per instance.
+
+        Draining centrally is what makes the limits in _read_body possible at
+        all. A declared Content-Length is the client's claim, not a fact, so it
+        is checked against MAX_POST_BODY_BYTES before a single byte is read and
+        refused past it rather than truncated -- a truncated body would reach
+        the route as valid JSON that had silently lost fields. Raises
+        RequestBodyRejected, which do_POST answers before the gate: no route can
+        do anything with a request whose body is missing, and whether the
+        caller is logged in does not change that.
+        """
+        if self._request_body is None:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length > MAX_POST_BODY_BYTES:
+                raise RequestBodyRejected(
+                    413, "بدنه‌ی درخواست بیش از حد بزرگ است")
+            self._request_body = self._read_body(length)
+        return self._request_body
+
+    def _read_body(self, length):
+        """Read `length` bytes, giving up if the client stops sending.
+
+        Without a deadline here one request whose body never finishes arriving
+        holds a worker thread for as long as the client cares to keep the socket
+        open. A short socket timeout is deliberately local: it is set for this
+        read and restored afterwards, so no other part of the panel inherits it.
+        """
+        if length <= 0:
+            return b""
+        connection = self.connection
+        previous = connection.gettimeout()
+        connection.settimeout(POST_BODY_READ_TIMEOUT)
+        try:
+            return self.rfile.read(length)
+        except TimeoutError as exc:
+            raise RequestBodyRejected(
+                408, "خواندن بدنه‌ی درخواست ناتمام ماند") from exc
+        except OSError:
+            # The client can close before we drain what it sent. Nothing to
+            # read then, and the route still has to answer it.
+            return b""
+        finally:
+            connection.settimeout(previous)
 
     def _tx_artifact(self, query):
         """Serve a finance attachment from tx_artifacts by exact file name
@@ -10893,6 +10977,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         from urllib.parse import urlsplit
+        try:
+            self._consume_body()
+        except RequestBodyRejected as rejected:
+            # The one case answered before the gate: a body that is over the cap
+            # or that stopped arriving cannot be routed, and the caller's
+            # session would not change that. Answering without reading the rest
+            # leaves those bytes in the socket, so the close is an RST rather
+            # than a FIN -- deliberately, since waiting out a body the panel has
+            # already refused is what the cap exists to prevent.
+            self._json({"ok": False, "errors": [rejected.message]},
+                       rejected.status)
+            return
         if not self._gate(urlsplit(self.path).path):
             return
         try:

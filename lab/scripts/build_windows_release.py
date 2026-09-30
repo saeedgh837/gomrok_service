@@ -90,11 +90,14 @@ APP_FILES = [
     "profile_inquiry.py", "robot_launcher.py", "system_debug.py",
     "captcha_collector.py", "telegram_notify.py",
     # v1.11.0: captcha_collector imports this lazily on the launch path
-    # (captcha_collector.py:811 and :858), so a bundle without it imports the
-    # panel fine and only fails the first time a robot launch needs the driver
-    # refreshed -- after Chrome auto-updated, which is exactly when the repair
-    # is wanted. verify_windows_release.py derives lazy imports and would fail
-    # the build; keeping it here is what makes the bundle correct.
+    # (captcha_collector.py:911 for the automatic repair, :971 for the manual
+    # one). This list is what puts the file in the bundle, so without this entry
+    # a build ships a panel that imports fine and only dies the first time a
+    # robot launch needs the driver refreshed -- after Chrome auto-updated,
+    # which is exactly when the repair is wanted. verify_windows_release.py
+    # scans lazy imports transitively and would now report its absence, but that
+    # is a check on the bundle, not a packaging step: nothing here is redundant
+    # with it.
     "chromedriver_updater.py",
     "browser_window.py", "browser_visibility.py",
     "cloudflare_http_proxy.py",

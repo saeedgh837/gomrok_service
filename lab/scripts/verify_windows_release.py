@@ -244,8 +244,19 @@ def check_importable_modules(dist: Path) -> None:
     # Only names the project itself defines are candidates, so the stdlib and
     # third-party imports sitting in those same functions are never reported.
     project = {p.stem for p in dist.glob("*.py")} | {p.stem for p in ROOT.glob("*.py")}
+    # Walk the imports transitively. Scanning only the spawned scripts and the
+    # entrypoints hid a whole class of miss: chromedriver_updater.py is reached
+    # through captcha_collector.py, which is itself reached lazily, so a bundle
+    # missing it passed this row while every robot launch that needed a driver
+    # repair would have died. A module discovered this way is scanned in turn.
     candidates: set[str] = set()
-    for name in sorted(_spawned_scripts(panel_src) | set(ENTRYPOINTS)):
+    seen: set[str] = set()
+    pending = sorted(_spawned_scripts(panel_src) | set(ENTRYPOINTS))
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
         src = dist / name
         if not src.exists():
             continue  # reported by the required-file or spawn row above
@@ -257,7 +268,9 @@ def check_importable_modules(dist: Path) -> None:
         # The other shape a lazy import takes in this codebase.
         lazy |= set(re.findall(
             r"import_module\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", body))
-        candidates |= {n for n in lazy if n in project}
+        found = {n for n in lazy if n in project}
+        candidates |= found
+        pending.extend(f"{n}.py" for n in sorted(found) if f"{n}.py" not in seen)
     absent = sorted(n for n in candidates if not (dist / f"{n}.py").exists())
     # Same reasoning as the spawn row: the panel is where most of these lazy
     # imports live, so a readable panel.py is a precondition of this check

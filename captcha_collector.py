@@ -906,11 +906,18 @@ def maybe_update_chromedriver(driver_path, browser_major):
         if not may_update:
             _DRIVER_UPDATE_LATCH["done"] = False
             return None
-        _mark_driver_update_attempt()
+        # Import BEFORE the attempt is recorded. A build that shipped without
+        # this module would otherwise burn the cooldown marker and return None
+        # in silence: the operator sees no driver repair for the next
+        # DRIVER_UPDATE_COOLDOWN_SECONDS and nothing anywhere says why. Read
+        # first, so a missing module costs no cooldown and leaves a trace.
         try:
             import chromedriver_updater
-        except ImportError:
+        except ImportError as exc:
+            print("!!! ChromeDriver auto-update is unavailable, so the driver "
+                  "cannot repair itself after a Chrome update: " + str(exc))
             return None
+        _mark_driver_update_attempt()
         primary, extras = _driver_update_targets(driver_path)
         try:
             return chromedriver_updater.update_chromedriver(
