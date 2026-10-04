@@ -4,11 +4,15 @@ Credential store + session store + throttle, all stdlib.
 
 Credentials live in panel_users.json inside the per-user data directory
 (app_paths.data_path) — PBKDF2-HMAC-SHA256 hashes only, never plaintext.
-On first start the file is seeded with the operator's three fixed accounts;
-there is deliberately NO user-management UI in this version.
+On the FIRST start with no users file, the three operator accounts are seeded
+with a random per-install password that is printed once to stdout and then
+forgotten; there is deliberately NO user-management UI in this version. An
+install that already has a users file is never touched, so its hashes survive
+every upgrade.
 
 Sessions are in-memory only: restarting the panel logs everyone out, which is
-the desired failure mode for a single-operator local tool.
+the desired failure mode for a single-operator local tool. Each session also
+carries a CSRF token (never sent as a cookie, only as a request header).
 """
 import hashlib
 import hmac
@@ -26,15 +30,21 @@ USERS_PATH = app_paths.data_path("panel_users.json")
 PBKDF2_ITERATIONS = 390_000
 SESSION_TTL_SECONDS = 7 * 24 * 3600
 
-#: Operator-provisioned default accounts (v1.2.0). Hashed at seed time; the
-#: plaintext exists only here and only until the seed file is written.
-DEFAULT_USERS = [
-    ("saeed", "Sgh@1994@"),
-    ("hasan", "8080"),
-    ("arsalan", "Aa1111"),
-]
+#: The three operator-provisioned accounts (v1.2.0). USERNAMES ONLY: no
+#: password is defined anywhere in the source tree. A fresh install generates
+#: one random password per account at seed time (see seed_default_users), so
+#: no published credential can ever exist.
+DEFAULT_USERNAMES = ("saeed", "hasan", "arsalan")
+
+#: Entropy of a generated install password: 16 bytes of urlsafe base64 is 22
+#: characters (~128 bits), long enough that guessing it is hopeless and short
+#: enough to type once from the startup notice.
+PASSWORD_BYTES = 16
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
+#: Shape of a presented CSRF token before it is compared: bounded and ASCII so
+#: a hostile header can never reach compare_digest as a non-ASCII string.
+_CSRF_RE = re.compile(r"^[A-Za-z0-9_\-]{1,256}$")
 
 _SESSIONS = {}
 _SESSIONS_LOCK = threading.Lock()
@@ -44,8 +54,12 @@ _FAIL_LOCKOUT_SECONDS = 30
 _THROTTLE = {}
 _THROTTLE_LOCK = threading.Lock()
 
-# Uniform-timing dummy target for unknown usernames.
+# Uniform-timing dummy target for unknown usernames. The SECRET is generated
+# once per process, never written down: a fixed literal here would be a
+# published credential that satisfies verify_password() for EVERY username that
+# does not exist — and _handle_login() has no second existence check.
 _DUMMY_SALT = "3f9a1c7d5b2e4f60819a2c3d4e5f6071"
+_DUMMY_SECRET = secrets.token_urlsafe(16)
 
 
 def valid_username(username):
@@ -58,26 +72,47 @@ def _hash_password(password, salt_hex, iters=PBKDF2_ITERATIONS):
         int(iters)).hex()
 
 
+def generate_password():
+    """One random install password. Never stored, never logged, never derived
+    from anything guessable: straight from the OS CSPRNG."""
+    return secrets.token_urlsafe(PASSWORD_BYTES)
+
+
 def seed_default_users(path=None):
     """Create the users file with the 3 default accounts if missing.
-    Idempotent: an existing file is left untouched."""
+
+    Idempotent: an existing file is left untouched, so an operator's accounts
+    and their hashes never change on upgrade.
+
+    Returns the list of ``(username, password)`` pairs it generated so the one
+    and only caller (the panel's first boot) can print them once, or ``False``
+    when there was nothing to seed. The plaintext lives only in that return
+    value: it is hashed before the file is written and is never persisted to
+    the repo, a config file or a log.
+    """
     path = path or USERS_PATH
     if os.path.exists(path):
         return False
+    seeded = []
     users = []
-    for username, password in DEFAULT_USERS:
+    for username in DEFAULT_USERNAMES:
+        password = generate_password()
         salt = secrets.token_hex(16)
         users.append({
             "username": username,
             "salt": salt,
             "hash": _hash_password(password, salt),
             "iters": PBKDF2_ITERATIONS,
+            # The operator must pick their own password: these were shown once
+            # on a console the installer's shortcut may not even have.
+            "must_change_password": True,
         })
+        seeded.append((username, password))
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(users, fh, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
-    return True
+    return seeded
 
 
 def load_users(path=None):
@@ -102,7 +137,7 @@ def verify_password(path, username, password):
     if record is None:
         salt_hex = _DUMMY_SALT
         iters = PBKDF2_ITERATIONS
-        expected = _hash_password("definitely-not-a-real-password", salt_hex, iters)
+        expected = _hash_password(_DUMMY_SECRET, salt_hex, iters)
     else:
         salt_hex = str(record.get("salt") or _DUMMY_SALT)
         iters = int(record.get("iters") or PBKDF2_ITERATIONS)
@@ -114,9 +149,11 @@ def verify_password(path, username, password):
 # ---------------------------------------------------------------- sessions
 def create_session(username, ttl_seconds=SESSION_TTL_SECONDS):
     token = secrets.token_urlsafe(32)
+    csrf = secrets.token_urlsafe(32)
     with _SESSIONS_LOCK:
         _SESSIONS[token] = {
             "user": username,
+            "csrf": csrf,
             "expires": time.time() + int(ttl_seconds),
         }
     return token
@@ -133,6 +170,34 @@ def session_user(token):
             del _SESSIONS[token]
             return None
         return entry["user"]
+
+
+def session_csrf(token):
+    """The CSRF token issued with this session, or None when there is no live
+    session. Server-side only: the browser learns it from the readable
+    irica_csrf cookie that login sets alongside the HttpOnly session cookie."""
+    if not isinstance(token, str) or not token:
+        return None
+    with _SESSIONS_LOCK:
+        entry = _SESSIONS.get(token)
+        if not entry or entry["expires"] < time.time():
+            return None
+        return entry["csrf"]
+
+
+def csrf_matches(token, presented):
+    """True only when `presented` is the token issued for session `token`.
+
+    Bounded and ASCII-checked first so a hostile header can never make
+    compare_digest raise, and compare_digest so the comparison itself leaks
+    nothing about the expected value.
+    """
+    expected = session_csrf(token)
+    if not expected or not isinstance(presented, str):
+        return False
+    if not _CSRF_RE.match(presented):
+        return False
+    return hmac.compare_digest(expected, presented)
 
 
 def destroy_session(token):

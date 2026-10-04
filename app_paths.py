@@ -45,6 +45,10 @@ MIGRATED_FILES = (
     "crm_store.json",
     "crm_store.json.bak",
     "crm_logs.jsonl",
+    # login accounts (PBKDF2 hashes only). Missing here, an upgrade from a
+    # release folder that still held it silently dropped the operator's three
+    # accounts and re-seeded fresh ones on the next start.
+    "panel_users.json",
     # runtime state and logs
     "site2_notif.json",
     "telegram_health.json",

@@ -23,42 +23,66 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _headers(message):
+    """A plain dict of the response headers.
+
+    dict(message) silently collapses repeated headers, and a successful login
+    sends TWO Set-Cookie values (session + CSRF companion), so every one of
+    them is kept under `_set_cookies` for callers that assert on the flags.
+    """
+    out = dict(message)
+    cookies = message.get_all("Set-Cookie")
+    if cookies:
+        out["_set_cookies"] = cookies
+    return out
+
+
 class SeedTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = os.path.join(self.tmp.name, "panel_users.json")
-        panel_auth.seed_default_users(self.path)
+        # The seed hands the generated passwords back exactly once; nothing
+        # else in the product ever sees them again.
+        self.seeded = panel_auth.seed_default_users(self.path)
 
     def test_seed_creates_three_users(self):
         users = panel_auth.load_users(self.path)
         self.assertEqual(sorted(u["username"] for u in users),
                          ["arsalan", "hasan", "saeed"])
+        self.assertEqual(sorted(n for n, _pw in self.seeded),
+                         ["arsalan", "hasan", "saeed"])
 
     def test_seed_file_has_no_plaintext_passwords(self):
         """No password may be stored in any form.
 
-        A raw-substring scan of the file cannot test that: salt and hash are
-        long RANDOM hex strings, so a short numeric password's digits turn up
-        inside them by chance (a 4-digit one lands in a 64-char hash about once
-        in a few hundred seeds) and the test fails with nothing wrong. Mixed
-        case/symbol passwords cannot occur in hex at all, so they are still
-        scanned as substrings; every password is additionally compared as a
-        whole value, and the key set is pinned so no password field can be
-        added later.
+        The seed returns the generated passwords, so the file can be checked
+        against them directly: nothing it holds may equal one, and no field
+        other than the four the hash needs plus the change flag may exist —
+        a `password` field cannot be added later without failing here.
         """
         with open(self.path, encoding="utf-8") as fh:
             raw = fh.read()
             fh.seek(0)
             users = json.load(fh)
-        for secret in ("Sgh@1994@", "Aa1111"):      # cannot appear in hex output
-            self.assertNotIn(secret, raw)
-        plaintexts = {"Sgh@1994@", "8080", "Aa1111"}
+        plaintexts = {pw for _name, pw in self.seeded}
+        self.assertEqual(len(plaintexts), 3)
+        for password in plaintexts:
+            self.assertNotIn(password, raw)
         for user in users:
             self.assertEqual(sorted(user),
-                             ["hash", "iters", "salt", "username"], user)
+                             ["hash", "iters", "must_change_password",
+                              "salt", "username"], user)
             for field, value in user.items():
-                self.assertNotIn(str(value).strip(), plaintexts, (field, value))
+                self.assertNotIn(str(value).strip(), plaintexts,
+                                 (field, value))
+
+    def test_seeded_accounts_must_change_their_password(self):
+        """Every account this install generated is flagged until the operator
+        picks their own password."""
+        for user in panel_auth.load_users(self.path):
+            self.assertIs(user.get("must_change_password"), True,
+                          user.get("username"))
 
     def test_seed_file_format(self):
         users = panel_auth.load_users(self.path)
@@ -75,17 +99,24 @@ class SeedTests(unittest.TestCase):
         after = panel_auth.load_users(self.path)
         self.assertEqual(before, after)
 
+    def test_seed_never_touches_an_existing_users_file(self):
+        """An upgrade must keep the operator's accounts and their hashes."""
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        self.assertFalse(panel_auth.seed_default_users(self.path))
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
 
 class VerifyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = os.path.join(self.tmp.name, "panel_users.json")
-        panel_auth.seed_default_users(self.path)
+        self.seeded = panel_auth.seed_default_users(self.path)
 
     def test_correct_passwords_verify(self):
-        for user, pw in (("saeed", "Sgh@1994@"), ("hasan", "8080"),
-                         ("arsalan", "Aa1111")):
+        for user, pw in self.seeded:
             self.assertTrue(panel_auth.verify_password(self.path, user, pw),
                             user)
 
@@ -174,7 +205,9 @@ class _GateHarness(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         users_path = os.path.join(self.tmp.name, "panel_users.json")
-        panel_auth.seed_default_users(users_path)
+        # Generated once per run: the operator would read them off stdout.
+        self.seeded = panel_auth.seed_default_users(users_path)
+        self.passwords = dict(self.seeded)
         profiles = os.path.join(self.tmp.name, "profiles.json")
         with open(profiles, "w", encoding="utf-8") as fh:
             json.dump({"active_id": "", "profiles": []}, fh)
@@ -218,19 +251,31 @@ class _GateHarness(unittest.TestCase):
             headers=base_headers, method=method)
         try:
             resp = opener.open(req, timeout=10)
-            return resp.status, dict(resp.headers), resp.read().decode("utf-8", "replace")
+            return resp.status, _headers(resp.headers), resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
-            return exc.code, dict(exc.headers), exc.read().decode("utf-8", "replace")
+            return exc.code, _headers(exc.headers), exc.read().decode("utf-8", "replace")
 
-    def login(self, username="saeed", password="Sgh@1994@"):
-        """Returns the Set-Cookie header value from a successful login."""
+    def login(self, username="saeed", password=None):
+        """Log in and return the session Set-Cookie value, ready to be replayed
+        as a Cookie header. Every Set-Cookie the response carried is kept on
+        self.set_cookies for assertions on the cookie flags."""
+        if password is None:
+            password = self.passwords[username]
         status, headers, body = self._op("/login", data={
             "username": username, "password": password})
         self.assertEqual(status, 200, body)
-        return headers.get("Set-Cookie", "")
+        self.set_cookies = headers.get("_set_cookies") or []
+        return self.set_cookies[0] if self.set_cookies else ""
 
     def authed(self, path, cookie, data=None):
-        return self._op(path, data=data, headers={"Cookie": cookie})
+        headers = {"Cookie": cookie}
+        token = ""
+        if "irica_session=" in cookie:
+            token = cookie.split("irica_session=", 1)[1].split(";", 1)[0]
+        csrf = panel_auth.session_csrf(token)
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
+        return self._op(path, data=data, headers=headers)
 
 
 class GateTests(_GateHarness):
@@ -281,16 +326,30 @@ class GateTests(_GateHarness):
         for _ in range(5):
             self._op("/login", data={"username": "hasan", "password": "bad"})
         status, _h, body = self._op("/login", data={
-            "username": "hasan", "password": "8080"})
+            "username": "hasan", "password": self.passwords["hasan"]})
         self.assertEqual(status, 429)
 
 
 class AuthenticatedFlowTests(_GateHarness):
     def test_login_sets_helthy_cookie(self):
-        cookie = self.login()
-        self.assertIn("irica_session=", cookie)
-        self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=Lax", cookie)
+        self.login()
+        by_name = {c.split("=", 1)[0]: c for c in self.set_cookies}
+        session = by_name["irica_session"]
+        self.assertIn("HttpOnly", session)
+        # Strict: no cross-site request may ever carry the session. The CSRF
+        # token rides in a second, script-readable Strict cookie so the page
+        # can put it in the X-CSRF-Token header.
+        self.assertIn("SameSite=Strict", session)
+        self.assertNotIn("SameSite=Lax", session)
+        # The companion exists and is deliberately readable by script.
+        csrf = by_name["irica_csrf"]
+        self.assertNotIn("HttpOnly", csrf)
+        self.assertIn("SameSite=Strict", csrf)
+
+    def test_login_sets_exactly_two_cookies(self):
+        self.login()
+        self.assertEqual(sorted(c.split("=", 1)[0] for c in self.set_cookies),
+                         ["irica_csrf", "irica_session"])
 
     def test_authed_request_passes_gate(self):
         cookie = self.login()

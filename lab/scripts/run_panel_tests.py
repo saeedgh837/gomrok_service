@@ -149,6 +149,10 @@ DEFAULT = [
     # point that ignores the automatic attempt's latch and cooldown. Served by
     # the real handler over loopback; the updater itself is stubbed.
     "test_driver_update_panel",
+    # cloud-sync batch 1 (workstream S): no published password, the Origin /
+    # Host / CSRF checks on every state-changing request, and the two CRM
+    # read-modify-write sites under crm.STORE_LOCK (spec §10).
+    "test_auth_hardening",
 ]
 
 names = sys.argv[1:] or DEFAULT

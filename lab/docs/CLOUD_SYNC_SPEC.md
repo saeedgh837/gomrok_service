@@ -241,9 +241,15 @@ a first-time password set.
 
 ## 10. Security requirements (all mandatory, all in-mission)
 
-1. **Plaintext default passwords are removed from `panel_auth.py` source** and
-   the three existing hashes are retired; on cPanel the users are created by
-   `create-admin.php` with install-time passwords and `must_change_password`.
+1. **Plaintext default passwords are removed from `panel_auth.py` source**, and
+   fresh installs seed a per-install random password printed once (never a
+   constant, never a log). The three **existing** hashes on Saeed's machine stay
+   untouched — breaking them would lock him out — but their passwords have been
+   published in git history since before this branch, so they are treated as
+   burned: **they are never migrated to the host**, `create-admin.php` creates
+   fresh users with install-time passwords, and rotating the three local ones is
+   an operator action recorded as a follow-up. Removing the constants and
+   rotating the local hashes are two different jobs; only the first is code.
 2. **CSRF + `Origin`/`Host` checks** on every state-changing request to the
    local panel (in addition to the `SameSite=Lax` cookie).
 3. **The two unlocked read-modify-write sites in `panel.py`

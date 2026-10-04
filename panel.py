@@ -15,6 +15,7 @@ Ejra:
     python panel.py
 sepas boro be:  http://127.0.0.1:8750
 """
+import functools
 import json
 import os
 import re
@@ -68,9 +69,11 @@ DATA_DIR = app_paths.data_dir()
 
 import panel_auth  # noqa: E402  (needs HERE on sys.path first)
 
-# Seed the three operator-provisioned accounts on every start; no-op when the
-# users file already exists (it is never overwritten).
-panel_auth.seed_default_users()
+# The three operator accounts are NOT seeded here. robots import this module
+# too (gomrok.py, exitban.py, ...), and their stdout is a log file — seeding
+# here would print a freshly generated password into gomrok_worker.log. The
+# seed happens in main(), the one place that both owns the accounts and has a
+# console to print the one-time password on.
 
 
 def _resolve_robot_python():
@@ -106,6 +109,99 @@ EXITBAN_ERRORS_PATH = app_paths.data_path("exitban_errors.jsonl")
 SYSTEM_LOG_DIR = app_paths.data_subdir("logs", "system")
 SYSTEM_DEBUG_CONFIG_PATH = app_paths.data_path("system_debug.json")
 HOST, PORT = "127.0.0.1", 8750
+
+# ---------------------------------------------------- request authenticity
+# The panel is loopback-only, so the realistic attacker is a hostile page in
+# the operator's own browser: it may POST to 127.0.0.1:8750 and, for a simple
+# request, needs no CORS preflight. Three independent checks close that off:
+#   * Host must name a loopback literal  -> stops DNS rebinding / host-header
+#     spoofing (an attacker's rebound domain is never one of those names).
+#   * Origin, or Referer when Origin is absent, must be this panel's own
+#     origin -> stops a cross-site POST outright.
+#   * the POST must carry the session's CSRF token in a header -> a cross-site
+#     page cannot read it (it lives in an HttpOnly-scoped session and a
+#     SameSite=Strict cookie pair) and cannot set it without a preflight.
+# Everything answers with the normal {"ok": false, "errors": [...]} envelope.
+CSRF_HEADER = "X-CSRF-Token"
+CSRF_COOKIE = "irica_csrf"
+
+_SOURCE_HOST_REJECT = "آدرس میزبان درخواست نامعتبر است"
+_SOURCE_ORIGIN_REJECT = ("درخواست از منبع نامعتبر؛ پنل فقط درخواست‌های خودش "
+                         "را می‌پذیرد")
+_CSRF_REJECT = ("نشانی امنیتی درخواست نامعتبر است؛ صفحه را دوباره "
+                "بارگذاری کنید")
+
+
+def _host_label(host_header):
+    """The Host header with its port removed: '127.0.0.1:8750' -> '127.0.0.1'.
+
+    The port is deliberately ignored: the defence is about WHICH NAME addressed
+    the panel (a rebound domain), and the tests — like any second instance —
+    legitimately listen on a port other than PORT.
+    """
+    raw = str(host_header or "").strip()
+    if raw.startswith("["):                      # [::1]:8750
+        end = raw.find("]")
+        return raw[1:end] if end > 1 else raw
+    return raw.rsplit(":", 1)[0] if raw.count(":") == 1 else raw
+
+
+def _is_loopback_label(label):
+    """True only for a name that can denote nothing but THIS machine.
+
+    `HOST` itself plus the literal loopback names. An attacker's DNS record
+    can point at 127.0.0.1 but can never BE one of these, which is what makes
+    the Host rule a real rebinding defence rather than a cosmetic check.
+    """
+    name = str(label or "").strip().lower().rstrip(".")
+    if not name:
+        return False
+    if name == HOST.strip().lower():
+        return True
+    if name in ("localhost", "localhost.localdomain",
+                "::1", "0:0:0:0:0:0:0:1"):
+        return True
+    if re.fullmatch(r"127(?:\.\d{1,3}){3}", name):
+        return all(0 <= int(part) <= 255 for part in name.split("."))
+    return False
+
+
+# The browser's one-line CSRF client. Injected into every served page just
+# before </head> at render time, so the page templates themselves — and the
+# tests that slice them out and run them in node — stay untouched. The typed
+# `<script type=...>` form is deliberate: the page-JS extractors in the suite
+# split on the bare `<script>` marker and must keep seeing exactly the page's
+# own blocks. It reads the readable irica_csrf cookie that login sets and adds
+# the token to every POST as a header; without the cookie (before a session) it
+# installs nothing.
+CSRF_BOOTSTRAP = r"""<script type="text/javascript">(function(){
+if(typeof document==='undefined'||typeof fetch!=='function')return;
+var m=/(?:^|;\s*)irica_csrf=([^;]+)/.exec(document.cookie||'');
+if(!m)return;
+var t;try{t=decodeURIComponent(m[1]);}catch(e){return;}
+if(!t)return;
+var native=window.fetch;
+window.fetch=function(input,init){
+  init=init||{};
+  var method=String(init.method||(input&&input.method)||'GET').toUpperCase();
+  if(method!=='POST')return native.call(window,input,init);
+  var cfg={};for(var k in init)cfg[k]=init[k];
+  var h=cfg.headers;
+  if(h&&typeof h.set==='function'){h.set('X-CSRF-Token',t);}
+  else if(Array.isArray(h)){cfg.headers=h.concat([['X-CSRF-Token',t]]);}
+  else{var o={};for(var j in (h||{}))o[j]=h[j];o['X-CSRF-Token']=t;cfg.headers=o;}
+  return native.call(window,input,cfg);
+};
+})();
+</script>"""
+
+
+def with_csrf_bootstrap(html):
+    """Insert CSRF_BOOTSTRAP before the page's </head>, once."""
+    at = html.find("</head>")
+    if at < 0:
+        return html
+    return html[:at] + CSRF_BOOTSTRAP + html[at:]
 
 # The panel reads every POST body before any route runs, so that read needs
 # limits on both axes. The largest body the panel's own forms send is a few KB
@@ -2011,6 +2107,25 @@ def crm_advance_logged(device_id, action, **payload):
     return device, errors
 
 
+def _locked_store_rmw(func):
+    """Run `func` with crm.STORE_LOCK held for its whole body.
+
+    crm.store_read() and crm.store_write() are each individually locked, but
+    not TOGETHER: a read at one end of a function and a write at the other can
+    still straddle a concurrent mutator. store_write serialises the WHOLE
+    document, so the loser silently drops the other side's change. Wrapping
+    makes that window atomic while leaving the body — a hundred lines of
+    validation — byte-for-byte untouched.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        import crm as crm_mod
+        with crm_mod.STORE_LOCK:
+            return func(*args, **kwargs)
+    return wrapper
+
+
+@_locked_store_rmw
 def crm_update_settings(fields):
     import crm as crm_mod
     data = crm_mod.store_read()
@@ -4095,7 +4210,7 @@ def render_page():
     head = PAGE_HEAD.replace("__VERSION__", version)
     tail = PAGE_TAIL.replace("__VERSION__", version)
     html = head + js + tail
-    return html.encode("utf-8")
+    return with_csrf_bootstrap(html).encode("utf-8")
 
 
 HOME_PAGE = """<!doctype html>
@@ -4412,19 +4527,22 @@ document.getElementById('btn-driver').onclick=function(){
 
 
 def render_launch_page():
-    return LAUNCH_PAGE.encode("utf-8")
+    return with_csrf_bootstrap(LAUNCH_PAGE).encode("utf-8")
 
 
 def render_home_page():
     html = HOME_PAGE.replace("__PANEL_URL__", f"{HOST}:{PORT}")
     html = html.replace("__VERSION_TAG__",
                         f'<span class="irica-version">نسخه {app_version_text() or "—"}</span>')
-    return html.replace("__VERSION__", app_version_text() or "—").encode("utf-8")
+    html = html.replace("__VERSION__", app_version_text() or "—")
+    return with_csrf_bootstrap(html).encode("utf-8")
 
 
 def render_site_two_page():
     with open(os.path.join(HERE, "dashboard-new.html"), encoding="utf-8") as f:
-        return f.read().encode("utf-8")
+        # Not routed today, but the moment it is its POSTs would need the
+        # token like every other page, so the client goes in here too.
+        return with_csrf_bootstrap(f.read()).encode("utf-8")
 
 
 ESTELAM_PAGE = r"""<!DOCTYPE html>
@@ -9769,7 +9887,8 @@ setInterval(refresh, 5000);
 
 def render_crm_page(actor="system"):
     """CRM page; __ACTOR__ becomes the logged-in user chip in the header."""
-    return CRM_PAGE.replace("__ACTOR__", str(actor or "system"))
+    return with_csrf_bootstrap(
+        CRM_PAGE.replace("__ACTOR__", str(actor or "system")))
 
 
 def render_estelam_page():
@@ -9782,7 +9901,7 @@ def render_estelam_page():
     html = html.replace("__BADGE_JSON__",
                         json.dumps(ESTELAM_BADGE_FA, ensure_ascii=False))
     html = html.replace("__VERSION__", app_version_text() or "—")
-    return html.encode("utf-8")
+    return with_csrf_bootstrap(html).encode("utf-8")
 
 
 TX_ARTIFACT_SUBDIR = "tx_artifacts"
@@ -10073,12 +10192,19 @@ class Handler(BaseHTTPRequestHandler):
                 row["error"] = ""
                 row["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 estelam_save(est)
-            data_crm = crm_mod.store_read()
-            device = next((d for d in data_crm.get("devices", [])
-                           if str(d.get("id")) == device_id), None)
-            if device is not None:
-                device["last_inquiry_at"] = ""
-                crm_mod.store_write(data_crm)
+            # Locked read-modify-write: store_write serialises the WHOLE
+            # document, so a read taken outside the lock can hand back a
+            # snapshot another mutator (scheduler, auto-advance, a second
+            # handler thread) has already changed — and this write would then
+            # silently drop that change. Same crm.STORE_LOCK as everywhere
+            # else; RLock, so the nested store_read/store_write are fine.
+            with crm_mod.STORE_LOCK:
+                data_crm = crm_mod.store_read()
+                device = next((d for d in data_crm.get("devices", [])
+                               if str(d.get("id")) == device_id), None)
+                if device is not None:
+                    device["last_inquiry_at"] = ""
+                    crm_mod.store_write(data_crm)
             crm_mod.crm_log("info", "inquiry_history_reset", device_id=device_id)
             results.append({"device_id": device_id, "ok": True})
             if restart:
@@ -10668,12 +10794,87 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return "text/html" in accept.lower()
 
+    def _own_origin(self, value):
+        """True when `value` (an Origin or a Referer) names this panel.
+
+        Scheme must be http/https, the host must be a loopback literal, and the
+        port must be the port this server is actually listening on — an
+        ephemeral port in the tests, PORT in production. Anything else,
+        including `Origin: null`, is foreign.
+        """
+        from urllib.parse import urlsplit
+        try:
+            parts = urlsplit(str(value or "").strip())
+            port = parts.port
+        except ValueError:
+            return False
+        if parts.scheme not in ("http", "https") or port is None:
+            return False
+        if not _is_loopback_label(parts.hostname):
+            return False
+        try:
+            listening = self.server.server_address[1]
+        except (AttributeError, IndexError, TypeError):
+            listening = PORT
+        return int(port) == int(listening)
+
+    def _foreign_source(self):
+        """The Persian rejection reason when this request did not come from
+        the panel itself, else None.
+
+        Checked on EVERY state-changing request, including /login, before any
+        route runs. Host first (DNS rebinding), then Origin and, when a client
+        sends no Origin, Referer. A client with neither — curl, the robots, the
+        test harness — is judged on Host alone, which is the rebinding rule.
+        """
+        if not _is_loopback_label(_host_label(self.headers.get("Host"))):
+            return _SOURCE_HOST_REJECT
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            referer = str(self.headers.get("Referer") or "").strip()
+            if not referer:
+                return None
+            # Referer may be a full page URL; only its origin is comparable.
+            try:
+                from urllib.parse import urlsplit
+                parts = urlsplit(referer)
+                origin = "%s://%s" % (parts.scheme, parts.netloc)
+            except ValueError:
+                return _SOURCE_ORIGIN_REJECT
+        if not self._own_origin(origin):
+            return _SOURCE_ORIGIN_REJECT
+        return None
+
+    def _csrf_rejected(self, token):
+        """True when a POST carries a LIVE session cookie without the CSRF
+        token issued for that session.
+
+        Deliberately scoped to live sessions: an absent or forged cookie has
+        no token to present, and the session check below already answers it
+        with 401. This gate exists for the one case that matters — a real
+        session riding on someone else's request.
+        """
+        if not token or panel_auth.session_user(token) is None:
+            return False
+        return not panel_auth.csrf_matches(token,
+                                           self.headers.get(CSRF_HEADER))
+
     def _gate(self, route):
         """Returns True when the request may proceed. Handles the login page,
         login POST and logout POST itself; everything else requires a valid
         session cookie."""
         from urllib.parse import urlsplit
         method = self.command
+        if method == "POST":
+            # Both checks run before ANY route, so a rejected request never
+            # touches the store and never reaches a 500 path.
+            foreign = self._foreign_source()
+            if foreign is not None:
+                self._json({"ok": False, "errors": [foreign]}, 403)
+                return False
+            if self._csrf_rejected(_cookie_token(self.headers)):
+                self._json({"ok": False, "errors": [_CSRF_REJECT]}, 403)
+                return False
         if method == "GET":
             if route == "/login":
                 self._send(200, render_login_page())
@@ -10721,11 +10922,21 @@ class Handler(BaseHTTPRequestHandler):
         if panel_auth.verify_password(panel_auth.USERS_PATH, username, password):
             panel_auth.register_success(username)
             token = panel_auth.create_session(username)
+            # Session: HttpOnly + Strict, so neither script nor a cross-site
+            # request can touch it. Companion: the same CSRF token in a
+            # readable Strict cookie, which is the only way the page's JS can
+            # put it in the X-CSRF-Token header (the session cookie itself is
+            # invisible to script on purpose).
             cookie = ("irica_session=" + token +
-                      "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" +
+                      "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
                       str(panel_auth.SESSION_TTL_SECONDS))
+            csrf = panel_auth.session_csrf(token) or ""
+            csrf_cookie = (CSRF_COOKIE + "=" + csrf +
+                           "; Path=/; SameSite=Strict; Max-Age=" +
+                           str(panel_auth.SESSION_TTL_SECONDS))
             self.send_response(200)
             self.send_header("Set-Cookie", cookie)
+            self.send_header("Set-Cookie", csrf_cookie)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -10749,7 +10960,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(302)
         self.send_header("Location", "/login")
         self.send_header("Set-Cookie",
-                         "irica_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+                         "irica_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+        self.send_header("Set-Cookie",
+                         CSRF_COOKIE + "=; Path=/; SameSite=Strict; Max-Age=0")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -11560,6 +11773,39 @@ class PanelHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
+def _announce_seeded_accounts(seeded):
+    """First boot only: show the generated passwords once, on stdout.
+
+    `seeded` is what panel_auth.seed_default_users returned. The plaintext
+    exists nowhere else — not in the file, not in a config, not in a log — so
+    this is the operator's one and only sight of it. Written straight to
+    stdout (never through the logging helpers) and guarded, because
+    sys.stdout is None whenever the process has no writable standard stream
+    (pythonw, a closed handle) and an unguarded write would abort startup.
+    """
+    if not seeded:
+        return
+    out = getattr(sys, "stdout", None)
+    if out is None:
+        return
+    width = max(len(name) for name, _pw in seeded)
+    lines = [
+        ">>> First boot: no users file yet, so one password per account was",
+        ">>> generated for this install. It is shown ONCE and stored nowhere:",
+        ">>> sign in and change it from the panel as soon as possible.",
+    ]
+    lines.extend(">>>   %s%s = %s" % (name, " " * (width - len(name)), password)
+                 for name, password in seeded)
+    lines.append(">>> Lost them? Delete panel_users.json in")
+    lines.append(">>>   " + DATA_DIR)
+    lines.append(">>> and start the panel again to generate a fresh set.")
+    try:
+        out.write("\n".join(lines) + "\n")
+        out.flush()
+    except Exception:
+        pass
+
+
 def main():
     if _panel_already_running():
         url = f"http://{HOST}:{PORT}"
@@ -11571,6 +11817,9 @@ def main():
         except Exception:
             pass
         return
+    # First boot of this install: create the three accounts with a random
+    # password and show it once. Existing users files are left untouched.
+    _announce_seeded_accounts(panel_auth.seed_default_users())
     url = f"http://{HOST}:{PORT}"
 
     try:
@@ -11630,7 +11879,10 @@ if __name__ == "__main__":
 
 # --------------------------------------------------------------- login gate
 def render_login_page():
-    return LOGIN_PAGE.replace("__VERSION__", app_version_text() or "—").encode("utf-8")
+    # Wrapped too: a live session cookie may accompany this POST (a signed-in
+    # operator typing /login), and that POST must carry the token as well.
+    return with_csrf_bootstrap(
+        LOGIN_PAGE.replace("__VERSION__", app_version_text() or "—")).encode("utf-8")
 
 
 LOGIN_PAGE = """<!DOCTYPE html>
