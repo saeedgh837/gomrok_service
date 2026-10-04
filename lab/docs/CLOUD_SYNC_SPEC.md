@@ -361,9 +361,12 @@ do not change the endpoint contract.
    never share one column. Nullable: `settings` and `customer_transactions` have
    no legacy id of their own.
 2. **Legacy-id formulas for the two entities that have none** — the import and
-   the client must compute them identically:
+   the client must compute them identically (confirmed by workstream B against
+   F's schema):
    - `customer_transactions` → `"<customer_legacy_id>/<seq>"`
-   - `settings` → `"settings/<key>"`
+   - `settings` → `"settings/settings"` (F's schema is **one row per tenant**,
+     `UNIQUE(tenant_id)`, so there is no `<key>` to name; a constant is the only
+     formula that both sides can reproduce)
 3. **Boolean columns** are `TINYINT(1)`; the Python side accepts SQL `0/1`.
 4. **Two fields sync as opaque strings and are never foreign keys**, because
    their referents stay local (§1): `crm_devices.profile_id` (points into
