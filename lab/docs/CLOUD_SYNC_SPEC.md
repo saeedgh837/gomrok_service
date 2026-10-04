@@ -287,6 +287,10 @@ envelope (the client maps host codes into it).
 - Everything offline. No test may reach the network, the live data dir
   (`%LOCALAPPDATA%\irica\`), or the real host. Use a loopback fake API —
   the existing pattern is `lab/tests/_telegram_fake.py`.
+- `lab/tests/_cloud_api_fake.py` (owned by C-client) is the executable copy of
+  §6. Every sync test honours `IRICA_TEST_API_BASE`: unset → the loopback fake,
+  set → a real base URL. Workstream G reuses it to point the same suite at the
+  PHP API when it exists, so client and host cannot drift unnoticed.
 - Cover: idempotent replay, CAS conflict both ways, batch partial-apply,
   tombstone propagation, cursor resume, `has_more`, outbox durability across
   restart, backoff bounds, 401-refresh-then-stop, read-only lease, missing/late/
@@ -305,7 +309,7 @@ Two agents must never write the same file.
 | **A** (state machine) | `cloud_sync/state.py`, `cloud_sync/lease.py`, `lab/tests/test_cloud_state.py` |
 | **S** (security) | `panel_auth.py`, `panel.py` (gate/CSRF/lock fixes only), `lab/tests/test_auth_hardening.py` |
 | **C-host** (API) | `host/src/*.php` (except the three F owns), `host/public/index.php`, `host/public/.htaccess`, `host/bin/*`, `host/config/*`, `host/INSTALL.md`, `host/SECURITY.md`, `lab/tests/test_host_api.py` |
-| **C-client** (transport) | `cloud_sync/client.py`, `cloud_sync/outbox.py`, `cloud_sync/auth.py`, `cloud_sync/errors.py`, `lab/tests/test_cloud_transport.py` |
+| **C-client** (transport) | `cloud_sync/client.py`, `cloud_sync/outbox.py`, `cloud_sync/auth.py`, `cloud_sync/errors.py`, `cloud_sync/config.py`, `lab/tests/_cloud_api_fake.py`, `lab/tests/test_cloud_transport.py` |
 | **D** (UI) | `panel.py` (routes + page strings for the cloud section), `lab/tests/test_cloud_ui.py` |
 | **E** (conflict UI) | `panel.py` **after D**, `lab/tests/test_cloud_conflicts.py` |
 | **G** (suite) | `lab/scripts/run_panel_tests.py`, `lab/tests/test_cloud_integration.py` |
@@ -344,3 +348,57 @@ The host package is executed here, not only reviewed. Ready on this machine:
 Report contract (every workstream, exactly these 7): files reviewed · changes ·
 bugs found · tests added · tests run + results · remaining risks · decisions
 needed or «هیچ».
+
+## 15. Manager rulings (batch 1 — binding, not questions)
+
+Raised by workstream B; ruled on while batch 1 was running. They refine §3/§4 and
+do not change the endpoint contract.
+
+1. **`legacy_id` is a real column.** Every business table carries both
+   `id CHAR(36)` (UUID, §4) and `legacy_id VARCHAR(64) NULL` (the original 8-hex
+   id from `crm_store.json`). The client's mapper keeps the legacy id inside
+   `record.id` and emits the UUID only through `envelope()`, so the two must
+   never share one column. Nullable: `settings` and `customer_transactions` have
+   no legacy id of their own.
+2. **Legacy-id formulas for the two entities that have none** — the import and
+   the client must compute them identically:
+   - `customer_transactions` → `"<customer_legacy_id>/<seq>"`
+   - `settings` → `"settings/<key>"`
+3. **Boolean columns** are `TINYINT(1)`; the Python side accepts SQL `0/1`.
+4. **Two fields sync as opaque strings and are never foreign keys**, because
+   their referents stay local (§1): `crm_devices.profile_id` (points into
+   `profiles.json`) and `customer_transactions.image` (a bare filename under
+   `tx-artifacts/`). No FK, no content validation, no dereferencing during sync;
+   a reader on another machine may find them dangling and must treat that as
+   normal, not an error.
+5. **Source timezone** for store timestamps is `Asia/Tehran`, injectable
+   (`tz=`), never read from the OS default. Wrong zone silently shifts history.
+6. **`cloud_sync/__init__.py` belongs to workstream B** and stays import-free
+   (docstring only) — other `cloud_sync` modules must not depend on anything
+   being imported there.
+
+Raised by workstream A (state machine), ruled while batch 1 was running:
+
+7. **A device-token refresh counts as a successful authentication** for the
+   7-day lease: the machine proved possession of a valid credential, so it calls
+   `lease.grant()` and fires `AUTH_OK`.
+8. **Error codes are an allowlist-shaped grammar:** `^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$`,
+   ≤ 40 characters (`NET_TIMEOUT`, `HTTP_500`, `VERSION_CONFLICT`,
+   `QUEUE_FULL`). This is what makes PII structurally impossible in a code —
+   the host API and the client must both emit codes that pass it, and
+   `ECONNREFUSED`-style tokens are not valid.
+9. **Persistence files** live in the data dir as `cloud_sync_state.json` and
+   `cloud_sync_lease.json`; `cloud_config.json` is the transport's (C-client's).
+   Restoring a persisted `SYNCING` downgrades to idle with
+   `restore_reason=INTERRUPTED_SYNC` — a state with no worker must not refuse to
+   start again.
+10. **`QUEUE_FULL` is a stable error code, not a ninth state** — a ninth state
+    would need masking rules in every fault state for no added safety.
+11. **An expired lease stops network sync entirely** (pulls included): a device
+    that cannot authenticate cannot pull either. Local reads keep working.
+12. **Every route that drives the state machine must catch
+    `IllegalTransitionError` / `LeaseExpiredError` explicitly.** `panel.py`
+    already has 39 `except Exception` sites (13 of them `pass`), and a machine
+    event swallowed there is precisely the silent drift this module exists to
+    prevent. Whoever fires an event fires **exactly one** outcome or fault per
+    batch attempt.
