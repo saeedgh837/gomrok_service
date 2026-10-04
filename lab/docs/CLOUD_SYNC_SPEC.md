@@ -300,11 +300,11 @@ Two agents must never write the same file.
 
 | Owner | Files |
 |---|---|
-| **F** (schema) | `host/migrations/*.sql`, `host/src/Database.php`, `host/src/Schema.php` |
+| **F** (schema) | `host/migrations/*.sql`, `host/src/Database.php`, `host/src/Schema.php`, `lab/tests/test_host_schema.py` |
 | **B** (mapping) | `cloud_sync/mapper.py`, `cloud_sync/ids.py`, `lab/tests/test_cloud_mapper.py` |
 | **A** (state machine) | `cloud_sync/state.py`, `cloud_sync/lease.py`, `lab/tests/test_cloud_state.py` |
 | **S** (security) | `panel_auth.py`, `panel.py` (gate/CSRF/lock fixes only), `lab/tests/test_auth_hardening.py` |
-| **C-host** (API) | `host/src/*.php` (except the three above), `host/public/index.php`, `host/public/.htaccess`, `host/bin/*`, `host/config/*`, `host/INSTALL.md`, `host/SECURITY.md` |
+| **C-host** (API) | `host/src/*.php` (except the three F owns), `host/public/index.php`, `host/public/.htaccess`, `host/bin/*`, `host/config/*`, `host/INSTALL.md`, `host/SECURITY.md`, `lab/tests/test_host_api.py` |
 | **C-client** (transport) | `cloud_sync/client.py`, `cloud_sync/outbox.py`, `cloud_sync/auth.py`, `cloud_sync/errors.py`, `lab/tests/test_cloud_transport.py` |
 | **D** (UI) | `panel.py` (routes + page strings for the cloud section), `lab/tests/test_cloud_ui.py` |
 | **E** (conflict UI) | `panel.py` **after D**, `lab/tests/test_cloud_conflicts.py` |
@@ -313,6 +313,26 @@ Two agents must never write the same file.
 
 `panel.py` is single-threaded across workstreams: **S → D → E**, in that order.
 `host/` is single-threaded: **F → C-host**.
+
+### 13.1 Local verification environment (already provisioned)
+
+The host package is executed here, not only reviewed. Ready on this machine:
+
+- **PHP 8.1.34** (winget): `C:\Users\Saeed\AppData\Local\Microsoft\WinGet\Packages\PHP.PHP.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe\php.exe`
+  with a local `php.ini` enabling `pdo_mysql`, `mbstring`, `openssl`, `sodium`,
+  `fileinfo`. `password_algos()` includes `argon2id`.
+- **MariaDB 11.4.4** (portable, no service): running on `127.0.0.1:3307`,
+  database `irica_test` (`utf8mb4`), server files under `.tools/mysql/`
+  (gitignored). Started/inspected with:
+  `…\bin\mariadb.exe -h127.0.0.1 -P3307 -uroot -p<root> --protocol=TCP --ssl=FALSE`
+  — **`--ssl=FALSE` is mandatory** with this client; `mysql.exe` from the same
+  package fails to authenticate.
+- Credentials live in `%TEMP%\irica_test_db.json` (`root_password`,
+  `api_password`). **They are never committed, never logged, never printed.**
+- Two accounts exist: `root` (migrations, admin) and `irica_api`@`127.0.0.1`
+  with **only** `SELECT, INSERT, UPDATE, DELETE` on `irica_test.*` — `CREATE`
+  is denied. Production must be created the same way (spec §2), so the grants
+  themselves are under test.
 
 ## 14. Batches
 
