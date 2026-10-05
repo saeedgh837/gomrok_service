@@ -38,6 +38,7 @@ import re
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -672,6 +673,27 @@ class TestBootstrapAndPull(ApiCase):
                               (0, True)):
             with self.assertRaises(BadResponseError, msg=repr((cursor, limit))):
                 self.client.pull(cursor, limit)
+
+    def test_import_document_requires_live_user_token_and_sends_it_in_header(self):
+        self.enrol()
+        # Enrol leaves user token in vault
+        fake_body = {
+            "import_id": str(uuid.uuid4()),
+            "source_installation_id": str(uuid.uuid4()),
+            "collections": {
+                "customers": [], "customer_transactions": [],
+                "owners": [], "identities": [], "crm_devices": [],
+                "periods": [], "settings": [],
+            },
+        }
+        res = self.client.import_document(fake_body)
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(len(self.api.calls("POST /bootstrap/import")), 1)
+
+        # Clear user token: must fail immediately without sending network request
+        self.vault.clear_user()
+        with self.assertRaises(AuthRequiredError):
+            self.client.import_document(fake_body)
 
 
 # =====================================================================

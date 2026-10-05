@@ -10,6 +10,8 @@ One class, :class:`SyncClient`, speaks the whole §6 contract over ``requests``:
 ``bootstrap````GET  /sync/bootstrap``          -> snapshot + cursor + epoch
 ``pull``     ``GET  /sync/changes?cursor=&limit=``
 ``push``     ``POST /sync/mutations``          -> applied[] + conflicts[]
+``import_document``
+            ``POST /bootstrap/import``          -> one-shot seed (spec §8)
 ===========  ==========================================================
 
 Design rules that are not negotiable:
@@ -216,12 +218,18 @@ class SyncClient(object):
     # ------------------------------------------------------------------
     # One HTTP attempt
     # ------------------------------------------------------------------
-    def _exchange(self, method, route, body, token, timeout):
+    def _exchange(self, method, route, body, token, timeout, acting=None):
         """Send once. Returns a plain record; transport failures raise."""
         url = self.config.url(route)
         headers = dict(_JSON_HEADERS)
         if token:
             headers["Authorization"] = "Bearer " + token
+        if acting:
+            # Spec §8: an import carries the device credential as the
+            # principal and the *user's* access token in this header — the
+            # host reads `X-Acting-User` for the acting identity, so a
+            # request without it can never satisfy /bootstrap/import.
+            headers["X-Acting-User"] = "Bearer " + acting
         payload_bytes = None
         if body is not None:
             payload_bytes = json.dumps(body, ensure_ascii=False,
@@ -299,19 +307,29 @@ class SyncClient(object):
             "envelope" if exchange["code"] else "status"), **common)
 
     def _request(self, method, route, *, body=None, auth=True,
-                 allow_refresh=True, user_auth=False):
+                 allow_refresh=True, user_auth=False, acting=False):
         """One logical call: send, honour a single 401 refresh, then answer."""
         token = None
+        acting_token = None
         if auth:
             token = self._access_token(user=user_auth, refresh=allow_refresh)
-        exchange = self._exchange(method, route, body, token, self._timeout)
+            if acting:
+                acting_token = self.vault.user_access_token
+                if not acting_token:
+                    # The acting identity lives in RAM only (spec §5), so an
+                    # expired or absent user session is answered *before* the
+                    # request is built: the host would answer 401 anyway, and
+                    # sending first would log a route for a call never made.
+                    raise self._auth_failure(route, code=AUTH_REQUIRED)
+        exchange = self._exchange(method, route, body, token, self._timeout,
+                                  acting_token)
         if exchange["status"] == 401 and auth and allow_refresh:
             # Spec §9: exactly one refresh, then retry the original request
             # once. A second 401 stops here — no loop, no second refresh.
             self._refresh_device()
             token = self.vault.access_token
             exchange = self._exchange(method, route, body, token,
-                                      self._timeout)
+                                      self._timeout, acting_token)
             if exchange["status"] == 401:
                 raise self._auth_failure(route, exchange)
         if not 200 <= int(exchange["status"] or 0) < 300:
@@ -564,6 +582,19 @@ class SyncClient(object):
             if not page["has_more"]:
                 break
         return pages
+
+    def import_document(self, body):
+        """``POST /bootstrap/import`` — the one-shot seed of spec §8.
+
+        The device credential is the principal (the route requires a device
+        bearer) and the logged-in user's access token travels in
+        ``X-Acting-User``, because the host refuses an import without an
+        acting identity and enrolment/import are admin-only. That token is
+        RAM-only, so an absent or expired session raises here instead of
+        sending a request the host can only reject.
+        """
+        return self._request("POST", "/bootstrap/import", body=body,
+                             acting=True)
 
     def push(self, operations):
         """``POST /sync/mutations`` — batched push; conflicts come back as data.

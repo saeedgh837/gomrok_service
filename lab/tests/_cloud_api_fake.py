@@ -11,6 +11,7 @@ contract defines:
 * ``GET  /v1/sync/bootstrap``
 * ``GET  /v1/sync/changes?cursor=&limit=``
 * ``POST /v1/sync/mutations``
+* ``POST /v1/bootstrap/import``  (spec §8, added by workstream K)
 
 What it enforces, because a fake that is lax proves nothing:
 
@@ -24,6 +25,9 @@ What it enforces, because a fake that is lax proves nothing:
   kills the family — spec §5);
 * idempotent ``operation_id`` replay: the second send of an id returns the
   first result and applies nothing;
+* the §8 import gate: the same ``import_id`` replays byte for byte, the same
+  ``import_id`` with different bytes is ``409 IMPORT_CONFLICT``, and any other
+  import of a tenant that already holds rows is ``409 DATASET_NOT_EMPTY``;
 * compare-and-swap on ``row_version`` with ``conflicts[]`` carrying the
   server copy, and a batch that still applies the untouched operations;
 * cursors, ``has_more``, tombstones (``record: null``);
@@ -39,8 +43,10 @@ Nothing here is a real credential: the only password is
 :data:`FAKE_PASSWORD`, and every token is prefixed with ``fake-``.
 """
 import contextlib
+import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 
@@ -76,6 +82,34 @@ _ENTITIES = ("customers", "customer_transactions", "owners", "identities",
 _ENROL_ROLES = frozenset({"admin"})
 
 _MISSING_BODY = "missing or malformed JSON body"
+
+#: `host/src/Ids.php isUuid()` — the only id shape an import may carry.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _is_uuid(value):
+    return isinstance(value, str) and _UUID_RE.match(value.lower()) is not None
+
+
+def _bump_epoch(value):
+    """Spec §8.5: ``dataset_epoch`` is incremented by an import.
+
+    The fake seeds it as an opaque token so bootstrap snapshots stay
+    distinguishable; an int grows by one, a token gains a generation suffix.
+    Either way it must visibly change, because that is what a test asserts.
+    """
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, str):
+        head, marker, generation = value.partition("#")
+        if marker and generation.isdigit():
+            return "%s#%d" % (head, int(generation) + 1)
+        return value + "#1"
+    return 1
 
 
 def _iso(epoch):
@@ -131,6 +165,9 @@ class FakeApi(object):
             self.change_log = []
             self.seq = 0
             self.idempotency = {}
+            # §8: import_id -> {"hash": sha256(canonical collections),
+            #                   "response": the stored result to replay}.
+            self.imports = {}
             self.access_tokens = {}      # token -> {kind, family, device_id}
             self.refresh_tokens = {}     # token -> {kind, family, used}
             self.families = {}           # family -> {revoked}
@@ -473,6 +510,7 @@ class _Handler(BaseHTTPRequestHandler):
             "GET /sync/bootstrap": self._bootstrap,
             "GET /sync/changes": self._changes,
             "POST /sync/mutations": self._mutations,
+            "POST /bootstrap/import": self._bootstrap_import,
         }.get("%s %s" % (method, route))
         if handler is None:
             status, payload = self._envelope(404, "HTTP_404")
@@ -787,6 +825,139 @@ class _Handler(BaseHTTPRequestHandler):
             api.apply_count.get(op["operation_id"], 0) + 1
         api._append_change(entity, record_id, row, stored)
         return {"status": "applied"}
+
+    # ------------------------------------------------------------------
+    # §8: one-shot bootstrap import
+    # ------------------------------------------------------------------
+    def _x_acting_user(self):
+        """The spec §6 ``X-Acting-User`` credential, or None when absent.
+
+        The header is a bearer *user* access token; the device token in
+        ``Authorization`` is checked separately by ``_require_device``. An
+        import needs both (spec §6, §8.2), so a missing header is a 401 even
+        when the device is perfectly healthy.
+        """
+        raw = self.headers.get("X-Acting-User") or ""
+        token = raw[7:].strip() if raw.startswith("Bearer ") else raw.strip()
+        if not token:
+            return None
+        return self.api._access_meta(token, "user")
+
+    @staticmethod
+    def _import_documents(collections):
+        """`collections` → `{entity: [record, …]}`, or ValueError.
+
+        Mirrors `host/src/Import.php normalize()`: every value a JSON array,
+        `settings` also accepted as a single object and wrapped, one settings
+        row at most, and every record carrying the id its entity needs.
+        """
+        out = {}
+        for entity, value in collections.items():
+            if entity not in _ENTITIES:
+                raise ValueError(entity)
+            if entity == "settings" and isinstance(value, dict):
+                value = [value]
+            if not isinstance(value, list):
+                raise ValueError(entity)
+            entries = []
+            for record in value:
+                if not isinstance(record, dict):
+                    raise ValueError(entity)
+                identifier = record.get("id")
+                if entity in ("customer_transactions", "settings"):
+                    # Minted by the client (spec §15.2): a real UUID or bust.
+                    usable = _is_uuid(identifier)
+                else:
+                    usable = (isinstance(identifier, str) and identifier
+                              and len(identifier) <= 64)
+                if not usable:
+                    raise ValueError(entity)
+                entries.append(dict(record))
+            if entity == "settings" and len(entries) > 1:
+                raise ValueError(entity)
+            out[entity] = entries
+        return out
+
+    @staticmethod
+    def _import_row_id(entity, record, installation):
+        """The §4 uuid5 the host would compute for this record."""
+        if entity == "settings":
+            legacy = "settings/settings"          # spec §15.2
+        elif entity == "customer_transactions":
+            return record["id"]                   # minted client-side
+        else:
+            legacy = record["id"]
+        return str(uuid.uuid5(
+            uuid.NAMESPACE_URL, "%s/%s/%s" % (installation, entity, legacy)))
+
+    def _bootstrap_import(self, route, query):
+        api = self.api
+        body = self._body()
+        with api._lock:
+            self._require_device()
+            if self._x_acting_user() is None:
+                status, payload = self._envelope(401, "AUTH_REQUIRED")
+                self._send(status, payload)
+                return status
+            actor = api._acting_user or FAKE_USERNAME
+            if api.users.get(actor, {}).get("role") != "admin":
+                # Spec §7: running an import is an admin capability.
+                status, payload = self._envelope(403, "HTTP_403")
+                self._send(status, payload)
+                return status
+
+            import_id = body.get("import_id")
+            installation = body.get("source_installation_id")
+            collections = body.get("collections")
+            if not _is_uuid(import_id) or not _is_uuid(installation) \
+                    or not isinstance(collections, dict):
+                status, payload = self._envelope(400, "BAD_PAYLOAD")
+                self._send(status, payload)
+                return status
+            try:
+                documents = self._import_documents(collections)
+            except ValueError:
+                status, payload = self._envelope(400, "BAD_PAYLOAD")
+                self._send(status, payload)
+                return status
+            digest = hashlib.sha256(
+                json.dumps(documents, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")).hexdigest()
+
+            previous = api.imports.get(import_id)
+            if previous is not None:
+                if previous["hash"] == digest:
+                    # §8.4: the identical result, byte for byte.
+                    self._send(200, self._ok(dict(previous["response"])))
+                    return 200
+                status, payload = self._envelope(409, "IMPORT_CONFLICT")
+                self._send(status, payload)
+                return status
+            if api.imports or any(rows for rows in api.records.values()):
+                status, payload = self._envelope(409, "DATASET_NOT_EMPTY")
+                self._send(status, payload)
+                return status
+
+            counts = {}
+            for entity in _ENTITIES:
+                counts[entity] = 0
+                for record in documents.get(entity, []):
+                    api.seed(entity, self._import_row_id(entity, record,
+                                                         installation), record)
+                    counts[entity] += 1
+            api.dataset_epoch = _bump_epoch(api.dataset_epoch)
+            response = {
+                "import_id": import_id,
+                "tenant_id": api.tenant_id,
+                "dataset_epoch": api.dataset_epoch,
+                "source_installation_id": installation,
+                "counts": counts,
+                "rows": sum(counts.values()),
+                "cursor": api.seq,
+            }
+            api.imports[import_id] = {"hash": digest, "response": response}
+        self._send(200, self._ok(dict(response)))
+        return 200
 
 
 class _Stop(Exception):
