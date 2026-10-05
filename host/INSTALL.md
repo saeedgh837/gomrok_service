@@ -21,7 +21,7 @@ code in this package.
 | Apache with `mod_rewrite` and `mod_headers` | `public/.htaccess` routes every request and strips CORS |
 | MySQL 5.7+/MariaDB 10.3+ reachable on `127.0.0.1` only | spec §2 |
 | A subdomain with a valid certificate (`api.<domain>`) | spec §2 — TLS is mandatory |
-| SSH or cPanel **Terminal** access | the three `bin/` tools are CLI only |
+| SSH or cPanel **Terminal** access | the four `bin/` tools are CLI only |
 
 Check PHP from the shell cPanel gives you:
 
@@ -67,7 +67,7 @@ Upload the whole `host/` folder **outside** `public_html`, e.g.
 
 ```
 /home/youruser/irica-host/
-├── bin/           migrate.php, create-admin.php, smoke-test.php
+├── bin/           migrate.php, create-admin.php, create-user.php, smoke-test.php
 ├── config/        config.php goes here (you create it in step 3)
 ├── migrations/    001_initial.sql
 ├── public/        ← the ONLY web-reachable directory
@@ -116,7 +116,7 @@ step 1, or `null` if you knowingly gave the app account DDL — don't).
 Config refuses to load while a placeholder is still present, and it refuses
 an all-zero `jwt_secret`.
 
-Leave `smoke_probe_url` as `null` until step 8.
+Leave `smoke_probe_url` as `null` until step 9.
 
 **If the document root lives outside the package** and the `log_path`
 default cannot be created, set `log_path` to a directory the PHP user can
@@ -175,7 +175,40 @@ first enrolled device (spec §7: enrolment is admin-only).
 
 ---
 
-## 6. Verify the install
+## 6. Create one account per colleague
+
+`create-admin.php` is single-use by design, so it is not how a second person
+gets in. **Every colleague gets their own username** — one account per person,
+never a shared login — created by `bin/create-user.php`, the CLI that spec §15
+makes the only way to add an account (there is deliberately no HTTP endpoint
+for it):
+
+```sh
+cd /home/youruser/irica-host
+IRICA_USER_PASSWORD='…' php bin/create-user.php \
+    --username=amir --display-name='Amir' --role=user
+php bin/create-user.php --username=sara --display-name='Sara' --role=user
+php bin/create-user.php --help
+```
+
+* `--role=user` is the **non-administrator**: it reads everything and creates
+  and edits cases, but it may not write `settings`, open or close a period,
+  delete a record, enrol a device or run an import (spec §7). Use
+  `--role=admin` only for somebody who really administers the installation.
+* With no `--password=` and no `IRICA_USER_PASSWORD`, a random password is
+  generated and printed **once** — record it in the password manager
+  immediately, before it scrolls away; it exists nowhere else and no hash is
+  ever printed. Prefer the environment form over `--password=` so the secret
+  stays out of your shell history.
+* A username that already exists — including `admin` — is refused with exit 1
+  and creates nothing.
+* Keep `create-user.php` for as long as the installation runs: it is the only
+  supported way to add an account later. `create-admin.php` is the bootstrap
+  and the password-rotation path, and can be deleted after step 5.
+
+---
+
+## 7. Verify the install
 
 ```sh
 cd /home/youruser/irica-host
@@ -206,7 +239,7 @@ version, no configuration and no dependency detail (spec §6).
 
 ---
 
-## 7. Lock it down
+## 8. Lock it down
 
 1. `chmod 600 config/config.php` and confirm the file is not reachable:
    `curl -sI https://api.<domain>/config/config.php` → `403` or `404`.
@@ -218,12 +251,12 @@ version, no configuration and no dependency detail (spec §6).
    PHP ini. `smoke-test.php` and `public/index.php` both set
    `display_errors = 0` in code as well, so a missing directive degrades
    safely rather than exposing a stack trace.
-3. Remove shell access you do not need. The three `bin/` scripts are the
+3. Remove shell access you do not need. The four `bin/` scripts are the
    only CLI surface; they print no credential.
 
 ---
 
-## 8. Connect the desktop client
+## 9. Connect the desktop client
 
 Set the panel's sync endpoint to `https://api.<domain>/v1` and log in with
 the administrator from step 5. The first push from an empty host is the
@@ -235,7 +268,7 @@ came from.
 
 ---
 
-## 9. Backups, restore and rotation
+## 10. Backups, restore and rotation
 
 * **Back up the database nightly**, encrypted at rest, and *test a restore*.
   The schema is forward-only: the restore path is "load the dump, then run
@@ -259,7 +292,7 @@ came from.
 
 ---
 
-## 10. Upgrades
+## 11. Upgrades
 
 ```sh
 # 1. back up first (dump + config)

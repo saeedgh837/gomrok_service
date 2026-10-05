@@ -410,7 +410,7 @@ keep retention short (see §6).
 * `config/config.php` is included in the encrypted backup and in no other.
 * The application log is *not* a backup asset — it contains no PII and no
   secret, so it needs no special handling beyond ordinary retention.
-* Take a backup before every upgrade (see `INSTALL.md` §10).
+* Take a backup before every upgrade (see `INSTALL.md` §11).
 
 ### 6.2 Restore (the only rollback path)
 
@@ -475,7 +475,7 @@ machines — enrol a device instead.
    upstream (Apache `mod_evasive`, a WAF, or fail2ban) if that becomes real.
 6. **Backups are not verified automatically.** The restore procedure is
    written and the migration half of it is tested; actually loading a dump
-   on a spare database is an operator duty (see `INSTALL.md` §9).
+   on a spare database is an operator duty (see `INSTALL.md` §10).
 
 ---
 

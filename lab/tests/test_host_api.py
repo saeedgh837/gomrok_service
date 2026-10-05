@@ -23,6 +23,10 @@ HTTP. What it proves:
     `base_version` on an unknown row as `server_version: 0` (§6.1);
   * an id owned by another tenant answers 404, never 403 (§7);
   * the role matrix: a non-admin may not write settings or a period (§7);
+  * `bin/create-user.php` mints a `user`-role account that then obeys that
+    whole matrix over HTTP, refuses a duplicate username with exit 1 and no
+    row, and prints a generated password exactly once and never a hash
+    (§15 ruling 17, §10.1);
   * import is idempotent for one `import_id` and refuses the second one with
     `409 DATASET_NOT_EMPTY` (§8);
   * the app account cannot run DDL, no `Access-Control-Allow-Origin` is ever
@@ -475,38 +479,18 @@ def _provision():
     if code != 0:
         raise AssertionError("create-admin failed: %s" % _redact(err or out))
 
-    # 3. a second account with the `user` role — spec §7 has no API endpoint
-    #    for creating users, so the fixture inserts it through the host's own
-    #    password hasher rather than hand-rolling a hash.
-    _php_json("""
-        $db = Database::fromConfig(Config::db());
-        $tenant = $db->queryValue("SELECT id FROM tenants WHERE slug = 'default'");
-        $now = gmdate('Y-m-d H:i:s');
-        $hash = Auth::hashPassword(getenv('IRICA_TEST_USER_PASSWORD'));
-        $existing = $db->queryOne(
-            "SELECT id FROM users WHERE tenant_id = ? AND username = 'member'",
-            [$tenant]);
-        if ($existing !== null) {
-            $db->update('users', ['password_hash' => $hash, 'status' => 'active',
-                'must_change_password' => 0, 'updated_at' => $now],
-                'id = ?', [$existing['id']]);
-            $userId = (string) $existing['id'];
-        } else {
-            $userId = Ids::v4();
-            $db->insert('users', [
-                'id' => $userId, 'tenant_id' => $tenant, 'username' => 'member',
-                'password_hash' => $hash, 'display_name' => 'Sample Member',
-                'must_change_password' => 0, 'status' => 'active',
-                'token_version' => 1, 'last_login_at' => null,
-                'row_version' => 1, 'created_at' => $now, 'updated_at' => $now,
-                'deleted_at' => null, 'deleted_by' => null]);
-            $db->insert('memberships', [
-                'id' => Ids::v4(), 'tenant_id' => $tenant, 'user_id' => $userId,
-                'role' => 'user', 'created_at' => $now, 'updated_at' => $now]);
-        }
-        echo json_encode(['user_id' => $userId,
-                          'tenant' => (string) $tenant]);
-    """, env={"IRICA_TEST_USER_PASSWORD": user_password})
+    # 3. a second account with the `user` role — spec §6 has no API endpoint
+    #    for creating users, so the fixture uses the package's own CLI
+    #    (§15 ruling 17), which is the supported path for every account
+    #    after the first administrator. The password arrives through the
+    #    environment, never on the command line.
+    out, err, code = _run_bin("create-user.php", args=[
+        "--username=member", "--display-name=Sample Member", "--role=user",
+    ], env={"IRICA_USER_PASSWORD": user_password}, expect_ok=False)
+    if code != 0:
+        raise AssertionError("create-user failed: %s" % _redact(err or out))
+    if "PASSWORD (shown once" in out:
+        raise AssertionError("create-user re-printed a supplied password")
 
     _state["tenant_id"] = _sql_value(
         "SELECT id FROM tenants WHERE slug = 'default';")
@@ -1306,6 +1290,185 @@ class HostApiTest(unittest.TestCase):
         status, _payload, _h, _t = _call(
             "POST", "/sync/mutations", {"operations": [plain]}, token=member)
         self.assertEqual(status, 401)
+
+    # -- §15.17: create-user.php (no HTTP user management) ---------------
+
+    def _cli_user(self, prefix, role="user", password=None):
+        """Create an account with the package's CLI; return (name, secret)."""
+        username = "%s-%s" % (prefix, uuid.uuid4().hex[:10])
+        password = password or (prefix.capitalize() + "-"
+                                + secrets.token_urlsafe(14))
+        # Registered before the run so no assertion message can echo it.
+        _passwords.add(password)
+        args = ["--username=" + username, "--role=" + role]
+        out, err, code = _run_bin("create-user.php", args=args,
+                                  env={"IRICA_USER_PASSWORD": password},
+                                  expect_ok=False)
+        self.assertEqual(code, 0, _redact(out + err))
+        # A password handed in on the command line is never printed back,
+        # and no hash ever leaves the process (§10.1, §15.17).
+        self.assertNotIn("PASSWORD (shown once", out)
+        for marker in ("$argon2", "$2y$", "$pbkdf2", "password_hash"):
+            self.assertNotIn(marker, out + err)
+        return username, password
+
+    def test_create_user_cli_account_obeys_the_role_matrix(self):
+        """§7 for an account only the CLI could create (§15.17)."""
+        username, password = self._cli_user("cli")
+        device = _device_token()
+
+        # The account exists and its role comes from the membership row.
+        login = _login(username, password)
+        self.assertEqual(login["user"]["username"], username)
+        self.assertEqual(login["user"]["role"], "user")
+        self.assertIs(login["must_change_password"], True)
+        member = login["access_token"]
+
+        # §7 rows 1 and 4 — read all synced data, read `settings`. Sync
+        # reads are device-credential routes (§6), so a user token alone
+        # is refused as a missing credential (401), never as a role
+        # refusal: no read in this package is gated on the role.
+        status, payload, _h, _t = _call("GET", "/sync/bootstrap", token=member)
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"]["code"], "AUTH_REQUIRED")
+
+        # §7 row 2 — the colleague may create a case record …
+        record = self._new_customer("clirole")
+        result = self._push([record], acting=member)
+        self.assertEqual(result["applied"], [record["operation_id"]])
+
+        # … and the admin may write the settings row (row 5, admin column).
+        admin = _login(_state["admin_user"], _state["admin_password"])[
+            "access_token"]
+        settings_op = {
+            "operation_id": str(uuid.uuid4()), "kind": "upsert",
+            "entity": "settings", "id": _uuid5("settings", "settings/settings"),
+            "base_version": 0,
+            "record": {"id": _uuid5("settings", "settings/settings"),
+                       "business_name": "CLI Role Probe", "business_phone": "",
+                       "watch_interval_hours": 2, "scheduler_enabled": True,
+                       "auto_advance_default": False,
+                       "telegram_report_full_data": True,
+                       "registry_fee_amount": 1, "registration_chat_id": "",
+                       "report_chat_id": "", "sound_enabled": True,
+                       "current_period_id": None, "links": []},
+        }
+        result = self._push([settings_op], acting=admin)
+        self.assertEqual(result["applied"], [settings_op["operation_id"]])
+
+        # Both reads answer on this machine while this user acts.
+        snapshot, _h = _ok("GET", "/sync/bootstrap", token=device,
+                           acting=member)
+        self.assertEqual(len(snapshot["collections"]["customers"]), 1)
+        self.assertEqual(
+            snapshot["collections"]["customers"][0]["record"]["id"], "clirole")
+        self.assertEqual(len(snapshot["collections"]["settings"]), 1)
+        page, _h = _ok("GET", "/sync/changes?cursor=0&limit=50", token=device,
+                       acting=member)
+        self.assertIn("changes", page)
+
+        # §7 row 5 — the same colleague may not write settings.
+        deny = dict(settings_op, operation_id=str(uuid.uuid4()))
+        status, payload, _h, _t = _call(
+            "POST", "/sync/mutations", {"operations": [deny]},
+            token=device, acting=member)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
+
+        # §7 row 3 — no opening a period, no deleting a record.
+        period_op = {
+            "operation_id": str(uuid.uuid4()), "kind": "upsert",
+            "entity": "periods", "id": str(uuid.uuid4()), "base_version": 0,
+            "record": {"id": "cliusrpr1", "number": 98,
+                       "label": "CLI Role Probe", "opened_at":
+                       "2026-02-01T00:00:00+00:00", "opened_by": "admin",
+                       "closed_at": None, "closed_by": "",
+                       "closed_reason": ""},
+        }
+        status, payload, _h, _t = _call(
+            "POST", "/sync/mutations", {"operations": [period_op]},
+            token=device, acting=member)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
+
+        delete = {"operation_id": str(uuid.uuid4()), "kind": "delete",
+                  "entity": "customers", "id": record["id"], "base_version": 1}
+        status, payload, _h, _t = _call(
+            "POST", "/sync/mutations", {"operations": [delete]},
+            token=device, acting=member)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
+
+        # §7 row 6 — enrolling a machine and running the import are admin.
+        status, payload, _h, _t = _call("POST", "/sync-devices/enroll", {},
+                                        token=member)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
+
+        status, payload, _h, _t = _call("POST", "/bootstrap/import",
+                                        self._import_document("clirole"),
+                                        token=device, acting=member)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
+
+    def test_create_user_cli_refuses_a_duplicate_username(self):
+        """§15.17 — a duplicate is a refusal (exit 1) that writes nothing."""
+        username, password = self._cli_user("dup")
+        before = int(_sql_value("SELECT COUNT(*) FROM users;"))
+
+        out, err, code = _run_bin("create-user.php",
+                                  args=["--username=" + username],
+                                  env={"IRICA_USER_PASSWORD": password},
+                                  expect_ok=False)
+        self.assertEqual(code, 1, _redact(out + err))
+        self.assertIn("already exists", (out + err).lower())
+        self.assertEqual(int(_sql_value("SELECT COUNT(*) FROM users;")), before,
+                         "a refused duplicate must not create an account")
+
+        # The first administrator is a duplicate too: create-user never
+        # replaces or re-runs create-admin (§15.17, §8.1).
+        out, err, code = _run_bin(
+            "create-user.php", args=["--username=" + _state["admin_user"]],
+            env={"IRICA_USER_PASSWORD": password}, expect_ok=False)
+        self.assertEqual(code, 1, _redact(out + err))
+        self.assertIn("already exists", (out + err).lower())
+        self.assertEqual(int(_sql_value("SELECT COUNT(*) FROM users;")), before,
+                         "an admin username must not be taken over")
+
+    def test_create_user_cli_generates_and_prints_the_password_once(self):
+        """§15.17 / §10.1 — no seed, no hash, one printing, then it works."""
+        username = "gen-%s" % uuid.uuid4().hex[:10]
+        # Pinned so a stray IRICA_USER_PASSWORD cannot turn this run into a
+        # supplied-password run; an empty value is "absent" to the script.
+        out, err, code = _run_bin("create-user.php",
+                                  args=["--username=" + username, "--quiet"],
+                                  env={"IRICA_USER_PASSWORD": ""},
+                                  expect_ok=False)
+        match = re.search(r"PASSWORD \(shown once[^)]*\):\n  (\S+)\n", out)
+        password = match.group(1) if match else ""
+        if password:
+            # From here on every assertion message is redacted.
+            _passwords.add(password)
+        self.assertEqual(code, 0, _redact(out + err))
+        self.assertIsNotNone(match, _redact(out + err))
+
+        self.assertEqual(out.count("PASSWORD (shown once"), 1)
+        self.assertEqual(out.count(password), 1,
+                         "the generated password must be printed exactly once")
+        self.assertNotIn(password, err)
+        # Nothing that could be used to recover the stored credential.
+        for marker in ("$argon2", "$2y$", "$pbkdf2", "password_hash"):
+            self.assertNotIn(marker, out + err)
+        # --quiet prints only the outcome, never the account's metadata.
+        self.assertTrue(out.startswith("OK    user created"))
+        self.assertNotIn("user id:", out)
+        self.assertGreaterEqual(len(password), 12)
+        self.assertRegex(password, r"^[A-Za-z0-9_-]+$")
+
+        # The printed value really is the credential of that account.
+        login = _login(username, password)
+        self.assertEqual(login["user"]["username"], username)
+        self.assertEqual(login["user"]["role"], "user")
 
     # -- §8: bootstrap / import ------------------------------------------
 
