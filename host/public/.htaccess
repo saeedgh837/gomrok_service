@@ -1,0 +1,66 @@
+# Apache configuration for the IRICA cloud-sync API document root.
+#
+# Contract: lab/docs/CLOUD_SYNC_SPEC.md §10.7 (CORS closed), §10.8 (dot-files
+# and config/, src/, migrations/, bin/ are denied), §2 (HTTP is redirected to
+# HTTPS except on loopback, which is what the health probe uses).
+#
+# The document root MUST be this directory (host/public). Everything the
+# application needs outside it — config/, src/, migrations/, bin/ — lives one
+# level up and is therefore not URL-reachable at all; the rules below are the
+# belt to that braces, in case a vhost is ever pointed at the package root.
+
+Options -Indexes -MultiViews
+ServerSignature Off
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Spec §10.8 — never serve the package internals, whatever the vhost says.
+    RewriteRule ^(src|config|migrations|bin)(/|$) - [F,L]
+
+    # Dot-files, editor backups and the .htaccess itself.
+    RewriteRule (^|/)\. - [F,L]
+
+    # Spec §2 — HTTPS is mandatory. Loopback is exempt for the health probe;
+    # a reverse proxy that already terminated TLS says so with
+    # X-Forwarded-Proto and is allowed through (PHP re-checks the header).
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !https
+    RewriteCond %{REMOTE_ADDR} !^127\.
+    RewriteCond %{REMOTE_ADDR} !^::1$
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Everything else goes through the front controller.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Spec §10.7 — no Access-Control-Allow-Origin is ever sent; these two
+    # lines also remove one another module might have added.
+    Header always unset Access-Control-Allow-Origin
+    Header always unset Access-Control-Allow-Credentials
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Cache-Control "no-store"
+    # The API never stores anything a browser could replay.
+    Header always unset Set-Cookie
+</IfModule>
+
+<IfModule mod_php.c>
+    php_flag display_errors off
+    php_flag log_errors on
+    php_flag session.use_only_cookies on
+    php_value upload_max_filesize 16M
+    php_value post_max_size 17M
+</IfModule>
+
+# A stray dot-file served as a static asset would bypass every rule above.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# The Apache configuration files themselves.
+<FilesMatch "^\.ht">
+    Require all denied
+</FilesMatch>

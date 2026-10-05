@@ -1,0 +1,5 @@
+# The real configuration holds the database password and the token signing
+# key. It is created on the host and must never enter the repository
+# (spec §10.8). config.example.php, which holds placeholders only, is not
+# covered by this rule.
+config.php
