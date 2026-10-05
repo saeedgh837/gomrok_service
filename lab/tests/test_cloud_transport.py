@@ -1220,6 +1220,18 @@ class TestOutbox(DataDirCase):
         return {"kind": "upsert", "entity": "owners", "id": identifier,
                 "base_version": 0, "record": {"name": identifier}}
 
+    def test_a_default_outbox_lives_in_the_data_directory(self):
+        # OUTBOX_FILE_NAME is a path *relative to* the data directory, but
+        # app_paths.data_path() refuses any separator. Resolving the default
+        # through it therefore raised ValueError, so an Outbox built without
+        # an explicit path could never load or push. The default must land on
+        # exactly the same file the callers join by hand.
+        default = Outbox()
+        self.assertEqual(os.path.abspath(default.path),
+                         os.path.abspath(self.path()))
+        default.enqueue(self.operation("d"), operation_id="op-d")
+        self.assertEqual(len(Outbox().load()), 1)
+
     def test_enqueue_writes_a_line_and_reloads(self):
         outbox = Outbox(path=self.path())
         outbox.enqueue(self.operation("a"), operation_id="op-a")

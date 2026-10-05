@@ -228,7 +228,16 @@ class Outbox(object):
     def path(self):
         if self._path is not None:
             return self._path
-        return app_paths.data_path(OUTBOX_FILE_NAME)
+        # OUTBOX_FILE_NAME is the queue's path *relative to the data
+        # directory* (callers join it to their own root that way), so the
+        # default resolves it segment by segment: app_paths.data_path()
+        # deliberately refuses a separator, which made the default unusable
+        # -- every outbox built without an explicit path raised ValueError
+        # before it could ever push.
+        parts = OUTBOX_FILE_NAME.replace("\\", "/").split("/")
+        directory = app_paths.data_subdir(*parts[:-1]) \
+            if len(parts) > 1 else app_paths.data_dir()
+        return os.path.join(directory, parts[-1])
 
     @property
     def max_pending(self):

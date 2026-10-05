@@ -1259,6 +1259,636 @@ def public_telegram_config():
             "token_set": bool(str(cfg.get("bot_token") or "").strip())}
 
 
+# =====================================================================
+# Cloud sync surface (spec §5, §9, §11) — workstream D
+# =====================================================================
+# Panel-side only: it drives cloud_sync, never re-implements it, and every
+# import of that package is local so panel.py still imports and starts when
+# the sync package cannot be loaded at all.
+
+#: Persian wording for every stable code the client can emit (spec §11).
+#: Keys are codes, never sentences. A code has already passed manager
+#: ruling 8's grammar before it can reach this table, so a phone number, a
+#: token or a server sentence is structurally impossible here; the server's
+#: own `error.message` is never accepted anywhere in this section.
+CLOUD_ERROR_MESSAGES = {
+    "AUTH_REQUIRED": "نام کاربری یا رمز عبور پذیرفته نشد؛ دوباره تلاش کنید.",
+    "AUTH_EXPIRED": "نشست میزبان منقضی شده است؛ دوباره وارد شوید.",
+    "AUTH_REVOKED": "دسترسی این دستگاه لغو شده است؛ با مدیر سامانه تماس بگیرید.",
+    "ENROL_REQUIRED": "این دستگاه هنوز در میزبان ثبت نشده است؛ ابتدا وارد شوید.",
+    "BAD_PAYLOAD": "پاسخ میزبان قابل خواندن نبود؛ دوباره تلاش کنید.",
+    "VERSION_CONFLICT": "برخی رکوردها هم‌زمان ویرایش شده‌اند؛ تداخل‌ها را بررسی کنید.",
+    "HTTP_400": "درخواست نامعتبر بود؛ تنظیمات اتصال را بررسی کنید.",
+    "HTTP_403": "مجوز کافی نیست؛ با مدیر سامانه تماس بگیرید.",
+    "HTTP_404": "آدرس میزبان یافت نشد؛ تنظیمات اتصال را بررسی کنید.",
+    "HTTP_409": "تداخل داده رخ داده است؛ تداخل‌ها را بررسی کنید.",
+    "HTTP_429": "درخواست‌ها زیاد بود؛ کمی بعد دوباره تلاش کنید.",
+    "HTTP_500": "میزبان خطای داخلی دارد؛ کمی بعد دوباره تلاش کنید.",
+    "HTTP_ERROR": "میزبان این درخواست را نپذیرفت؛ تنظیمات اتصال را بررسی کنید.",
+    "SERVER_ERROR": "پاسخ میزبان قابل استفاده نبود؛ دوباره تلاش کنید.",
+    "NET_TIMEOUT": "پاسخ میزبان دیر رسید؛ اتصال اینترنت را بررسی کنید.",
+    "NET_UNREACHABLE": "ارتباط با میزبان برقرار نشد؛ اتصال اینترنت را بررسی کنید.",
+    "QUEUE_FULL": "صف انتظار پر است؛ پیش از ادامه، وضعیت را بررسی کنید.",
+    "LEASE_EXPIRED": ("مهلت کارکرد آفلاین به پایان رسیده است؛ دستگاه "
+                      "فقط‌خواندنی شده و باید دوباره وارد شوید."),
+    "IMPORT_REJECTED": "انتقال داده‌ها پذیرفته نشد؛ با مدیر سامانه تماس بگیرید.",
+    "CONFIG_INVALID": "پیکربندی اتصال نامعتبر است؛ تنظیمات را دوباره وارد کنید.",
+    "SECRET_UNAVAILABLE": "ذخیره‌ی امن در دسترس نیست؛ اتصال برقرار نمی‌شود.",
+    "TRANSITION_NOT_LEGAL": ("این عملیات در وضعیت فعلی مجاز نیست؛ صفحه را "
+                             "تازه‌سازی کنید."),
+    "UNRESOLVED_REFERENCE": ("رکورد وابسته‌ای روی این دستگاه پیدا نشد؛ "
+                             "تداخل‌ها را بررسی کنید."),
+}
+
+#: A code that fits the grammar but is unknown to this build: still generic
+#: Persian, never the code's origin and never a server sentence.
+CLOUD_UNKNOWN_MESSAGE = "خطای همگام‌سازی؛ کد آن را به پشتیبانی اعلام کنید."
+
+#: Why the worker did nothing, in words. These are states, not faults, so
+#: they carry no code; everything that IS a fault goes through the table.
+CLOUD_BEAT_WORDS = {
+    "disabled": "همگام‌سازی خاموش است.",
+    "not_configured": "هنوز پیکربندی نشده است.",
+    "awaiting_login": "در انتظار ورود به میزبان.",
+}
+
+#: Codes that mean "the host session is not usable" (spec §9: surface, stop).
+_CLOUD_AUTH_CODES = frozenset({"AUTH_REQUIRED", "AUTH_EXPIRED", "AUTH_REVOKED"})
+
+#: The host user the panel is acting as. RAM only, like the tokens behind it
+#: (spec §5): nothing on disk ever remembers who signed in.
+_CLOUD_ACTOR = None
+_CLOUD_MUST_CHANGE = False
+#: The last worker beat, for the "is my edit draining?" line (spec §9).
+_CLOUD_LAST_BEAT = None
+_CLOUD_RUNTIME = None
+_CLOUD_RUNTIME_LOCK = threading.RLock()
+
+
+def cloud_error_message(code):
+    """The Persian text for a stable `code`, or None when it is not a code.
+
+    Only a string matching cloud_sync.state's code grammar is ever looked
+    up; anything else — a server sentence, a token, a fragment — returns
+    None and is therefore never rendered (spec §6, §11).
+    """
+    if not isinstance(code, str) or not code:
+        return None
+    from cloud_sync.state import ERROR_CODE_RE, MAX_CODE_LENGTH
+    if len(code) > MAX_CODE_LENGTH or ERROR_CODE_RE.match(code) is None:
+        return None
+    return CLOUD_ERROR_MESSAGES.get(code, CLOUD_UNKNOWN_MESSAGE)
+
+
+def cloud_error_body(code, status=400):
+    """The panel's own envelope carrying one mapped code (spec §11).
+
+    An unusable `code` is replaced rather than shown: the response always
+    names a code this build can translate.
+    """
+    if cloud_error_message(code) is None:
+        code = "SERVER_ERROR"
+    return {"ok": False, "errors": [cloud_error_message(code)],
+            "code": code}, status
+
+
+def _cloud_build_runtime():
+    """Assemble config / machine / lease / outbox / client / worker.
+
+    Construction only: nothing here talks to the network, and the objects
+    are built from the data directory (spec §5). Any failure surfaces as a
+    coded CloudSyncError or OSError and is answered by the route guard.
+    """
+    from cloud_sync.auth import TokenVault
+    from cloud_sync.client import SyncClient
+    from cloud_sync.config import load_config
+    from cloud_sync.lease import OfflineLease
+    from cloud_sync.outbox import Outbox, OutboxWorker, OUTBOX_FILE_NAME
+    from cloud_sync.state import SyncStateMachine
+
+    config = load_config()
+    machine = SyncStateMachine.load()
+    lease = OfflineLease.load()
+    # cloud_sync/outbox.py names its file "cloud_sync/outbox.jsonl", but
+    # app_paths.data_path() takes plain file names only, so the constant
+    # raises before the queue can be read. Resolve the very same location
+    # the constant names and hand it over explicitly; the queue keeps the
+    # path its owner intends, and nothing in cloud_sync is modified here.
+    outbox_path = os.path.join(app_paths.data_subdir("cloud_sync"),
+                               os.path.basename(OUTBOX_FILE_NAME))
+    outbox = Outbox(path=outbox_path)
+    client = SyncClient(config=config, vault=TokenVault())
+    return {
+        "config": config,
+        "machine": machine,
+        "lease": lease,
+        "outbox": outbox,
+        "client": client,
+        # Auth hooks are NOT wired here: bind_auth() is bound for the length
+        # of one worker beat only, so a host login route fires exactly one
+        # event of its own instead of one from the client as well (§15.12).
+        "worker": OutboxWorker(outbox, client, machine, lease),
+    }
+
+
+def _cloud_runtime(refresh=False):
+    """The cached sync runtime; `refresh` rebuilds it after a config write."""
+    global _CLOUD_RUNTIME
+    with _CLOUD_RUNTIME_LOCK:
+        if refresh or _CLOUD_RUNTIME is None:
+            _CLOUD_RUNTIME = _cloud_build_runtime()
+        return _CLOUD_RUNTIME
+
+
+def cloud_link_state(configured, state_value, read_only):
+    """One word for the whole connection, in the priority §11 asks for."""
+    if not configured:
+        return "unconfigured"
+    if state_value is None:
+        return "error"
+    if read_only or state_value == "read_only":
+        return "read_only"
+    if state_value in ("disabled", "offline", "auth_required",
+                       "not_enrolled", "conflict"):
+        return state_value
+    return "connected"
+
+
+def _cloud_lease_view(lease):
+    """The 7-day lease as the operator needs to see it (spec §5).
+
+    `granted` separates "has never signed in" from "signed in more than
+    seven days ago": only the second is the read-only state §11 names.
+    """
+    if lease is None:
+        return {"granted": False, "expired": False, "seconds_left": 0}
+    granted = getattr(lease, "granted_at", None) is not None
+    expired = bool(granted and lease.is_expired())
+    remaining = 0
+    if granted:
+        try:
+            remaining = max(0, int(lease.remaining()))
+        except (TypeError, ValueError):
+            remaining = 0
+    return {"granted": granted, "expired": expired, "seconds_left": remaining}
+
+
+def _cloud_counts(machine, outbox):
+    """Pending and conflict counts (spec §9). The outbox is the truth for
+    the queue; the machine's own counters answer when it will not load."""
+    pending = int(getattr(machine, "pending_changes", 0) or 0)
+    conflicts = int(getattr(machine, "conflict_count", 0) or 0)
+    if outbox is None:
+        return pending, conflicts
+    try:
+        pending = int(outbox.pending_count())
+        conflicts = max(conflicts, int(outbox.conflict_count()))
+    except (OSError, ValueError, TypeError):
+        pass
+    return pending, conflicts
+
+
+def _cloud_actor(client):
+    """The host user shown where the panel shows `__ACTOR__`, else None.
+
+    RAM only (spec §5): once the user access token is gone from memory the
+    chip empties, because there is no longer a live session behind it.
+    """
+    if not _CLOUD_ACTOR:
+        return None
+    vault = getattr(client, "vault", None)
+    if vault is not None and getattr(vault, "user_access_token", None) is None:
+        return None
+    return _CLOUD_ACTOR
+
+
+def _cloud_status_shell(**overrides):
+    """Every key /cloud-status can return, so the shape never changes."""
+    payload = {
+        "ok": True,
+        "configured": False,
+        "link": "unconfigured",
+        "state": "",
+        "read_only": False,
+        "lease": {"granted": False, "expired": False, "seconds_left": 0},
+        "api_base": "",
+        "tenant_id": "",
+        "device_enrolled": False,
+        "last_sync": None,
+        "pending": 0,
+        "conflicts": 0,
+        "error_code": None,
+        "error_message": None,
+        "actor": None,
+        "must_change_password": False,
+        "worker": "stopped",
+        "worker_last": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def cloud_status_payload(runtime=None):
+    """GET /cloud-status: one JSON snapshot for the settings surface (§11).
+
+    Strictly a read — no network, no state-machine event. Every value is a
+    stable code, a count, a timestamp, a boolean or the non-secret
+    transport configuration: never a token, never a server sentence.
+    """
+    from cloud_sync.errors import CloudSyncError
+    if runtime is None:
+        try:
+            runtime = _cloud_runtime()
+        except CloudSyncError as exc:
+            code = exc.code
+            return _cloud_status_shell(link="error", error_code=code,
+                                       error_message=cloud_error_message(code),
+                                       worker_last=_cloud_beat_view())
+        except (OSError, ValueError):
+            return _cloud_status_shell(
+                link="error", error_code="CONFIG_INVALID",
+                error_message=cloud_error_message("CONFIG_INVALID"),
+                worker_last=_cloud_beat_view())
+    config = runtime.get("config")
+    machine = runtime.get("machine")
+    outbox = runtime.get("outbox")
+    client = runtime.get("client")
+    configured = bool(getattr(config, "api_base", None))
+    lease_view = _cloud_lease_view(runtime.get("lease"))
+    state_value = getattr(getattr(machine, "state", None), "value", None)
+    read_only = lease_view["expired"] or state_value == "read_only"
+    pending, conflicts = _cloud_counts(machine, outbox)
+    error_code = getattr(machine, "last_error_code", None)
+    if cloud_error_message(error_code) is None:
+        error_code = None
+    thread = _CLOUD_WORKER_THREAD
+    return _cloud_status_shell(
+        configured=configured,
+        link=cloud_link_state(configured, state_value, read_only),
+        state=state_value or "",
+        read_only=read_only,
+        lease=lease_view,
+        api_base=(getattr(config, "api_base", "") or ""),
+        tenant_id=(getattr(config, "tenant_id", "") or ""),
+        device_enrolled=bool(getattr(config, "sync_device_id", None)),
+        last_sync=getattr(machine, "last_successful_sync", None),
+        pending=pending,
+        conflicts=conflicts,
+        error_code=error_code,
+        error_message=cloud_error_message(error_code),
+        actor=_cloud_actor(client),
+        must_change_password=bool(_CLOUD_MUST_CHANGE),
+        worker=("running" if thread is not None and thread.is_alive()
+                else "stopped"),
+        worker_last=_cloud_beat_view(),
+    )
+
+
+def _cloud_save_machine(runtime):
+    """Persist a transition so the next start resumes from it.
+
+    An OSError is deliberately NOT caught: at a route the guard turns it
+    into CONFIG_INVALID, and in the worker the loop records it. Losing a
+    transition silently is what cloud_sync/state.py warns about.
+    """
+    machine = runtime.get("machine")
+    if machine is not None:
+        machine.save()
+
+
+def _cloud_actor_name(payload, fallback):
+    """The host username to render where the panel renders `__ACTOR__`.
+
+    Prefers the server's own `user.username`; falls back to what the
+    operator typed. Printable characters only, capped at 64, so a hostile
+    or careless server cannot push markup or a paragraph into the chip.
+    """
+    candidate = None
+    if isinstance(payload, dict):
+        user = payload.get("user")
+        if isinstance(user, dict):
+            candidate = user.get("username")
+    if not isinstance(candidate, str) or not candidate.strip():
+        candidate = fallback
+    candidate = "".join(ch for ch in str(candidate)
+                        if ch.isprintable()).strip()
+    return candidate[:64]
+
+
+def cloud_save_config(payload):
+    """Persist the transport settings and (re)start the worker (spec §5).
+
+    Validation stays in cloud_sync.config — the rules that refuse a
+    non-HTTPS base off-loopback are the client's, and duplicating them here
+    is how the two would drift.
+    """
+    from cloud_sync.config import CloudConfig, load_config
+    if not isinstance(payload, dict):
+        raise ValueError("cloud config body must be an object")
+    api_base = str(payload.get("api_base") or "").strip()
+    tenant_id = str(payload.get("tenant_id") or "").strip()
+    if not api_base:
+        raise ValueError("cloud config requires an api_base")
+    current = load_config().to_dict()
+    current["api_base"] = api_base
+    current["tenant_id"] = tenant_id or None
+    # from_dict re-runs every validation on the assembled record, and keeps
+    # the device id, installation id and cursor that are already on disk.
+    CloudConfig.from_dict(current).save()
+    cloud_worker_start()
+    return cloud_status_payload(_cloud_runtime(refresh=True)), 200
+
+
+def _cloud_apply_login_event(runtime):
+    """Fire exactly ONE event for a successful login (manager ruling 12).
+
+    The choice is exhaustive over the state set, so the event is legal from
+    every state; a race with the worker can still refuse it, and that
+    refusal propagates to the route, which reports it by name instead of
+    letting the panel's generic handler swallow it.
+    """
+    from cloud_sync.state import SyncEvent, SyncState
+    machine = runtime["machine"]
+    if machine is None:
+        return
+    state = machine.state
+    if state is SyncState.NOT_ENROLLED:
+        event = SyncEvent.ENROL
+    elif state is SyncState.DISABLED:
+        event = SyncEvent.ENABLE
+    else:
+        event = SyncEvent.AUTH_OK
+    machine.apply(event)
+    _cloud_save_machine(runtime)
+
+
+def cloud_login(username, password):
+    """Sign in to the host (spec §5, §11). Raises; the route maps faults.
+
+    The password goes to ``/auth/login`` and nowhere else — never stored,
+    never logged, never echoed back. On success the panel keeps only what
+    §5 allows in RAM (the user tokens) plus the username it must show.
+    """
+    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE
+    username = str(username or "").strip()
+    password = str(password or "")
+    if not username or not password:
+        # Surfaced by the route as BAD_PAYLOAD from the Persian table.
+        raise ValueError("cloud login requires a username and a password")
+    runtime = _cloud_runtime()
+    client = runtime["client"]
+    payload = client.login(username, password)
+    # A completed authentication renews the 7-day offline lease (spec §5).
+    runtime["lease"].grant()
+    _CLOUD_ACTOR = _cloud_actor_name(payload, username)
+    _CLOUD_MUST_CHANGE = bool(payload.get("must_change_password"))
+    if not runtime["config"].sync_device_id:
+        # Enrolment needs the live user access token login just minted, so
+        # this is the only place it can happen (spec §5). enroll() persists
+        # the device id and the DPAPI-protected refresh token itself.
+        client.enroll()
+    _cloud_apply_login_event(runtime)
+    return {"ok": True, "actor": _CLOUD_ACTOR,
+            "must_change_password": _CLOUD_MUST_CHANGE,
+            "enrolled": bool(runtime["config"].sync_device_id)}, 200
+
+
+def cloud_logout():
+    """Sign out of the host. Local data, queue and state stay untouched —
+    spec §11's disconnect must never cost the operator a saved edit."""
+    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE
+    from cloud_sync.errors import CloudSyncError
+    runtime = _cloud_runtime()
+    client = runtime["client"]
+    try:
+        client.logout()
+    except CloudSyncError as exc:
+        # A session that is already dead is signed out as far as this panel
+        # is concerned; anything else (network, server) is the operator's.
+        if exc.code not in _CLOUD_AUTH_CODES:
+            raise
+    finally:
+        vault = getattr(client, "vault", None)
+        clear = getattr(vault, "clear_user", None)
+        if callable(clear):
+            clear()
+        _CLOUD_ACTOR = None
+        _CLOUD_MUST_CHANGE = False
+    return {"ok": True, "actor": None, "must_change_password": False}, 200
+
+
+def cloud_sync_now():
+    """Wake the worker immediately so "my edit was sent" is visible rather
+    than assumed (spec §9). Never runs a batch on the request thread."""
+    if not _cloud_configured():
+        return cloud_error_body("CONFIG_INVALID", 409)
+    thread = cloud_worker_start()
+    cloud_worker_kick()
+    return {"ok": True, "queued": True,
+            "worker": "running" if thread is not None else "stopped"}, 200
+
+
+def _cloud_configured():
+    """Whether a base URL exists. A predicate, so it must never raise: an
+    unreadable or malformed config counts as unconfigured and therefore as
+    a closed door to the network (fail closed, not open)."""
+    try:
+        from cloud_sync.config import load_config
+        return bool(load_config().api_base)
+    except Exception:
+        return False
+
+
+def _cloud_note_beat(**fields):
+    """Record one worker beat for /cloud-status (spec §9 observability)."""
+    global _CLOUD_LAST_BEAT
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    entry.update(fields)
+    _CLOUD_LAST_BEAT = entry
+    return entry
+
+
+def _cloud_beat_view():
+    """The last worker beat with its Persian sentence already attached.
+
+    Built here so there is exactly one place that turns a code into words
+    (spec §11): the page never keeps its own copy of the table.
+    """
+    if not _CLOUD_LAST_BEAT:
+        return None
+    view = dict(_CLOUD_LAST_BEAT)
+    view["message"] = (CLOUD_BEAT_WORDS.get(view.get("skipped"))
+                       or cloud_error_message(view.get("code")))
+    return view
+
+
+def _cloud_stop_for_lease(runtime):
+    """An expired lease stops network sync entirely (manager ruling 11).
+
+    Fires LEASE_EXPIRED exactly once — never while the machine is already
+    READ_ONLY — and never reaches the socket.
+    """
+    from cloud_sync.state import IllegalTransitionError, SyncEvent, SyncState
+    machine = runtime["machine"]
+    if machine is not None and machine.state is not SyncState.READ_ONLY:
+        try:
+            machine.apply(SyncEvent.LEASE_EXPIRED)
+        except IllegalTransitionError:
+            # DISABLED has no LEASE_EXPIRED edge: recorded, not swallowed.
+            return _cloud_note_beat(code="TRANSITION_NOT_LEGAL")
+        _cloud_save_machine(runtime)
+    return _cloud_note_beat(code="LEASE_EXPIRED")
+
+
+def cloud_worker_beat():
+    """One synchronous outbox beat (spec §9). Returns a JSON-safe note.
+
+    Never raises. The two state-machine faults are caught BY NAME here and
+    again in the loop (manager ruling 12): a transition landing in one of
+    panel.py's generic handlers is precisely the silent drift spec §15.12
+    exists to prevent.
+    """
+    from cloud_sync.lease import LeaseExpiredError
+    from cloud_sync.state import IllegalTransitionError
+    try:
+        if os.environ.get("IRICA_CLOUD_WORKER_OFF") == "1":
+            return _cloud_note_beat(skipped="disabled")
+        runtime = _cloud_runtime()
+        if not runtime["config"].api_base:
+            # Nothing reaches the network before the operator configured a
+            # base URL (spec §11 "not configured").
+            return _cloud_note_beat(skipped="not_configured")
+        lease = runtime["lease"]
+        if lease.granted_at is None:
+            # Never authenticated: this is "not connected", NOT the 7-day
+            # read-only state, so no LEASE_EXPIRED event is owed (spec §5).
+            return _cloud_note_beat(skipped="awaiting_login")
+        if lease.is_expired():
+            return _cloud_stop_for_lease(runtime)
+        worker = runtime["worker"]
+        previous = worker.bind_auth()
+        try:
+            outcome = worker.run_once()
+        finally:
+            worker.unbind_auth(previous)
+        _cloud_save_machine(runtime)
+        return _cloud_note_beat(
+            attempted=bool(getattr(outcome, "attempted", False)),
+            applied=int(getattr(outcome, "applied", 0) or 0),
+            conflicts=int(getattr(outcome, "conflicts", 0) or 0),
+            code=getattr(outcome, "code", None),
+            terminal=getattr(outcome, "terminal", None))
+    except LeaseExpiredError:
+        return _cloud_note_beat(code="LEASE_EXPIRED")
+    except IllegalTransitionError:
+        return _cloud_note_beat(code="TRANSITION_NOT_LEGAL")
+
+
+_CLOUD_WORKER_INTERVAL = 15.0
+_CLOUD_WORKER_THREAD = None
+_CLOUD_WORKER_CV = threading.Condition()
+_CLOUD_WORKER_STOP = False
+_CLOUD_WORKER_KICK = False
+
+
+def _cloud_worker_loop():
+    """The sync beat: bounded interval, daemon, never a tight loop.
+
+    Same shape as _crm_scheduler_loop: a fault becomes an observable note
+    and the loop lives on. The two machine faults are caught BY NAME
+    before the generic backstop, and no message text is ever recorded.
+    """
+    from cloud_sync.lease import LeaseExpiredError
+    from cloud_sync.state import IllegalTransitionError
+    global _CLOUD_WORKER_KICK
+    while True:
+        with _CLOUD_WORKER_CV:
+            if not (_CLOUD_WORKER_STOP or _CLOUD_WORKER_KICK):
+                # One bounded wait; a kick or a stop notifies and returns
+                # early, a timeout returns after _CLOUD_WORKER_INTERVAL.
+                _CLOUD_WORKER_CV.wait(_CLOUD_WORKER_INTERVAL)
+            if _CLOUD_WORKER_STOP:
+                return
+            _CLOUD_WORKER_KICK = False
+        try:
+            cloud_worker_beat()
+        except IllegalTransitionError:
+            _cloud_note_beat(code="TRANSITION_NOT_LEGAL")
+        except LeaseExpiredError:
+            _cloud_note_beat(code="LEASE_EXPIRED")
+        except Exception:
+            # Never raise into the panel. Only a stable code is recorded —
+            # never the exception text (spec §5: no free text, no data).
+            _cloud_note_beat(code="SERVER_ERROR", fault="UNEXPECTED")
+
+
+def cloud_worker_start():
+    """Start the beat thread, or None when it is off or unconfigured.
+
+    Started from main() like crm_scheduler_start(), and again by the config
+    route: nothing runs before a base URL exists (spec §9, §11).
+    """
+    global _CLOUD_WORKER_THREAD, _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK
+    if os.environ.get("IRICA_CLOUD_WORKER_OFF") == "1":
+        return None
+    if _CLOUD_WORKER_THREAD is not None and _CLOUD_WORKER_THREAD.is_alive():
+        return _CLOUD_WORKER_THREAD
+    if not _cloud_configured():
+        return None
+    with _CLOUD_WORKER_CV:
+        _CLOUD_WORKER_STOP = False
+        _CLOUD_WORKER_KICK = False
+        thread = threading.Thread(target=_cloud_worker_loop,
+                                  name="cloud-sync", daemon=True)
+        _CLOUD_WORKER_THREAD = thread
+    thread.start()
+    return thread
+
+
+def cloud_worker_stop():
+    """Ask the beat to end. Returns the thread so a caller can join it."""
+    global _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK
+    with _CLOUD_WORKER_CV:
+        _CLOUD_WORKER_STOP = True
+        _CLOUD_WORKER_KICK = False
+        _CLOUD_WORKER_CV.notify_all()
+    return _CLOUD_WORKER_THREAD
+
+
+def cloud_worker_kick():
+    """Ask for one beat now, without blocking the request that asked."""
+    global _CLOUD_WORKER_KICK
+    with _CLOUD_WORKER_CV:
+        _CLOUD_WORKER_KICK = True
+        _CLOUD_WORKER_CV.notify_all()
+
+
+def _cloud_route_guard(action, *args):
+    """Run one cloud POST action at the route boundary (spec §15.12).
+
+    `IllegalTransitionError` and `LeaseExpiredError` are caught BY NAME and
+    turned into a coded Persian answer. panel.py already has dozens of
+    generic `except Exception` sites; a machine event landing in one of
+    them would vanish without a trace, which is exactly what ruling 12
+    forbids.
+    """
+    from cloud_sync.errors import CloudSyncError
+    from cloud_sync.lease import LeaseExpiredError
+    from cloud_sync.state import IllegalTransitionError
+    try:
+        return action(*args)
+    except IllegalTransitionError:
+        return cloud_error_body("TRANSITION_NOT_LEGAL", 409)
+    except LeaseExpiredError:
+        return cloud_error_body("LEASE_EXPIRED", 409)
+    except CloudSyncError as exc:
+        return cloud_error_body(
+            exc.code, 401 if exc.code in _CLOUD_AUTH_CODES else 400)
+    except (TypeError, ValueError):
+        return cloud_error_body("BAD_PAYLOAD", 400)
+    except OSError:
+        return cloud_error_body("CONFIG_INVALID", 500)
+
 
 def test_telegram_api(attempts=3):
     """Connectivity/auth test via getMe; does not send a message."""
@@ -3177,6 +3807,75 @@ PAGE_HEAD = """<!DOCTYPE html>
   .token-badge.ok { color:var(--ok); background:var(--ok-soft); }
   .token-badge.warn { color:var(--busy); background:var(--busy-soft); }
   #tg_token { -webkit-text-security:disc; user-select:none; }
+  /* --- cloud sync surface (spec §11): one state pill, never colour alone,
+     fixed-height facts so a state change cannot shift the layout --- */
+  .cloud-card { display:grid; gap:13px; }
+  .cloud-banner { display:none; gap:11px; align-items:flex-start; padding:13px 15px;
+    border:1px solid color-mix(in srgb,var(--busy) 45%,var(--line));
+    border-inline-start:5px solid var(--busy); border-radius:12px;
+    background:var(--busy-soft); color:var(--txt); }
+  .cloud-banner.on { display:flex; }
+  .cloud-banner .cloud-banner-b { font-size:13.5px; font-weight:750; color:var(--busy); }
+  .cloud-banner .cloud-banner-p { margin:6px 0 0; font-size:12px; line-height:1.85; }
+  .cloud-state-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-height:32px; }
+  .cloud-pill { display:inline-flex; align-items:center; gap:7px; min-inline-size:168px;
+    justify-content:flex-start; padding:6px 13px; border-radius:999px; border:1px solid transparent;
+    font-size:12px; font-weight:700; }
+  .cloud-pill .ic { flex:none; }
+  .cloud-pill.ok { color:var(--ok); background:var(--ok-soft);
+    border-color:color-mix(in srgb,var(--ok) 30%,var(--line)); }
+  .cloud-pill.warn { color:var(--busy); background:var(--busy-soft);
+    border-color:color-mix(in srgb,var(--busy) 30%,var(--line)); }
+  .cloud-pill.bad { color:var(--danger); background:var(--danger-soft);
+    border-color:color-mix(in srgb,var(--danger) 30%,var(--line)); }
+  .cloud-pill.mute { color:var(--muted); background:var(--card); border-color:var(--line); }
+  .cloud-actor { display:none; align-items:center; gap:7px; font-size:12px; color:var(--muted); }
+  .cloud-actor.on { display:inline-flex; }
+  .cloud-actor b { color:var(--txt); font-weight:700; }
+  .cloud-facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
+  .cloud-fact { display:flex; flex-direction:column; justify-content:space-between; gap:6px;
+    min-height:64px; padding:11px 12px; border:1px solid var(--line); border-radius:11px;
+    background:var(--card); }
+  .cloud-fact-l { font-size:10.5px; color:var(--muted); line-height:1.6; }
+  .cloud-fact-v { font-size:15px; font-weight:750; color:var(--txt); word-break:break-word; }
+  .cloud-fact-v.cloud-code { direction:ltr; text-align:right; font-family:var(--mono);
+    font-size:12.5px; letter-spacing:.4px; color:var(--busy); overflow-wrap:anywhere; }
+  .cloud-error { display:none; gap:8px; align-items:flex-start; padding:10px 13px; border-radius:10px;
+    border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line));
+    background:var(--danger-soft); color:var(--danger); font-size:12.5px; line-height:1.8; }
+  .cloud-error.on { display:flex; }
+  .cloud-status { min-height:18px; font-size:12px; color:var(--muted); line-height:1.7; }
+  .cloud-status.ok { color:var(--ok); }
+  .cloud-status.bad { color:var(--danger); }
+  .cloud-actions { display:flex; gap:9px; flex-wrap:wrap; }
+  .cloud-btn { width:auto; min-width:172px; margin-top:0; padding:11px 16px; border:0;
+    border-radius:10px; background:var(--brand); color:var(--on-brand); font-family:inherit;
+    font-size:12.5px; font-weight:650; cursor:pointer; display:inline-flex; align-items:center;
+    justify-content:center; gap:7px; transition:background .15s,opacity .15s;
+    box-shadow:var(--shadow-1); }
+  .cloud-btn:hover { background:var(--brand-hover); }
+  .cloud-btn[disabled] { opacity:.55; cursor:progress; }
+  .cloud-btn.ghost { background:transparent; color:var(--danger);
+    border:1px solid color-mix(in srgb,var(--danger) 40%,var(--line)); box-shadow:none; }
+  .cloud-btn.ghost:hover { background:var(--danger-soft); }
+  .cloud-btn.ghost[disabled] { opacity:.55; }
+  .cloud-block { display:grid; gap:10px; padding-top:13px; border-top:1px dashed var(--line); }
+  .cloud-block > strong { font-size:12.5px; font-weight:700; }
+  .cloud-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .cloud-field { display:grid; gap:6px; min-width:0; }
+  .cloud-field label { font-size:11px; color:var(--muted); }
+  .cloud-field input { min-height:40px; }
+  .cloud-notice { display:none; gap:8px; align-items:flex-start; padding:10px 13px; border-radius:10px;
+    border:1px solid color-mix(in srgb,var(--busy) 40%,var(--line));
+    background:var(--busy-soft); color:var(--busy); font-size:12.5px; line-height:1.8; }
+  .cloud-notice.on { display:flex; }
+  .cloud-conflicts { display:none; gap:9px; padding-top:13px;
+    border-top:1px dashed var(--line); }
+  .cloud-conflicts.on { display:grid; }
+  @media (max-width:900px){
+    .cloud-facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .cloud-fields { grid-template-columns:minmax(0,1fr); }
+  }
   /* --- read-only profile overview --- */
   .profile-overview { display:grid; gap:16px; }
   .profile-overview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
@@ -4152,9 +4851,12 @@ function renderTelegram(){
     '<input id="tg_token" type="password" class="ltr" autocomplete="off" placeholder="'+(TELEGRAM.token_set?'برای تغییر، توکن جدید را وارد کنید (خالی = بدون تغییر)':'توکن ربات را وارد کنید')+'">'+
     '<label>Chat IDها (هر کدام یک خط)</label><textarea id="tg_ids" class="ltr">'+escHtml((TELEGRAM.chat_ids||[]).join('\n'))+'</textarea>'+
     '<button class="save" onclick="saveTelegram()">'+ICON.save+' ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>'+
-    '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>';
+    '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>'+
+    cloudShellHtml();
   renderSystemLogs();
   loadSystemLogs();
+  paintCloud();          // the shell is new: repaint what we already know
+  if(document.getElementById('cloud-sync-section')) loadCloudStatus();
 }
 
 function saveTelegram(){
@@ -4167,6 +4869,225 @@ function saveTelegram(){
   });
 }
 
+/* ------------------------------------------------------------------
+   Cloud sync surface (spec §11). CLOUD.last is the only thing paintCloud
+   reads, so a background poll repaints the status cells and never the
+   form fields — a half-typed password survives every refresh.
+   ------------------------------------------------------------------ */
+var CLOUD={last:null,timer:null,burst:null,busy:false};
+/* Mirrors panel.CLOUD_UNKNOWN_MESSAGE — the one sentence shown when an
+   answer arrives without a coded error of its own (spec §11). Kept equal to
+   the Python table by a test, so the two cannot drift apart. */
+var CLOUD_UNKNOWN_MESSAGE='خطای همگام‌سازی؛ کد آن را به پشتیبانی اعلام کنید.';
+/* The state pill never relies on colour: every entry carries an icon and
+   a word (spec §11, and the panel's own icon language — no emoji). */
+var CLOUD_LINK={
+  unconfigured:{cls:'mute',icon:'dot',label:'پیکربندی‌نشده'},
+  connected:{cls:'ok',icon:'checkCircle',label:'متصل'},
+  syncing:{cls:'ok',icon:'dot',label:'در حال همگام‌سازی'},
+  offline:{cls:'bad',icon:'xCircle',label:'آفلاین'},
+  read_only:{cls:'warn',icon:'alert',label:'فقط‌خواندنی'},
+  auth_required:{cls:'warn',icon:'lock',label:'نیازمند ورود'},
+  not_enrolled:{cls:'warn',icon:'info',label:'ثبت‌نشده'},
+  conflict:{cls:'warn',icon:'alert',label:'نیازمند بررسی تداخل'},
+  disabled:{cls:'mute',icon:'minusCircle',label:'غیرفعال'},
+  error:{cls:'bad',icon:'xCircle',label:'خطا'}
+};
+
+function cloudShellHtml(){
+  return '<div class="settings-section" id="cloud-sync-section">'+
+    '<h3>همگام‌سازی ابری</h3>'+
+    '<p class="hint">وضعیت اتصال، صف انتظار و کد آخرین خطای همگام‌سازی در این بخش دیده می‌شود.</p>'+
+    '<div class="cloud-banner" id="cloud-readonly-banner" role="alert">'+ICON.alert+
+      '<div><span class="cloud-banner-b">دستگاه در حالت فقط‌خواندنی است</span>'+
+      '<p class="cloud-banner-p">مهلت کارکرد آفلاین هفت‌روزه به پایان رسیده است. تا زمانی که دوباره وارد نشوید، ویرایش‌های محلی پذیرفته نمی‌شوند؛ خواندن داده‌ها ادامه دارد.</p></div></div>'+
+    '<div class="cloud-notice" id="cloud-must-change" role="alert">'+ICON.alert+
+      '<div><span class="cloud-banner-b">رمز عبور باید تغییر کند</span>'+
+      '<p class="cloud-banner-p">برای ادامه، رمز عبور میزبان خود را در سامانه‌ی میزبان تغییر دهید.</p></div></div>'+
+    '<div class="cloud-state-row">'+
+      '<span class="cloud-pill mute" id="cloud-pill"><span id="cloud-pill-icon">'+ICON.dot+'</span><span id="cloud-pill-text">در حال بررسی…</span></span>'+
+      '<span class="cloud-actor" id="cloud-actor">'+ICON.user+'<span>کاربر فعال:</span><b id="cloud-actor-name"></b></span>'+
+    '</div>'+
+    '<div class="cloud-facts">'+
+      '<div class="cloud-fact"><span class="cloud-fact-l">آخرین همگام‌سازی موفق</span><span class="cloud-fact-v" id="cloud-last-sync">—</span></div>'+
+      '<div class="cloud-fact"><span class="cloud-fact-l">تغییرات در انتظار</span><span class="cloud-fact-v" id="cloud-pending">۰</span></div>'+
+      '<div class="cloud-fact"><span class="cloud-fact-l">تداخل‌ها</span><span class="cloud-fact-v" id="cloud-conflicts">۰</span></div>'+
+      '<div class="cloud-fact"><span class="cloud-fact-l">کد آخرین خطا</span><span class="cloud-fact-v cloud-code" id="cloud-error-code">—</span></div>'+
+    '</div>'+
+    '<div class="cloud-error" id="cloud-error-line" role="alert">'+ICON.alert+'<span id="cloud-error-text"></span></div>'+
+    '<div class="cloud-status" id="cloud-beat-line" role="status"></div>'+
+    '<div class="cloud-status" id="cloud-action-status" role="status" aria-live="polite"></div>'+
+    '<div class="cloud-actions">'+
+      '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
+      '<button type="button" class="cloud-btn ghost hidden" id="cloud-logout-btn" onclick="cloudLogout()"><span class="cloud-lbl">خروج از میزبان</span></button>'+
+    '</div>'+
+    '<div class="cloud-block">'+
+      '<strong>تنظیمات اتصال</strong>'+
+      '<div class="cloud-fields">'+
+        '<div class="cloud-field"><label for="cloud-api">آدرس سرویس ابری</label>'+
+          '<input id="cloud-api" type="text" class="ltr" autocomplete="off" spellcheck="false" placeholder="https://api.example.com"></div>'+
+        '<div class="cloud-field"><label for="cloud-tenant">شناسه‌ی سازمان</label>'+
+          '<input id="cloud-tenant" type="text" class="ltr" autocomplete="off" spellcheck="false"></div>'+
+      '</div>'+
+      '<button type="button" class="cloud-btn" id="cloud-save-btn" onclick="cloudSaveConfig()"><span class="cloud-lbl">ذخیره تنظیمات اتصال</span></button>'+
+    '</div>'+
+    '<div class="cloud-block hidden" id="cloud-login-block">'+
+      '<strong>ورود به میزبان</strong>'+
+      '<div class="cloud-fields">'+
+        '<div class="cloud-field"><label for="cloud-user">نام کاربری میزبان</label>'+
+          '<input id="cloud-user" type="text" class="ltr" autocomplete="username" spellcheck="false"></div>'+
+        '<div class="cloud-field"><label for="cloud-pass">رمز عبور میزبان</label>'+
+          '<input id="cloud-pass" type="password" class="ltr" autocomplete="current-password"></div>'+
+      '</div>'+
+      '<button type="button" class="cloud-btn" id="cloud-login-btn" onclick="cloudLogin()"><span class="cloud-lbl">ورود به میزبان</span></button>'+
+    '</div>'+
+    /* SEAM — workstream E mounts the local-vs-server conflict chooser here;
+       paintCloud() calls renderCloudConflicts(container, status) every paint. */
+    '<div class="cloud-conflicts" id="cloud-conflicts-view"></div>'+
+    '</div>';
+}
+
+function paintCloud(){
+  if(!document.getElementById('cloud-sync-section'))return;
+  var s=CLOUD.last;
+  var link=s&&s.link?s.link:'unconfigured';
+  if(link==='connected'&&s&&s.state==='syncing')link='syncing';
+  var meta=CLOUD_LINK[link]||CLOUD_LINK.error;
+  var pill=document.getElementById('cloud-pill');
+  pill.className='cloud-pill '+meta.cls;
+  document.getElementById('cloud-pill-icon').innerHTML=ICON[meta.icon]||ICON.dot;
+  document.getElementById('cloud-pill-text').textContent=meta.label;
+  document.getElementById('cloud-readonly-banner').classList.toggle('on',Boolean(s&&s.read_only));
+  document.getElementById('cloud-must-change').classList.toggle('on',Boolean(s&&s.must_change_password));
+  var name=s&&s.actor?String(s.actor):'';
+  document.getElementById('cloud-actor').classList.toggle('on',Boolean(name));
+  document.getElementById('cloud-actor-name').textContent=name;
+  document.getElementById('cloud-last-sync').textContent=(s&&s.last_sync)?faDateTime(s.last_sync):'—';
+  document.getElementById('cloud-pending').textContent=toFa(s?Number(s.pending||0):0);
+  document.getElementById('cloud-conflicts').textContent=toFa(s?Number(s.conflicts||0):0);
+  document.getElementById('cloud-error-code').textContent=(s&&s.error_code)?s.error_code:'—';
+  var msg=(s&&s.error_message)?String(s.error_message):'';
+  document.getElementById('cloud-error-line').classList.toggle('on',Boolean(msg));
+  document.getElementById('cloud-error-text').textContent=msg;
+  document.getElementById('cloud-beat-line').textContent=cloudBeatLine(s);
+  document.getElementById('cloud-login-block').classList.toggle('hidden',Boolean(name));
+  document.getElementById('cloud-logout-btn').classList.toggle('hidden',!Boolean(name));
+  var syncBtn=document.getElementById('cloud-sync-btn');
+  if(syncBtn)syncBtn.disabled=Boolean(CLOUD.busy)||!(s&&s.configured);
+  renderCloudConflicts(document.getElementById('cloud-conflicts-view'),s);
+}
+
+/* The queue-draining line (spec §9): what the last worker beat did, in
+   words the server already mapped — never an exception message. */
+function cloudBeatLine(s){
+  if(!s)return '';
+  var line=s.worker==='running'?'کارگر همگام‌سازی در حال اجراست.':'کارگر همگام‌سازی متوقف است.';
+  var b=s.worker_last;
+  if(!b)return line;
+  if(b.message)return line+' '+b.message;
+  if(b.attempted)return line+' ارسال گروهی انجام شد.';
+  return line+' چیزی برای ارسال نبود.';
+}
+
+/* SEAM — workstream E replaces this body with the conflict chooser
+   (local vs server, never auto-resolved). The container id and this
+   function name are the contract; the count is already in the facts row. */
+function renderCloudConflicts(container,s){
+  if(!container)return;
+  if(s&&Number(s.conflicts||0)>0){
+    container.classList.add('on');
+    container.innerHTML='<div class="hint">تداخل‌ها: '+toFa(s.conflicts)+' مورد در انتظار تصمیم شماست.</div>';
+  }else{
+    container.classList.remove('on');
+    container.innerHTML='';
+  }
+}
+
+function loadCloudStatus(){
+  return fetch('/cloud-status',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(d){CLOUD.last=(d&&typeof d==='object')?d:null;paintCloud();return d;})
+    .catch(function(){paintCloud();return null;});
+}
+
+function cloudView(on){
+  if(on){
+    if(CLOUD.timer)return;
+    loadCloudStatus();
+    CLOUD.timer=setInterval(loadCloudStatus,4000);
+  }else{
+    if(CLOUD.timer){clearInterval(CLOUD.timer);CLOUD.timer=null;}
+    if(CLOUD.burst){clearInterval(CLOUD.burst);CLOUD.burst=null;}
+  }
+}
+
+/* After an action, poll a few times quickly so "the queue is draining" is
+   seen happening instead of assumed (spec §9). */
+function cloudBurst(){
+  if(CLOUD.burst)clearInterval(CLOUD.burst);
+  var n=0;
+  CLOUD.burst=setInterval(function(){
+    n++;loadCloudStatus();
+    if(n>=8){clearInterval(CLOUD.burst);CLOUD.burst=null;}
+  },1200);
+}
+
+function cloudSetBusy(on,label){
+  CLOUD.busy=on;
+  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn'].forEach(function(id){
+    var b=document.getElementById(id); if(b)b.disabled=on;
+  });
+  var st=document.getElementById('cloud-action-status');
+  if(!st)return;
+  st.className='cloud-status';
+  st.textContent=label||'';
+}
+
+function cloudResult(ok,text,code){
+  var st=document.getElementById('cloud-action-status');
+  if(st){
+    st.className='cloud-status'+(ok?' ok':' bad');
+    st.textContent=text+(code?' ['+code+']':'');
+  }
+  paintCloud();
+}
+
+/* One POST path for every cloud action: loading -> success/failure, the
+   error placed under the action that caused it, and the code shown next
+   to the mapped Persian sentence (spec §11 — never the server's words). */
+function cloudPost(path,body,onOk){
+  cloudSetBusy(true,'در حال انجام…');
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body||{})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      cloudSetBusy(false,'');
+      if(d&&d.ok){cloudResult(true,'انجام شد.');if(onOk)onOk(d);}
+      else{cloudResult(false,(d&&d.errors&&d.errors[0])?d.errors[0]:CLOUD_UNKNOWN_MESSAGE,d&&d.code);}
+      loadCloudStatus();cloudBurst();
+    })
+    .catch(function(){
+      cloudSetBusy(false,'');
+      cloudResult(false,'ارتباط با پنل برقرار نشد؛ دوباره تلاش کنید.');
+      loadCloudStatus();cloudBurst();
+    });
+}
+
+function cloudSaveConfig(){
+  cloudPost('/cloud-config',{api_base:document.getElementById('cloud-api').value,
+    tenant_id:document.getElementById('cloud-tenant').value},function(d){CLOUD.last=d;paintCloud();});
+}
+
+function cloudLogin(){
+  var u=document.getElementById('cloud-user'),p=document.getElementById('cloud-pass');
+  var username=u.value,password=p.value;
+  p.value='';   // the credential leaves the DOM the moment it is sent (§5)
+  cloudPost('/cloud-login',{username:username,password:password},function(){u.value='';});
+}
+
+function cloudLogout(){cloudPost('/cloud-logout',{},null);}
+function cloudSyncNow(){cloudPost('/cloud-sync',{},null);}
+
 function showView(v){
   document.getElementById('view-form').classList.toggle('hidden',v!=='form');
   document.getElementById('view-logs').classList.toggle('hidden',v!=='logs');
@@ -4178,6 +5099,7 @@ function showView(v){
   if(v==='telegram'){
     fetch('/system-debug-config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){SYSTEM_DEBUG=data;renderTelegram();}).catch(function(){renderTelegram();});
   }
+  cloudView(v==='telegram');   // poll the sync surface only while it is on screen
 }
 
 // init
@@ -11054,6 +11976,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(test_telegram_api(attempts=2))
             else:
                 self._json(load_telegram_health())
+        elif route == "/cloud-status":
+            # Read-only snapshot of the sync surface (spec §11): counts,
+            # stable codes and the non-secret transport config. No network,
+            # no state-machine event.
+            self._json(cloud_status_payload())
         elif route == "/system-debug-config":
             self._json(load_system_debug_config())
         elif route == "/system-logs":
@@ -11443,6 +12370,24 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/telegram-config":
             self._json(save_telegram_config(self._read_json()))
+
+        # Cloud sync (spec §11). Origin / Host / CSRF were already checked by
+        # _gate before any route ran; _cloud_route_guard is where the two
+        # state-machine faults are caught BY NAME (spec §15.12).
+        elif self.path == "/cloud-config":
+            self._json(*_cloud_route_guard(cloud_save_config,
+                                           self._read_json()))
+        elif self.path == "/cloud-login":
+            data = self._read_json()
+            if not isinstance(data, dict):
+                data = {}
+            self._json(*_cloud_route_guard(
+                cloud_login, str(data.get("username") or ""),
+                str(data.get("password") or "")))
+        elif self.path == "/cloud-logout":
+            self._json(*_cloud_route_guard(cloud_logout))
+        elif self.path == "/cloud-sync":
+            self._json(*_cloud_route_guard(cloud_sync_now))
 
         elif self.path == "/estelam-person":
             data = self._read_json()
@@ -11840,6 +12785,10 @@ def main():
     clear_stale_busy_profiles()
     clean_project_root()
     crm_scheduler_start()
+    # Cloud sync (spec §9): a daemon beat with a bounded interval. It
+    # returns None until a base URL is configured, so a fresh install starts
+    # no network worker at all.
+    cloud_worker_start()
     threading.Thread(target=_startup_telegram_bootstrap, daemon=True,
                      name="telegram-api-health").start()
     print(f">>> Panel bala amad: {url}")
