@@ -1298,6 +1298,8 @@ CLOUD_ERROR_MESSAGES = {
                              "تازه‌سازی کنید."),
     "UNRESOLVED_REFERENCE": ("رکورد وابسته‌ای روی این دستگاه پیدا نشد؛ "
                              "تداخل‌ها را بررسی کنید."),
+    "DATASET_NOT_EMPTY": "داده‌های میزبان خالی نیست؛ امکان انتقال مجدد وجود ندارد.",
+    "IMPORT_CONFLICT": "شناسه یا محتوای انتقال با نسخه قبلی همخوانی ندارد.",
 }
 
 #: A code that fits the grammar but is unknown to this build: still generic
@@ -1318,6 +1320,7 @@ _CLOUD_AUTH_CODES = frozenset({"AUTH_REQUIRED", "AUTH_EXPIRED", "AUTH_REVOKED"})
 #: The host user the panel is acting as. RAM only, like the tokens behind it
 #: (spec §5): nothing on disk ever remembers who signed in.
 _CLOUD_ACTOR = None
+_CLOUD_ROLE = None
 _CLOUD_MUST_CHANGE = False
 #: The last worker beat, for the "is my edit draining?" line (spec §9).
 _CLOUD_LAST_BEAT = None
@@ -1483,6 +1486,8 @@ def _cloud_status_shell(**overrides):
         "must_change_password": False,
         "worker": "stopped",
         "worker_last": None,
+        "role": None,
+        "can_import": False,
     }
     payload.update(overrides)
     return payload
@@ -1522,6 +1527,14 @@ def cloud_status_payload(runtime=None):
     if cloud_error_message(error_code) is None:
         error_code = None
     thread = _CLOUD_WORKER_THREAD
+    actor = _cloud_actor(client)
+    role = _CLOUD_ROLE if actor else None
+    can_import = bool(
+        getattr(config, "sync_device_id", None)
+        and role == "admin"
+        and (getattr(config, "cursor", 0) == 0
+             or getattr(machine, "last_successful_sync", None) is None)
+    )
     return _cloud_status_shell(
         configured=configured,
         link=cloud_link_state(configured, state_value, read_only),
@@ -1536,11 +1549,13 @@ def cloud_status_payload(runtime=None):
         conflicts=conflicts,
         error_code=error_code,
         error_message=cloud_error_message(error_code),
-        actor=_cloud_actor(client),
+        actor=actor,
         must_change_password=bool(_CLOUD_MUST_CHANGE),
         worker=("running" if thread is not None and thread.is_alive()
                 else "stopped"),
         worker_last=_cloud_beat_view(),
+        role=role,
+        can_import=can_import,
     )
 
 
@@ -1629,7 +1644,7 @@ def cloud_login(username, password):
     never logged, never echoed back. On success the panel keeps only what
     §5 allows in RAM (the user tokens) plus the username it must show.
     """
-    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE
+    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE, _CLOUD_ROLE
     username = str(username or "").strip()
     password = str(password or "")
     if not username or not password:
@@ -1642,6 +1657,8 @@ def cloud_login(username, password):
     runtime["lease"].grant()
     _CLOUD_ACTOR = _cloud_actor_name(payload, username)
     _CLOUD_MUST_CHANGE = bool(payload.get("must_change_password"))
+    user_info = payload.get("user") if isinstance(payload, dict) else None
+    _CLOUD_ROLE = user_info.get("role") if isinstance(user_info, dict) else None
     if not runtime["config"].sync_device_id:
         # Enrolment needs the live user access token login just minted, so
         # this is the only place it can happen (spec §5). enroll() persists
@@ -1656,7 +1673,7 @@ def cloud_login(username, password):
 def cloud_logout():
     """Sign out of the host. Local data, queue and state stay untouched —
     spec §11's disconnect must never cost the operator a saved edit."""
-    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE
+    global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE, _CLOUD_ROLE
     from cloud_sync.errors import CloudSyncError
     runtime = _cloud_runtime()
     client = runtime["client"]
@@ -1674,6 +1691,7 @@ def cloud_logout():
             clear()
         _CLOUD_ACTOR = None
         _CLOUD_MUST_CHANGE = False
+        _CLOUD_ROLE = None
     return {"ok": True, "actor": None, "must_change_password": False}, 200
 
 
@@ -1748,6 +1766,7 @@ def cloud_worker_beat():
     panel.py's generic handlers is precisely the silent drift spec §15.12
     exists to prevent.
     """
+    from cloud_sync.errors import CloudSyncError
     from cloud_sync.lease import LeaseExpiredError
     from cloud_sync.state import IllegalTransitionError
     try:
@@ -1772,12 +1791,29 @@ def cloud_worker_beat():
         finally:
             worker.unbind_auth(previous)
         _cloud_save_machine(runtime)
+
+        pull_result = None
+        if (getattr(runtime["config"], "sync_device_id", None)
+                and hasattr(runtime.get("client"), "pull_all")
+                and not lease.is_expired()
+                and getattr(outcome, "code", None) not in _CLOUD_AUTH_CODES
+                and getattr(outcome, "terminal", None) not in ("auth_failed", "lease_expired")):
+            try:
+                pull_result = cloud_pull_step(runtime)
+            except (LeaseExpiredError, IllegalTransitionError):
+                raise
+            except CloudSyncError as exc:
+                if exc.code in _CLOUD_AUTH_CODES:
+                    return _cloud_note_beat(code=exc.code)
+                return _cloud_note_beat(code=exc.code)
+
         return _cloud_note_beat(
             attempted=bool(getattr(outcome, "attempted", False)),
             applied=int(getattr(outcome, "applied", 0) or 0),
             conflicts=int(getattr(outcome, "conflicts", 0) or 0),
             code=getattr(outcome, "code", None),
-            terminal=getattr(outcome, "terminal", None))
+            terminal=getattr(outcome, "terminal", None),
+            pulled=(pull_result.get("pulled", 0) if pull_result else 0))
     except LeaseExpiredError:
         return _cloud_note_beat(code="LEASE_EXPIRED")
     except IllegalTransitionError:
@@ -1888,6 +1924,388 @@ def _cloud_route_guard(action, *args):
         return cloud_error_body("BAD_PAYLOAD", 400)
     except OSError:
         return cloud_error_body("CONFIG_INVALID", 500)
+
+
+def _cloud_versions_path():
+    return os.path.join(app_paths.data_subdir("cloud_sync"),
+                        "cloud_sync_versions.json")
+
+
+def _load_cloud_versions(path=None):
+    if path is None:
+        path = _cloud_versions_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    versions = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if ":" in k and isinstance(v, int):
+                entity, _, cid = k.partition(":")
+                versions[(entity, cid)] = v
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, (list, tuple)) and len(item) == 3:
+                e, cid, v = item
+                if isinstance(v, int):
+                    versions[(str(e), str(cid))] = v
+    return versions
+
+
+def _save_cloud_versions(versions, path=None):
+    if path is None:
+        path = _cloud_versions_path()
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    serialized = {f"{e}:{cid}": v for (e, cid), v in versions.items()
+                  if isinstance(v, int)}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(serialized, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _cloud_dirty_set(outbox):
+    dirty = set()
+    if outbox is None:
+        return dirty
+    entries_fn = getattr(outbox, "entries", None)
+    if not callable(entries_fn):
+        return dirty
+    try:
+        entries = entries_fn()
+    except Exception:
+        return dirty
+    for e in entries:
+        op = getattr(e, "operation", None) or {}
+        entity = op.get("entity")
+        oid = op.get("id")
+        if entity and oid:
+            dirty.add((entity, oid))
+            dirty.add(oid)
+        conf = getattr(e, "conflict", None) or {}
+        centity = conf.get("entity")
+        cid = conf.get("id")
+        if centity and cid:
+            dirty.add((centity, cid))
+            dirty.add(cid)
+    return dirty
+
+
+def cloud_pull_step(runtime=None):
+    """Run one pull cycle: bootstrap snapshot if cursor == 0, else pull_all.
+
+    Dirty local records are never clobbered (spec §9). Versions are persisted
+    to cloud_sync_versions.json. State machine exceptions (LeaseExpiredError,
+    IllegalTransitionError) are never swallowed.
+    """
+    from cloud_sync import apply
+    from cloud_sync.apply import FileStore
+    from cloud_sync.lease import LeaseExpiredError
+
+    if runtime is None:
+        runtime = _cloud_runtime()
+    config = runtime["config"]
+    client = runtime["client"]
+    lease = runtime["lease"]
+    outbox = runtime["outbox"]
+
+    if not getattr(config, "api_base", None) or not getattr(config, "sync_device_id", None):
+        return {"pulled": 0, "skipped": "not_enrolled"}
+    if lease and lease.is_expired():
+        raise LeaseExpiredError()
+
+    import crm as crm_mod
+    store = FileStore(crm_mod._store_path())
+    versions_path = _cloud_versions_path()
+    versions = _load_cloud_versions(versions_path)
+    dirty = _cloud_dirty_set(outbox)
+    source_installation_id = getattr(config, "source_installation_id", None)
+
+    pulled_pages = 0
+    with crm_mod.STORE_LOCK:
+        if getattr(config, "cursor", 0) == 0:
+            snapshot = client.bootstrap()
+            apply.apply_snapshot(
+                snapshot,
+                store=store,
+                source_installation_id=source_installation_id,
+                versions=versions,
+                dirty=dirty,
+            )
+            _save_cloud_versions(versions, versions_path)
+            pulled_pages = 1
+        else:
+            def _handler(page):
+                apply.apply_changes(
+                    page,
+                    store=store,
+                    source_installation_id=source_installation_id,
+                    versions=versions,
+                    dirty=dirty,
+                )
+                _save_cloud_versions(versions, versions_path)
+
+            pulled_pages = client.pull_all(_handler)
+
+    return {"pulled": pulled_pages}
+
+
+def cloud_conflicts_payload(runtime=None):
+    """GET /cloud-conflicts: list of parked conflicts for the operator (spec §11)."""
+    if runtime is None:
+        try:
+            runtime = _cloud_runtime()
+        except Exception:
+            return {"ok": True, "conflicts": []}
+    outbox = runtime.get("outbox")
+    if outbox is None:
+        return {"ok": True, "conflicts": []}
+    entries_fn = getattr(outbox, "conflicts", None)
+    if not callable(entries_fn):
+        return {"ok": True, "conflicts": []}
+    try:
+        conflicts_list = entries_fn()
+    except Exception:
+        return {"ok": True, "conflicts": []}
+    out = []
+    for e in conflicts_list:
+        op = getattr(e, "operation", None) if isinstance(getattr(e, "operation", None), dict) else {}
+        conf = getattr(e, "conflict", None) if isinstance(getattr(e, "conflict", None), dict) else {}
+        out.append({
+            "operation_id": getattr(e, "operation_id", ""),
+            "entity": op.get("entity") or conf.get("entity") or "",
+            "id": op.get("id") or conf.get("id") or "",
+            "local_record": op.get("record"),
+            "server_record": conf.get("server_record"),
+            "server_version": conf.get("server_version"),
+        })
+    return {"ok": True, "conflicts": out}
+
+
+def _apply_conflict_server_record(runtime, entity, record_id, server_record,
+                                  server_version=None, operation_id=None):
+    """Apply the accepted server record to crm_store.json under STORE_LOCK."""
+    from cloud_sync import mapper
+    import crm as crm_mod
+    config = runtime.get("config")
+    source_installation_id = getattr(config, "source_installation_id", None)
+    with crm_mod.STORE_LOCK:
+        doc = crm_mod._store_read()
+        if not isinstance(doc, dict):
+            doc = {}
+
+        if server_record is None:
+            # Server deleted the record
+            if entity == "settings":
+                doc["settings"] = {}
+            elif entity == "customer_transactions":
+                parts = str(record_id).split("/", 1)
+                if len(parts) == 2:
+                    cust_id, seq_str = parts
+                    try:
+                        seq = int(seq_str)
+                        for c in doc.get("customers", []):
+                            if c.get("id") == cust_id and "transactions" in c:
+                                if 0 <= seq < len(c["transactions"]):
+                                    c["transactions"].pop(seq)
+                    except ValueError:
+                        pass
+            else:
+                store_key = "devices" if entity in ("devices", "crm_devices") else entity
+                if store_key in doc and isinstance(doc[store_key], list):
+                    doc[store_key] = [r for r in doc[store_key] if r.get("id") != record_id]
+        else:
+            index = {}
+            if source_installation_id:
+                try:
+                    index = mapper.reference_index(doc, source_installation_id=source_installation_id)
+                except Exception:
+                    pass
+            rec = None
+            if isinstance(server_record, dict):
+                try:
+                    rec = mapper.from_row(entity, server_record, reference_index=index)
+                except Exception:
+                    rec = dict(server_record)
+            else:
+                rec = server_record
+
+            if entity == "settings":
+                if isinstance(rec, dict):
+                    doc.setdefault("settings", {}).update(rec)
+            elif entity == "customer_transactions":
+                if isinstance(rec, dict):
+                    cust_ref = rec.get("customer_id") or (str(record_id).split("/", 1)[0] if "/" in str(record_id) else None)
+                    seq = rec.get("seq")
+                    if seq is None and "/" in str(record_id):
+                        try:
+                            seq = int(str(record_id).split("/", 1)[1])
+                        except ValueError:
+                            seq = None
+                    for c in doc.get("customers", []):
+                        if c.get("id") == cust_ref:
+                            txs = c.setdefault("transactions", [])
+                            if seq is not None and isinstance(seq, int) and 0 <= seq < len(txs):
+                                txs[seq] = rec
+                            else:
+                                txs.append(rec)
+            else:
+                store_key = "devices" if entity in ("devices", "crm_devices") else entity
+                rows = doc.setdefault(store_key, [])
+                replaced = False
+                target_id = rec.get("id") if isinstance(rec, dict) else record_id
+                for idx, existing in enumerate(rows):
+                    if existing.get("id") in (target_id, record_id):
+                        if entity == "customers" and isinstance(rec, dict) and "transactions" not in rec:
+                            rec["transactions"] = existing.get("transactions", [])
+                        rows[idx] = rec
+                        replaced = True
+                        break
+                if not replaced and isinstance(rec, dict):
+                    rows.append(rec)
+
+        crm_mod._store_write(doc)
+
+        if server_version is not None and entity:
+            versions_path = _cloud_versions_path()
+            versions = _load_cloud_versions(versions_path)
+            cloud_id = operation_id or record_id
+            versions[(entity, cloud_id)] = server_version
+            if record_id:
+                versions[(entity, record_id)] = server_version
+            _save_cloud_versions(versions, versions_path)
+
+
+def cloud_resolve_conflict(payload):
+    """POST /cloud-resolve-conflict: operator chooses keep_local or accept_server."""
+    from cloud_sync.lease import LeaseExpiredError
+    from cloud_sync.state import SyncEvent
+
+    if not isinstance(payload, dict):
+        return cloud_error_body("BAD_PAYLOAD", 400)
+    operation_id = str(payload.get("operation_id") or "").strip()
+    resolution = str(payload.get("resolution") or "").strip()
+    if not operation_id or resolution not in ("keep_local", "accept_server"):
+        return cloud_error_body("BAD_PAYLOAD", 400)
+
+    runtime = _cloud_runtime()
+    lease = runtime.get("lease")
+    if lease and lease.is_expired():
+        raise LeaseExpiredError()
+
+    outbox = runtime.get("outbox")
+    if outbox is None:
+        return cloud_error_body("CONFIG_INVALID", 500)
+
+    entry = outbox.get(operation_id)
+    if entry is None:
+        return cloud_error_body("HTTP_404", 404)
+    if getattr(entry, "parked", None) != "conflict":
+        return cloud_error_body("TRANSITION_NOT_LEGAL", 409)
+
+    conflict = getattr(entry, "conflict", None) or {}
+    machine = runtime.get("machine")
+
+    if resolution == "keep_local":
+        server_version = conflict.get("server_version")
+        if entry.operation is not None and server_version is not None:
+            entry.operation["base_version"] = server_version
+        outbox.release(operation_id)
+        if machine is not None and getattr(machine, "conflict_count", 0) > 0:
+            if machine.can(SyncEvent.CONFLICTS_RESOLVED):
+                machine.apply(SyncEvent.CONFLICTS_RESOLVED, conflicts_cleared=1)
+                _cloud_save_machine(runtime)
+        cloud_worker_kick()
+        return {"ok": True, "resolved": "keep_local"}, 200
+
+    if resolution == "accept_server":
+        server_record = conflict.get("server_record")
+        entity = (entry.operation or {}).get("entity") or conflict.get("entity")
+        record_id = (entry.operation or {}).get("id") or conflict.get("id")
+        server_version = conflict.get("server_version")
+
+        _apply_conflict_server_record(
+            runtime=runtime,
+            entity=entity,
+            record_id=record_id,
+            server_record=server_record,
+            server_version=server_version,
+            operation_id=operation_id,
+        )
+        outbox.mark_done(operation_id, result="conflict_server_accepted")
+        if machine is not None and getattr(machine, "conflict_count", 0) > 0:
+            if machine.can(SyncEvent.CONFLICTS_RESOLVED):
+                machine.apply(SyncEvent.CONFLICTS_RESOLVED, conflicts_cleared=1)
+                _cloud_save_machine(runtime)
+        return {"ok": True, "resolved": "accept_server"}, 200
+
+
+def cloud_run_import():
+    """POST /cloud-import: one-shot bootstrap import (spec §8), admin only."""
+    from cloud_sync import importer
+    from cloud_sync.lease import LeaseExpiredError
+
+    runtime = _cloud_runtime()
+    client = runtime["client"]
+    config = runtime["config"]
+    lease = runtime["lease"]
+
+    if lease and lease.is_expired():
+        raise LeaseExpiredError()
+
+    vault = getattr(client, "vault", None)
+    user_token = getattr(vault, "user_access_token", None) if vault else None
+    if not _CLOUD_ACTOR or not user_token:
+        return cloud_error_body("AUTH_REQUIRED", 401)
+
+    if _CLOUD_ROLE is not None and _CLOUD_ROLE != "admin":
+        return cloud_error_body("HTTP_403", 403)
+
+    if not getattr(config, "sync_device_id", None):
+        return cloud_error_body("ENROL_REQUIRED", 400)
+
+    send = getattr(client, "import_document", None)
+    if not callable(send):
+        return cloud_error_body("CONFIG_INVALID", 500)
+
+    import crm as crm_mod
+    backup_dir = app_paths.data_subdir("backups")
+
+    result = importer.run_import(
+        crm_mod._store_read,
+        send=send,
+        source_installation_id=config.source_installation_id,
+        backup_dir=backup_dir,
+    )
+
+    if not result.ok:
+        code = result.code or "IMPORT_REJECTED"
+        status = 409 if code in (importer.DATASET_NOT_EMPTY, importer.IMPORT_CONFLICT) else 400
+        return cloud_error_body(code, status)
+
+    if result.cursor:
+        set_cursor = getattr(config, "set_cursor", None)
+        if callable(set_cursor):
+            set_cursor(result.cursor)
+        elif hasattr(config, "cursor"):
+            config.cursor = result.cursor
+        if result.dataset_epoch:
+            set_epoch = getattr(config, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(result.dataset_epoch)
+            elif hasattr(config, "dataset_epoch"):
+                config.dataset_epoch = result.dataset_epoch
+        save_fn = getattr(config, "save", None)
+        if callable(save_fn):
+            save_fn()
+
+    return {"ok": True, "backup_path": result.backup_path, "imported": True}, 200
 
 
 def test_telegram_api(attempts=3):
@@ -3872,6 +4290,15 @@ PAGE_HEAD = """<!DOCTYPE html>
   .cloud-conflicts { display:none; gap:9px; padding-top:13px;
     border-top:1px dashed var(--line); }
   .cloud-conflicts.on { display:grid; }
+  .cloud-conflict-count { font-size:12.5px; color:var(--muted); margin-bottom:4px; }
+  .cloud-conflict-card { display:grid; gap:9px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--card2); }
+  .cloud-conflict-head { display:flex; justify-content:space-between; align-items:center; font-size:12.5px; }
+  .cloud-conflict-table { width:100%; border-collapse:collapse; font-size:11.5px; margin:4px 0; }
+  .cloud-conflict-table th, .cloud-conflict-table td { padding:5px 8px; border:1px solid var(--line); text-align:start; }
+  .cloud-conflict-table th { background:var(--card); color:var(--muted); font-weight:600; }
+  .cloud-conflict-table td.diff-loc { color:var(--brand); }
+  .cloud-conflict-table td.diff-srv { color:var(--ok); }
+  .cloud-conflict-actions { display:flex; gap:8px; flex-wrap:wrap; }
   @media (max-width:900px){
     .cloud-facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .cloud-fields { grid-template-columns:minmax(0,1fr); }
@@ -4919,6 +5346,7 @@ function cloudShellHtml(){
     '<div class="cloud-status" id="cloud-action-status" role="status" aria-live="polite"></div>'+
     '<div class="cloud-actions">'+
       '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
+      '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال پرونده‌های فعلی به سرور (Import)</span></button>'+
       '<button type="button" class="cloud-btn ghost hidden" id="cloud-logout-btn" onclick="cloudLogout()"><span class="cloud-lbl">خروج از میزبان</span></button>'+
     '</div>'+
     '<div class="cloud-block">'+
@@ -4974,6 +5402,8 @@ function paintCloud(){
   document.getElementById('cloud-logout-btn').classList.toggle('hidden',!Boolean(name));
   var syncBtn=document.getElementById('cloud-sync-btn');
   if(syncBtn)syncBtn.disabled=Boolean(CLOUD.busy)||!(s&&s.configured);
+  var importBtn=document.getElementById('cloud-import-btn');
+  if(importBtn)importBtn.classList.toggle('hidden',!(s&&s.can_import));
   renderCloudConflicts(document.getElementById('cloud-conflicts-view'),s);
 }
 
@@ -4989,17 +5419,101 @@ function cloudBeatLine(s){
   return line+' چیزی برای ارسال نبود.';
 }
 
-/* SEAM — workstream E replaces this body with the conflict chooser
-   (local vs server, never auto-resolved). The container id and this
-   function name are the contract; the count is already in the facts row. */
+var CLOUD_CONFLICTS_CACHE=null;
+var CLOUD_CONFLICTS_FETCHING=false;
+var CLOUD_ENTITY_NAMES={
+  'customers':'مشتری',
+  'customer_transactions':'تراکنش مشتری',
+  'owners':'مسافر / مالک',
+  'identities':'استخر هویتی',
+  'devices':'دستگاه / پرونده',
+  'crm_devices':'دستگاه / پرونده',
+  'periods':'دوره مالی',
+  'settings':'تنظیمات'
+};
+
 function renderCloudConflicts(container,s){
   if(!container)return;
   if(s&&Number(s.conflicts||0)>0){
     container.classList.add('on');
-    container.innerHTML='<div class="hint">تداخل‌ها: '+toFa(s.conflicts)+' مورد در انتظار تصمیم شماست.</div>';
+    var count=toFa(s.conflicts);
+    var head='<div class="cloud-conflict-count"><strong>تداخل‌ها:</strong> '+count+' مورد در انتظار تصمیم شماست.</div>';
+    if(typeof CLOUD_CONFLICTS_CACHE!=='undefined'&&CLOUD_CONFLICTS_CACHE&&CLOUD_CONFLICTS_CACHE.length>0){
+      var cards='';
+      for(var i=0;i<CLOUD_CONFLICTS_CACHE.length;i++){
+        var c=CLOUD_CONFLICTS_CACHE[i];
+        var ent=(typeof CLOUD_ENTITY_NAMES!=='undefined'&&CLOUD_ENTITY_NAMES[c.entity])?CLOUD_ENTITY_NAMES[c.entity]:(c.entity||'مورد');
+        cards+='<div class="cloud-conflict-card">'+
+          '<div class="cloud-conflict-head"><strong>'+ent+'</strong> <span class="kbd ltr">'+(c.id||'')+'</span></div>'+
+          diffHtml(c.local_record,c.server_record)+
+          '<div class="cloud-conflict-actions">'+
+            '<button type="button" class="cloud-btn mini" onclick="resolveCloudConflict(\''+c.operation_id+'\',\'keep_local\',this)"><span class="cloud-lbl">نگه‌داشتن تغییرات من (روی سرور ذخیره شود)</span></button>'+
+            '<button type="button" class="cloud-btn mini ghost" onclick="resolveCloudConflict(\''+c.operation_id+'\',\'accept_server\',this)"><span class="cloud-lbl">پذیرش نسخه سرور (تغییرات محلی لغو شود)</span></button>'+
+          '</div>'+
+        '</div>';
+      }
+      container.innerHTML=head+cards;
+    }else{
+      container.innerHTML=head+'<div class="hint">در حال دریافت اطلاعات تداخل‌ها…</div>';
+      if(typeof fetch==='function'&&typeof fetchCloudConflicts==='function'&&!CLOUD_CONFLICTS_FETCHING){
+        fetchCloudConflicts();
+      }
+    }
   }else{
     container.classList.remove('on');
     container.innerHTML='';
+    if(typeof CLOUD_CONFLICTS_CACHE!=='undefined')CLOUD_CONFLICTS_CACHE=null;
+  }
+
+  function diffHtml(loc,srv){
+    loc=loc||{}; srv=srv||{};
+    var keys={};
+    for(var k in loc)keys[k]=true;
+    for(var k in srv)keys[k]=true;
+    var rows='';
+    for(var key in keys){
+      var lv=loc[key], sv=srv[key];
+      var ls=(lv===undefined||lv===null)?'—':(typeof lv==='object'?JSON.stringify(lv):String(lv));
+      var ss=(sv===undefined||sv===null)?'—':(typeof sv==='object'?JSON.stringify(sv):String(sv));
+      if(ls!==ss){
+        rows+='<tr><th>'+key+'</th><td class="diff-loc">'+ls+'</td><td class="diff-srv">'+ss+'</td></tr>';
+      }
+    }
+    if(!rows)return '<div class="hint">تغییر فیلد مشخصی ثبت نشده است.</div>';
+    return '<table class="cloud-conflict-table"><thead><tr><th>فیلد</th><th>نسخه محلی (من)</th><th>نسخه سرور</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+}
+
+function fetchCloudConflicts(){
+  CLOUD_CONFLICTS_FETCHING=true;
+  fetch('/cloud-conflicts',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      CLOUD_CONFLICTS_FETCHING=false;
+      if(d&&d.ok&&Array.isArray(d.conflicts)){
+        CLOUD_CONFLICTS_CACHE=d.conflicts;
+        var el=document.getElementById('cloud-conflicts-view');
+        if(el)renderCloudConflicts(el,CLOUD.last);
+      }
+    })
+    .catch(function(){
+      CLOUD_CONFLICTS_FETCHING=false;
+    });
+}
+
+function resolveCloudConflict(opId,resolution,btn){
+  if(btn)btn.disabled=true;
+  cloudPost('/cloud-resolve-conflict',{operation_id:opId,resolution:resolution},function(){
+    CLOUD_CONFLICTS_CACHE=null;
+    loadCloudStatus();
+  });
+}
+
+function cloudImportPrompt(){
+  if(confirm('آیا از انتقال پرونده‌های فعلی به سرور (Import) اطمینان دارید؟ این عملیات فقط یک بار انجام می‌شود.')){
+    cloudPost('/cloud-import',{},function(){
+      loadCloudStatus();
+    });
   }
 }
 
@@ -11981,6 +12495,8 @@ class Handler(BaseHTTPRequestHandler):
             # stable codes and the non-secret transport config. No network,
             # no state-machine event.
             self._json(cloud_status_payload())
+        elif route == "/cloud-conflicts":
+            self._json(cloud_conflicts_payload())
         elif route == "/system-debug-config":
             self._json(load_system_debug_config())
         elif route == "/system-logs":
@@ -12388,6 +12904,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(*_cloud_route_guard(cloud_logout))
         elif self.path == "/cloud-sync":
             self._json(*_cloud_route_guard(cloud_sync_now))
+        elif self.path == "/cloud-resolve-conflict":
+            resp, status = _cloud_route_guard(cloud_resolve_conflict,
+                                              self._read_json())
+            self._json(resp, status)
+        elif self.path == "/cloud-import":
+            resp, status = _cloud_route_guard(cloud_run_import)
+            self._json(resp, status)
 
         elif self.path == "/estelam-person":
             data = self._read_json()
