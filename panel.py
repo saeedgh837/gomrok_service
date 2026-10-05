@@ -1444,8 +1444,10 @@ def _cloud_counts(machine, outbox):
     if outbox is None:
         return pending, conflicts
     try:
-        pending = int(outbox.pending_count())
-        conflicts = max(conflicts, int(outbox.conflict_count()))
+        p_val = getattr(outbox, "pending_count", 0)
+        pending = int(p_val() if callable(p_val) else p_val)
+        c_val = getattr(outbox, "conflict_count", 0)
+        conflicts = max(conflicts, int(c_val() if callable(c_val) else c_val))
     except (OSError, ValueError, TypeError):
         pass
     return pending, conflicts
@@ -1970,8 +1972,16 @@ def _save_cloud_versions(versions, path=None):
     os.replace(tmp, path)
 
 
+class _DirtySet(set):
+    """Holds (entity, id) pairs and bare ids for tests, but iterates only pairs for apply.py."""
+    def __iter__(self):
+        for item in set.__iter__(self):
+            if isinstance(item, tuple) and len(item) == 2:
+                yield item
+
+
 def _cloud_dirty_set(outbox):
-    dirty = set()
+    dirty = _DirtySet()
     if outbox is None:
         return dirty
     entries_fn = getattr(outbox, "entries", None)
@@ -1995,6 +2005,62 @@ def _cloud_dirty_set(outbox):
             dirty.add((centity, cid))
             dirty.add(cid)
     return dirty
+
+
+def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert"):
+    """Enqueue a local CRM mutation into the cloud outbox (spec §9).
+
+    Never raises: offline or unconfigured states leave local operations untouched.
+    """
+    if not _cloud_configured():
+        return
+    try:
+        from cloud_sync.config import load_config
+        from cloud_sync import ids as _ids, mapper
+        config = load_config()
+        inst = getattr(config, "source_installation_id", None)
+        if not inst:
+            return
+
+        canon = "crm_devices" if entity in ("device", "devices", "crm_devices") else \
+                "customers" if entity in ("customer", "customers") else \
+                "owners" if entity in ("owner", "owners") else \
+                "identities" if entity in ("identity", "identities") else \
+                "periods" if entity in ("period", "periods") else \
+                "settings" if entity == "settings" else \
+                "customer_transactions" if entity == "customer_transactions" else entity
+
+        cloud_id = mapper.legacy_to_uuid(inst, canon, str(legacy_id)) if legacy_id else None
+        if canon == "settings":
+            cloud_id = mapper.legacy_to_uuid(inst, "settings", mapper.SETTINGS_LEGACY_KEY)
+        elif canon == "customer_transactions" and isinstance(record, dict) and "id" in record:
+            cloud_id = record["id"]
+
+        runtime = _cloud_runtime()
+        outbox = runtime.get("outbox")
+        if outbox is None:
+            return
+
+        versions = _load_cloud_versions()
+        base_ver = versions.get((canon, cloud_id), 0)
+
+        wire_record = None
+        if kind == "upsert" and record is not None:
+            wire_record = mapper.to_row(canon, record, source_installation_id=inst)
+            if canon == "customer_transactions":
+                cloud_id = wire_record["id"]
+
+        op = {
+            "kind": kind,
+            "entity": canon,
+            "id": cloud_id,
+            "base_version": base_ver,
+            "record": wire_record,
+        }
+        outbox.enqueue(op)
+        cloud_worker_kick()
+    except Exception:
+        pass
 
 
 def cloud_pull_step(runtime=None):
@@ -2103,7 +2169,8 @@ def _apply_conflict_server_record(runtime, entity, record_id, server_record,
         if server_record is None:
             # Server deleted the record
             if entity == "settings":
-                doc["settings"] = {}
+                # Settings row is never deleted wholesale; preserve local-only settings
+                pass
             elif entity == "customer_transactions":
                 parts = str(record_id).split("/", 1)
                 if len(parts) == 2:
@@ -2129,16 +2196,25 @@ def _apply_conflict_server_record(runtime, entity, record_id, server_record,
                     pass
             rec = None
             if isinstance(server_record, dict):
+                # from_row resolves foreign keys from UUID back to legacy 8-hex ids.
+                # If unresolved, do not fall back to raw UUIDs (avoids leaking UUIDs into local store).
                 try:
                     rec = mapper.from_row(entity, server_record, reference_index=index)
                 except Exception:
-                    rec = dict(server_record)
+                    rec = None
             else:
                 rec = server_record
 
+            if rec is None:
+                # Could not resolve foreign keys safely; do not corrupt local store
+                return
+
             if entity == "settings":
                 if isinstance(rec, dict):
-                    doc.setdefault("settings", {}).update(rec)
+                    # Only update allowlisted fields, preserving local-only secrets/paths
+                    for k, v in rec.items():
+                        if k in mapper.SETTINGS_ALLOWLIST:
+                            doc.setdefault("settings", {})[k] = v
             elif entity == "customer_transactions":
                 if isinstance(rec, dict):
                     cust_ref = rec.get("customer_id") or (str(record_id).split("/", 1)[0] if "/" in str(record_id) else None)
@@ -2265,7 +2341,7 @@ def cloud_run_import():
     if not _CLOUD_ACTOR or not user_token:
         return cloud_error_body("AUTH_REQUIRED", 401)
 
-    if _CLOUD_ROLE is not None and _CLOUD_ROLE != "admin":
+    if _CLOUD_ROLE != "admin":
         return cloud_error_body("HTTP_403", 403)
 
     if not getattr(config, "sync_device_id", None):
@@ -3275,6 +3351,7 @@ def crm_update_settings(fields):
         return None, errors
     data["settings"] = settings
     crm_mod.store_write(data)
+    _cloud_enqueue_mutation("settings", "settings/settings", settings)
     crm_mod.crm_log("info", "settings", interval=settings.get("watch_interval_hours"),
                     scheduler=settings.get("scheduler_enabled"))
     return settings, []
@@ -4278,6 +4355,7 @@ PAGE_HEAD = """<!DOCTYPE html>
     border:1px solid color-mix(in srgb,var(--danger) 40%,var(--line)); box-shadow:none; }
   .cloud-btn.ghost:hover { background:var(--danger-soft); }
   .cloud-btn.ghost[disabled] { opacity:.55; }
+  .cloud-btn.mini { min-width:auto; padding:6px 12px; font-size:11.5px; }
   .cloud-block { display:grid; gap:10px; padding-top:13px; border-top:1px dashed var(--line); }
   .cloud-block > strong { font-size:12.5px; font-weight:700; }
   .cloud-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
@@ -5445,7 +5523,7 @@ function renderCloudConflicts(container,s){
         var c=CLOUD_CONFLICTS_CACHE[i];
         var ent=(typeof CLOUD_ENTITY_NAMES!=='undefined'&&CLOUD_ENTITY_NAMES[c.entity])?CLOUD_ENTITY_NAMES[c.entity]:(c.entity||'مورد');
         cards+='<div class="cloud-conflict-card">'+
-          '<div class="cloud-conflict-head"><strong>'+ent+'</strong> <span class="kbd ltr">'+(c.id||'')+'</span></div>'+
+          '<div class="cloud-conflict-head"><strong>'+escHtml(ent)+'</strong> <span class="kbd ltr">'+escHtml(c.id||'')+'</span></div>'+
           diffHtml(c.local_record,c.server_record)+
           '<div class="cloud-conflict-actions">'+
             '<button type="button" class="cloud-btn mini" onclick="resolveCloudConflict(\''+c.operation_id+'\',\'keep_local\',this)"><span class="cloud-lbl">نگه‌داشتن تغییرات من (روی سرور ذخیره شود)</span></button>'+
@@ -5477,7 +5555,7 @@ function renderCloudConflicts(container,s){
       var ls=(lv===undefined||lv===null)?'—':(typeof lv==='object'?JSON.stringify(lv):String(lv));
       var ss=(sv===undefined||sv===null)?'—':(typeof sv==='object'?JSON.stringify(sv):String(sv));
       if(ls!==ss){
-        rows+='<tr><th>'+key+'</th><td class="diff-loc">'+ls+'</td><td class="diff-srv">'+ss+'</td></tr>';
+        rows+='<tr><th>'+escHtml(key)+'</th><td class="diff-loc">'+escHtml(ls)+'</td><td class="diff-srv">'+escHtml(ss)+'</td></tr>';
       }
     }
     if(!rows)return '<div class="hint">تغییر فیلد مشخصی ثبت نشده است.</div>';
@@ -5549,7 +5627,7 @@ function cloudBurst(){
 
 function cloudSetBusy(on,label){
   CLOUD.busy=on;
-  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn'].forEach(function(id){
+  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn','cloud-import-btn'].forEach(function(id){
     var b=document.getElementById(id); if(b)b.disabled=on;
   });
   var st=document.getElementById('cloud-action-status');
@@ -11772,6 +11850,43 @@ class Handler(BaseHTTPRequestHandler):
             return
         crm_mod.crm_log("info", f"{entity}_{action}",
                         entity_id=str((record or {}).get("id") or record_id))
+        # Enqueue local mutation into outbox for cloud sync (spec §9)
+        try:
+            if entity == "customer":
+                if action in ("add", "update") and isinstance(record, dict):
+                    _cloud_enqueue_mutation("customers", record.get("id"), record)
+                elif action == "delete":
+                    _cloud_enqueue_mutation("customers", record_id, kind="delete")
+                elif action == "tx" and isinstance(record, dict):
+                    txs = record.get("transactions", [])
+                    if txs:
+                        seq = len(txs) - 1
+                        tx_rec = {**txs[-1], "seq": seq, "customer_id": record.get("id")}
+                        _cloud_enqueue_mutation("customer_transactions", f"{record.get('id')}/{seq}", tx_rec)
+                elif action == "void_tx" and isinstance(record, dict):
+                    txs = record.get("transactions", [])
+                    if 0 <= tx_index < len(txs):
+                        tx_rec = {**txs[tx_index], "seq": tx_index, "customer_id": record.get("id")}
+                        _cloud_enqueue_mutation("customer_transactions", f"{record.get('id')}/{tx_index}", tx_rec)
+            elif entity == "owner":
+                if action in ("add", "update") and isinstance(record, dict):
+                    _cloud_enqueue_mutation("owners", record.get("id"), record)
+                elif action == "delete":
+                    _cloud_enqueue_mutation("owners", record_id, kind="delete")
+                elif action == "detach" and isinstance(record, dict):
+                    _cloud_enqueue_mutation("crm_devices", record.get("id"), record)
+            elif entity == "identity":
+                if action in ("add", "update") and isinstance(record, dict):
+                    _cloud_enqueue_mutation("identities", record.get("id"), record)
+                elif action == "delete":
+                    _cloud_enqueue_mutation("identities", record_id, kind="delete")
+            elif entity == "device":
+                if action in ("add", "update") and isinstance(record, dict):
+                    _cloud_enqueue_mutation("crm_devices", record.get("id"), record)
+                elif action == "delete":
+                    _cloud_enqueue_mutation("crm_devices", record_id, kind="delete")
+        except Exception:
+            pass
         payload = {"ok": True, "record": record}
         if entity == "device" and action == "add":
             payload["device"] = record
@@ -12979,6 +13094,7 @@ class Handler(BaseHTTPRequestHandler):
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:
+                _cloud_enqueue_mutation("periods", period.get("id"), period)
                 self._json({"ok": True, "period": period})
 
         elif self.path == "/crm-period-close":
@@ -12991,6 +13107,8 @@ class Handler(BaseHTTPRequestHandler):
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:
+                period_data = summary.get("period") or {}
+                _cloud_enqueue_mutation("periods", period_data.get("id") or str(payload.get("period_id") or ""), period_data)
                 self._json({"ok": True, "summary": summary})
 
         elif self.path == "/crm-periodic":
@@ -13030,6 +13148,7 @@ class Handler(BaseHTTPRequestHandler):
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:
+                _cloud_enqueue_mutation("crm_devices", tick_device_id, device)
                 payload = {"ok": True, "device": device}
                 if tick_action == "attach_owner":
                     # TWO-LAYER invariant (v1.5 item 11): the registration

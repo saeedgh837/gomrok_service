@@ -340,7 +340,7 @@ final class Sync
         }
 
         $rows = $this->db->query(
-            'SELECT seq, entity, id FROM change_log'
+            'SELECT seq, entity, id, row_version FROM change_log'
             . ' WHERE tenant_id = ? AND seq > ? ORDER BY seq LIMIT ' . ($limit + 1),
             [$tenantId, $cursor]
         );
@@ -473,7 +473,7 @@ final class Sync
         $result = $this->db->transaction(function (\Database $tx) use (
             $prepared, $tenantId, $context, $requestId
         ): array {
-            $replayed = $this->loadReplays($tx, $prepared);
+            $replayed = $this->loadReplays($tx, $tenantId, $prepared);
             // Apply in FK-safe entity order (crm_devices needs its customer,
             // a ledger row needs its device, settings needs its period), but
             // report in the order the client sent: `applied[]` and
@@ -657,7 +657,7 @@ final class Sync
      * @param list<array<string, mixed>> $prepared
      * @return array<string, array<string, mixed>> operation_id => stored result
      */
-    private function loadReplays(\Database $tx, array $prepared): array
+    private function loadReplays(\Database $tx, string $tenantId, array $prepared): array
     {
         $ids = array_column($prepared, 'operation_id');
         if ($ids === []) {
@@ -666,8 +666,8 @@ final class Sync
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
         $rows = $tx->query(
             'SELECT operation_id, status, response FROM idempotency_keys'
-            . ' WHERE operation_id IN (' . $placeholders . ')',
-            $ids
+            . ' WHERE tenant_id = ? AND operation_id IN (' . $placeholders . ')',
+            array_merge([$tenantId], $ids)
         );
         $out = [];
         foreach ($rows as $row) {

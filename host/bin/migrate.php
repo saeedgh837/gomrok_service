@@ -123,12 +123,13 @@ if ($account === 'app') {
         . '(host/INSTALL.md).', $quiet);
 }
 
+if ($applied === [] && !databaseIsPristine($db)) {
+    fail('the database already holds tables this runner has not applied. '
+        . 'Refusing to write into a non-empty schema — drop the scratch '
+        . 'database or restore from backup and try again.');
+}
+
 foreach ($pending as $entry) {
-    if (!databaseIsPristine($db)) {
-        fail('the database already holds tables this runner has not applied. '
-            . 'Refusing to write into a non-empty schema — drop the scratch '
-            . 'database or restore from backup and try again.');
-    }
     out('APPLY ' . $entry['version'], $quiet);
     $statements = splitStatements((string) file_get_contents($entry['file']));
     if ($statements === []) {

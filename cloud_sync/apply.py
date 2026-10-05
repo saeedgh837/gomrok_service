@@ -889,7 +889,14 @@ def _remove_transaction(document, local_id):
         if position >= len(transactions):
             out.append(existing)
             continue
-        del transactions[position]
+        # In CRM, transactions are an append-only accounting ledger where
+        # position equals seq. Physically deleting an item shifts array indices,
+        # causing sequence holes and corrupting future seq calculations.
+        # Mark voided instead of deleting from the list.
+        if isinstance(transactions[position], dict):
+            transactions[position]["voided_at"] = (
+                transactions[position].get("voided_at") or "1970-01-01 00:00:00")
+            transactions[position]["void_reason"] = "tombstone"
         out.append(dict(existing, transactions=transactions))
         removed = True
     if not removed:
