@@ -105,10 +105,10 @@ def _bump_epoch(value):
     if isinstance(value, int):
         return value + 1
     if isinstance(value, str):
-        head, marker, generation = value.partition("#")
+        head, marker, generation = value.partition("_gen")
         if marker and generation.isdigit():
-            return "%s#%d" % (head, int(generation) + 1)
-        return value + "#1"
+            return "%s_gen%d" % (head, int(generation) + 1)
+        return value + "_gen1"
     return 1
 
 

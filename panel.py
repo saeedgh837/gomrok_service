@@ -2216,7 +2216,8 @@ def cloud_resolve_conflict(payload):
         server_version = conflict.get("server_version")
         if entry.operation is not None and server_version is not None:
             entry.operation["base_version"] = server_version
-        outbox.release(operation_id)
+        new_op_id = str(uuid.uuid4())
+        outbox.release(operation_id, new_operation_id=new_op_id)
         if machine is not None and getattr(machine, "conflict_count", 0) > 0:
             if machine.can(SyncEvent.CONFLICTS_RESOLVED):
                 machine.apply(SyncEvent.CONFLICTS_RESOLVED, conflicts_cleared=1)

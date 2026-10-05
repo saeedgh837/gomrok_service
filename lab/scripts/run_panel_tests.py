@@ -153,6 +153,19 @@ DEFAULT = [
     # Host / CSRF checks on every state-changing request, and the two CRM
     # read-modify-write sites under crm.STORE_LOCK (spec §10).
     "test_auth_hardening",
+    # cloud-sync mission modules (workstreams A, B, C-client, J, K, D, E, G, F, C-host):
+    # state machine, mapper, transport/outbox, apply/pull, one-shot import, UI,
+    # conflict UI, integration/consistency suite, host schema, host API.
+    "test_cloud_state",
+    "test_cloud_mapper",
+    "test_cloud_transport",
+    "test_cloud_apply",
+    "test_cloud_import",
+    "test_cloud_ui",
+    "test_cloud_conflicts",
+    "test_cloud_integration",
+    "test_host_schema",
+    "test_host_api",
 ]
 
 names = sys.argv[1:] or DEFAULT

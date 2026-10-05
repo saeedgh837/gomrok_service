@@ -297,8 +297,10 @@ class ConflictResolutionTests(_GateHarness):
             self.assertEqual(payload["resolved"], "keep_local")
             mock_kick.assert_called_once()
 
-        # Operation base_version was updated to server_version (5)
-        entry = self.outbox.get("op-kl")
+        # Operation base_version was updated to server_version (5) and re-keyed to a fresh operation_id
+        self.assertIsNone(self.outbox.get("op-kl"))
+        self.assertEqual(len(self.outbox.entries()), 1)
+        entry = self.outbox.entries()[0]
         self.assertEqual(entry.operation["base_version"], 5)
         self.assertIsNone(entry.parked)
         self.assertEqual(self.outbox.conflict_count, 0)

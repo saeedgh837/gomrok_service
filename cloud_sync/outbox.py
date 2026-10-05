@@ -451,13 +451,24 @@ class Outbox(object):
             self._compact()
             return entry
 
-    def release(self, operation_id, *, code=None):
-        """Put a parked entry back in the send path (conflict resolved, …)."""
+    def release(self, operation_id, *, code=None, new_operation_id=None):
+        """Put a parked entry back in the send path (conflict resolved, …).
+
+        If ``new_operation_id`` is supplied, the entry is re-keyed to that id
+        so the next push is evaluated under a fresh operation id instead of
+        replaying a cached idempotency conflict on the server (spec §6.1).
+        """
         self.ensure_loaded()
         with self._lock:
             entry = self._entries.get(operation_id)
             if entry is None:
                 return None
+            if new_operation_id and new_operation_id != operation_id:
+                del self._entries[operation_id]
+                entry.operation_id = new_operation_id
+                if isinstance(entry.operation, dict):
+                    entry.operation["operation_id"] = new_operation_id
+                self._entries[new_operation_id] = entry
             entry.parked = None
             entry.due_at = None
             entry.conflict = None

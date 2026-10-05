@@ -69,6 +69,19 @@ def _check_id(value, field, *, allow_none=True):
     return value
 
 
+def _check_epoch(value):
+    """A dataset epoch: integer or short identifier string."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ConfigError(code=CONFIG_INVALID)
+    if isinstance(value, int):
+        if value < 0:
+            raise ConfigError(code=CONFIG_INVALID)
+        return str(value)
+    return _check_id(value, "dataset_epoch")
+
+
 def normalize_api_base(value):
     """Validate and canonicalise an API base URL.
 
@@ -122,7 +135,7 @@ class CloudConfig:
                 source_installation_id, "source_installation_id",
                 allow_none=False)
         self.cursor = self._check_cursor(cursor)
-        self.dataset_epoch = _check_id(dataset_epoch, "dataset_epoch")
+        self.dataset_epoch = _check_epoch(dataset_epoch)
 
     @staticmethod
     def _check_cursor(value):
@@ -159,7 +172,7 @@ class CloudConfig:
         """Record the last applied change-log position (spec §6.2)."""
         self.cursor = self._check_cursor(value)
         if dataset_epoch is not None:
-            self.dataset_epoch = _check_id(dataset_epoch, "dataset_epoch")
+            self.dataset_epoch = _check_epoch(dataset_epoch)
 
     # -- serialisation --------------------------------------------------
     def to_dict(self):
