@@ -316,6 +316,8 @@ Two agents must never write the same file.
 | **S** (security) | `panel_auth.py`, `panel.py` (gate/CSRF/lock fixes only), `lab/tests/test_auth_hardening.py` |
 | **C-host** (API) | `host/src/*.php` (except the three F owns), `host/public/index.php`, `host/public/.htaccess`, `host/bin/*`, `host/config/*`, `host/INSTALL.md`, `host/SECURITY.md`, `lab/tests/test_host_api.py` |
 | **C-client** (transport) | `cloud_sync/client.py`, `cloud_sync/outbox.py`, `cloud_sync/auth.py`, `cloud_sync/errors.py`, `cloud_sync/config.py`, `lab/tests/_cloud_api_fake.py`, `lab/tests/test_cloud_transport.py` |
+| **J** (apply/pull) | `cloud_sync/apply.py`, `lab/tests/test_cloud_apply.py` |
+| **K** (import) | `cloud_sync/importer.py`, `lab/tests/test_cloud_import.py` |
 | **D** (UI) | `panel.py` (routes + page strings for the cloud section), `lab/tests/test_cloud_ui.py` |
 | **E** (conflict UI) | `panel.py` **after D**, `lab/tests/test_cloud_conflicts.py` |
 | **G** (suite) | `lab/scripts/run_panel_tests.py`, `lab/tests/test_cloud_integration.py` |
@@ -348,8 +350,11 @@ The host package is executed here, not only reviewed. Ready on this machine:
 
 1. **Batch 1 (parallel):** F, B, A, S — disjoint files.
 2. **Batch 2 (parallel):** C-host (needs F), C-client (needs A+B), D (needs S).
-3. **Batch 3:** E (after D), G (integration + full suite), I (Persian review),
-   then 2–3 independent reviewers (H) over the whole diff.
+3. **Batch 2b (parallel, pure `cloud_sync/` library):** J (apply/pull) and K
+   (import) — no `panel.py`, so they run alongside D.
+4. **Batch 3:** E (after D; wires J and K into routes), G (integration + full
+   suite), I (Persian review), then 2–3 independent reviewers (H) over the
+   whole diff.
 
 Report contract (every workstream, exactly these 7): files reviewed · changes ·
 bugs found · tests added · tests run + results · remaining risks · decisions
@@ -411,3 +416,34 @@ Raised by workstream A (state machine), ruled while batch 1 was running:
     event swallowed there is precisely the silent drift this module exists to
     prevent. Whoever fires an event fires **exactly one** outcome or fault per
     batch attempt.
+
+Raised by workstream C-host (host API), ruled while batch 2 was running:
+
+13. **The wire shape of `collections` is uniform: every entity is a list of
+    envelopes `{id, tenant_id, row_version, record}` — `settings` included.**
+    So `settings` arrives as a 0- or 1-element list, never as a bare object.
+    The **client** owns the reconciliation, at the one seam where a payload
+    becomes rows: unwrap every envelope, then collapse `settings`
+    (0 → `{}`, 1 → that `record`, >1 → fail closed with `BAD_PAYLOAD`).
+    `mapper.merge_store` keeps taking a single dict: that is the *document*
+    shape of `crm_store.json`, not the wire shape. Both the real API and
+    `_cloud_api_fake.py` already agree on the list form, so nothing on the
+    host or in the fake changes.
+14. **Host-side CSRF (§10.2) is implemented as "no ambient authority"** —
+    bearer tokens only, `Set-Cookie` actively unset, `application/json`
+    required on every POST. No `Origin` check: the desktop client sends no
+    `Origin`, and browsers may set one. Accepted as implemented; the
+    reasoning is recorded in `host/SECURITY.md` §7.4.
+15. **A role denial aborts the whole mutation batch with `403`, raised before
+    the transaction opens.** §6.1's "no 4xx abort of the batch" governs CAS
+    conflicts only — conflicts are data, a missing grant is not.
+16. **A cross-tenant id answers `404 NOT_FOUND`, never `403`**, and the
+    foreign row is left untouched. A 403 confirms existence.
+17. **Additional accounts are created by a host CLI, never over HTTP.** §6
+    stays free of user management. `host/bin/create-user.php` must exist with
+    `--username` `--password` (or generated and printed exactly once)
+    `--display-name` `--role=admin|user` `--tenant-slug`: refuses a duplicate
+    username, never writes a hash or a password to the repository, and is the
+    supported way to create the `user`-role accounts of §7. `create-admin.php`
+    stays single-use for the *first* administrator; `--reset-password` remains
+    the rotation path and bumps `token_version`.
