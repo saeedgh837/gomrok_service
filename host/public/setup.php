@@ -167,7 +167,7 @@ if ($configError !== '') {
     if ($action === 'migrate') {
         try {
             $dbConfig = $cfg['db_migrate'] ?? $cfg['db'];
-            $db = new Database($dbConfig);
+            $db = Database::fromConfig($dbConfig);
             $db->pdo()->exec(
                 'CREATE TABLE IF NOT EXISTS schema_migrations ('
                 . '  version     VARCHAR(128) NOT NULL,'
@@ -220,7 +220,7 @@ if ($configError !== '') {
         }
     } elseif ($action === 'create_admin') {
         try {
-            $db = new Database($cfg['db']);
+            $db = Database::fromConfig($cfg['db']);
             $username = trim((string) ($_POST['username'] ?? 'admin'));
             if ($username === '') {
                 throw new RuntimeException('نام کاربری نمی‌تواند خالی باشد.');
@@ -284,7 +284,7 @@ if ($configError !== '') {
         }
     } elseif ($action === 'create_user') {
         try {
-            $db = new Database($cfg['db']);
+            $db = Database::fromConfig($cfg['db']);
             $username = trim((string) ($_POST['username'] ?? ''));
             if ($username === '') {
                 throw new RuntimeException('نام کاربری نمی‌تواند خالی باشد.');
@@ -364,7 +364,7 @@ if ($configError !== '') {
                 $pass("الگوریتم رمزنگاری پیش‌فرض PASSWORD_DEFAULT فعال است");
             }
 
-            $db = new Database($cfg['db']);
+            $db = Database::fromConfig($cfg['db']);
             $db->query('SELECT 1');
             $pass("اتصال دیتابیس با حساب کاربری اپلیکیشن برقرار است");
 
