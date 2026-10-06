@@ -93,7 +93,6 @@ function setupSplitStatements(string $sql): array
                 }
                 $state = 'normal';
             }
-            $buffer .= $char;
             continue;
         }
 
