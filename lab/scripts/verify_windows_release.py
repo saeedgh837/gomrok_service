@@ -38,9 +38,12 @@ FORBIDDEN_NAMES = {
     "logs.jsonl", "estelam_logs.jsonl", "hamta_logs.jsonl",
     "site2_notif.json", "exitban_errors.jsonl", "cloudflare_public_url.txt",
     "system_debug.json", "panel_users.json",
+    # v1.12.0: cloud sync runtime outbox, lease, state and credentials
+    "outbox.jsonl", "outbox.compacted.jsonl", "sync_state.json",
+    "sync_lease.json", "device_token.json",
 }
 FORBIDDEN_GLOBS = ["*.log", "*.pt", "secrets/*", "*-chrome-profile/*",
-                   "_dbg_last.*", "_after_submit.*"]
+                   "_dbg_last.*", "_after_submit.*", "sync_backup_*.json"]
 # Secrets and PII, by shape rather than by value, so nothing sensitive is
 # written into this script.
 SECRET_PATTERNS = [
@@ -65,6 +68,11 @@ REQUIRED = [
     "Hamta-solver/onnx_solve.py", "Hamta-solver/live_solve.py",
     "Hamta-solver/preprocess.py", "Hamta-solver/number_decode.py",
     "Hamta-solver/checkpoints/best.onnx",
+    # v1.12.0: cloud sync client modules
+    "cloud_sync/__init__.py", "cloud_sync/client.py", "cloud_sync/outbox.py",
+    "cloud_sync/apply.py", "cloud_sync/auth.py", "cloud_sync/config.py",
+    "cloud_sync/state.py", "cloud_sync/lease.py", "cloud_sync/importer.py",
+    "cloud_sync/mapper.py", "cloud_sync/errors.py", "cloud_sync/ids.py",
     "python/python.exe",
 ]
 TEXT_SUFFIXES = {".py", ".json", ".txt", ".md", ".bat", ".html", ".cfg", ".ini"}

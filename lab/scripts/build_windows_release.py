@@ -138,6 +138,11 @@ SOLVER_FILES = ["__init__.py", "config.py", "vocab.py", "preprocess.py",
 HAMTA_SOLVER_FILES = ["config.py", "vocab.py", "preprocess.py", "onnx_solve.py",
                       "live_solve.py", "utils.py", "number_decode.py"]
 
+# v1.12.0: cloud_sync package for multi-machine database synchronization.
+CLOUD_SYNC_FILES = ["__init__.py", "apply.py", "auth.py", "client.py", "config.py",
+                    "errors.py", "ids.py", "importer.py", "lease.py", "mapper.py",
+                    "outbox.py", "state.py"]
+
 RUN_PANEL_BAT = """@echo off
 REM Start the irica panel using the bundled Python runtime.
 setlocal
@@ -394,6 +399,15 @@ def copy_app(stage: Path) -> None:
                          "lab/scripts/export_hamta_onnx.py first (it also proves "
                          "parity with the torch model)")
     shutil.copy2(hamta_onnx, hamta_dst / hamta_onnx.name)
+
+    cloud_sync_dst = stage / "cloud_sync"
+    cloud_sync_dst.mkdir(parents=True, exist_ok=True)
+    for name in CLOUD_SYNC_FILES:
+        src = ROOT / "cloud_sync" / name
+        if src.exists():
+            shutil.copy2(src, cloud_sync_dst / name)
+        else:
+            log(f"  WARN missing cloud_sync/{name}")
 
     (stage / "run_panel.bat").write_text(RUN_PANEL_BAT, encoding="utf-8")
     (stage / "install.bat").write_text(INSTALL_BAT, encoding="utf-8")

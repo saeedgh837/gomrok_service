@@ -3,6 +3,54 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] - 2026-10-06
+
+### Added
+
+- **Multi-machine database synchronization with cPanel host.** Users and CRM
+  cases now sync across machines through a centralized MySQL database on
+  cPanel hosting (`api.oneserver.in`). Desktop panels synchronize changes
+  locally and seamlessly propagate mutations to all connected systems.
+- **cPanel host package (PHP 8.1 API).** Standalone, framework-free REST API
+  designed for shared hosting environments with MySQL loopback binding.
+  Includes 18-table relational schema (`001_initial.sql`), migration runner
+  (`migrate.php`), administrator bootstrap (`create-admin.php`), user creation
+  (`create-user.php`), health check (`smoke-test.php`), and a secure web-based
+  installer (`setup.php`) protected by `setup_key` for shared hosting without
+  SSH access.
+- **Durable client outbox and state machine.** Append-only `outbox.jsonl` with
+  atomic compaction and `os.fsync` durability guarantees. Local mutations are
+  enqueued immediately and pushed to the cloud backend with exponential jittered
+  backoff.
+- **Dual-token authentication and Windows DPAPI storage.** Memory-only 15-minute
+  access JWTs and 256-bit rotating refresh tokens. Tokens are securely encrypted
+  at rest using Windows DPAPI (`CryptProtectData`) restricted to the current user SID.
+- **7-day offline lease.** Operators can work completely offline for up to 7 days
+  without disruption. Upon lease expiration, the panel gracefully enters read-only
+  mode until network re-authentication.
+- **Optimistic Concurrency Control (OCC) and conflict resolution UI.** Concurrent
+  edits surface as structured `409 VERSION_CONFLICT` errors rather than silent
+  overwrites. Operators can inspect differences in the panel UI and select either
+  `keep_local` (re-enqueued with fresh operation ID) or `accept_server`.
+- **One-shot bootstrap import.** Single-transaction migration of legacy local
+  JSON databases to the cloud store with pre-flight atomic backup (`O_EXCL`),
+  SHA-256 payload digest, and server-side lock.
+- **Panel UI cloud sync surface.** Real-time sync status pill, device enrollment,
+  manual sync triggers, and conflict diff viewer styled to match IRICA design conventions.
+
+### Security
+
+- Argon2id password hashing with constant-time verification.
+- DDL-restricted database accounts (`SELECT, INSERT, UPDATE, DELETE` only).
+- CSRF, Host, and Origin checks enforced across all state-changing endpoints.
+- Strict PII, credential, and token redaction across logs and error responses.
+
+### Tests
+
+- Added 10 test modules covering client transport, outbox, auth, mapper, state
+  machine, conflict resolution, host API, schema consistency, and integration.
+- Full test suite verified green across 2,118 tests.
+
 ## [1.11.1] - 2026-09-30
 
 ### Fixed
