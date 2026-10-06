@@ -125,6 +125,43 @@ the directory itself (`0750`).
 
 ---
 
+## 3.5. Shared hosting without SSH or Terminal access
+
+If your cPanel plan does not provide SSH or Terminal access, you have two safe options to run migrations, create the admin user, and verify the host:
+
+### Option A: Web Setup Tool (`setup.php`) — Recommended for non-technical setup
+
+1. In `config/config.php`, set a strong random secret in `setup_key`:
+   ```php
+   'setup_key' => 'YOUR_RANDOM_LONG_SECRET_KEY',
+   ```
+2. Open your browser and navigate to:
+   ```
+   https://api.<domain>/setup.php?key=YOUR_RANDOM_LONG_SECRET_KEY
+   ```
+3. Use the web interface to:
+   - Run database migrations (creates all 18 tables).
+   - Create the initial admin user.
+   - Run the smoke test to verify extensions and database connectivity.
+   - Click **"حذف خودکار فایل setup.php"** to permanently delete the setup script from the server once finished.
+
+### Option B: Temporary cPanel Cron Job
+
+cPanel → **Cron Jobs**:
+1. Schedule a job to run once (e.g. `* * * * *`):
+   ```sh
+   /usr/local/bin/php /home/youruser/irica-host/bin/migrate.php > /home/youruser/migrate.log 2>&1
+   ```
+2. Check `migrate.log` in cPanel File Manager to confirm migration status.
+3. Run the admin creation cron:
+   ```sh
+   /usr/local/bin/php /home/youruser/irica-host/bin/create-admin.php --username=admin > /home/youruser/admin.log 2>&1
+   ```
+4. Check `admin.log` to retrieve the generated admin password.
+5. Delete the cron jobs immediately from cPanel.
+
+---
+
 ## 4. Create the schema
 
 Run migrations from the shell, **never** from a URL:

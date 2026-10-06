@@ -92,4 +92,8 @@ return [
     // Optional: an operator sets this to the public health URL so that
     // bin/smoke-test.php can prove TLS and response headers on the live host.
     'smoke_probe_url' => null,
+
+    // Optional setup key for web-based installation on shared hosting without SSH.
+    // If set, you can visit https://api.<domain>/setup.php?key=YOUR_SETUP_KEY
+    'setup_key' => null,
 ];
