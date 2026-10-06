@@ -69,6 +69,13 @@ try {
 
     $request = Request::capture($_SERVER, $_GET, $maxBody);
     $requestId = $request->requestId;
+
+    // Optional web-setup runner for shared hosting (delegates to setup.php if present)
+    if (str_ends_with($request->path, '/setup.php') && file_exists(__DIR__ . '/setup.php')) {
+        require __DIR__ . '/setup.php';
+        exit;
+    }
+
     $route = routeOf($request->path, (string) ($config['base_path'] ?? '/v1'));
 
     // Route table. A path that exists under another verb answers 405, so a
