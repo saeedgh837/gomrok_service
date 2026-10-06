@@ -63,7 +63,7 @@ import json
 import os
 
 from cloud_sync import mapper
-from cloud_sync.errors import BadResponseError
+from cloud_sync.errors import BadResponseError, RemoteNotReadyError
 from cloud_sync.ids import ENTITIES, legacy_to_uuid
 from cloud_sync.mapper import (SETTINGS_LEGACY_ID, STORE_COLLECTIONS,
                                transaction_legacy_id)
@@ -477,6 +477,16 @@ def apply_snapshot(payload, *, store, source_installation_id, versions,
     merged = mapper.merge_store(rows, tz=tz,
                                 source_installation_id=source_installation_id)
     local = _read_document(store, route)
+    local_count = sum(
+        len(local.get(store_key) or [])
+        for store_key, _entity in STORE_COLLECTIONS
+        if isinstance(local.get(store_key), list)
+    )
+    bootstrap_status = payload.get("bootstrap_status")
+    if bootstrap_status is not None and bootstrap_status != "done":
+        raise RemoteNotReadyError(route=route)
+    if local_count > 0 and not envelopes:
+        raise RemoteNotReadyError(route=route)
     is_dirty = _dirty_predicate(dirty)
     document = dict(local)
     taken = set()

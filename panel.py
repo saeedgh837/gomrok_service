@@ -1300,6 +1300,7 @@ CLOUD_ERROR_MESSAGES = {
                              "تداخل‌ها را بررسی کنید."),
     "DATASET_NOT_EMPTY": "داده‌های میزبان خالی نیست؛ امکان انتقال مجدد وجود ندارد.",
     "IMPORT_CONFLICT": "شناسه یا محتوای انتقال با نسخه قبلی همخوانی ندارد.",
+    "REMOTE_NOT_READY": "سرور ابری هنوز آماده نیست یا پرونده‌ها به آن منتقل نشده‌اند.",
 }
 
 #: A code that fits the grammar but is unknown to this build: still generic
@@ -1312,6 +1313,7 @@ CLOUD_BEAT_WORDS = {
     "disabled": "همگام‌سازی خاموش است.",
     "not_configured": "هنوز پیکربندی نشده است.",
     "awaiting_login": "در انتظار ورود به میزبان.",
+    "remote_not_ready": "سرور ابری آماده نیست (در انتظار انتقال پرونده‌ها).",
 }
 
 #: Codes that mean "the host session is not usable" (spec §9: surface, stop).
@@ -1809,12 +1811,14 @@ def cloud_worker_beat():
                     return _cloud_note_beat(code=exc.code)
                 return _cloud_note_beat(code=exc.code)
 
+        skipped = pull_result.get("skipped") if (pull_result and not getattr(outcome, "attempted", False) and not getattr(outcome, "code", None)) else None
         return _cloud_note_beat(
             attempted=bool(getattr(outcome, "attempted", False)),
             applied=int(getattr(outcome, "applied", 0) or 0),
             conflicts=int(getattr(outcome, "conflicts", 0) or 0),
             code=getattr(outcome, "code", None),
             terminal=getattr(outcome, "terminal", None),
+            skipped=skipped,
             pulled=(pull_result.get("pulled", 0) if pull_result else 0))
     except LeaseExpiredError:
         return _cloud_note_beat(code="LEASE_EXPIRED")
@@ -2072,6 +2076,7 @@ def cloud_pull_step(runtime=None):
     """
     from cloud_sync import apply
     from cloud_sync.apply import FileStore
+    from cloud_sync.errors import RemoteNotReadyError
     from cloud_sync.lease import LeaseExpiredError
 
     if runtime is None:
@@ -2097,13 +2102,16 @@ def cloud_pull_step(runtime=None):
     with crm_mod.STORE_LOCK:
         if getattr(config, "cursor", 0) == 0:
             snapshot = client.bootstrap()
-            apply.apply_snapshot(
-                snapshot,
-                store=store,
-                source_installation_id=source_installation_id,
-                versions=versions,
-                dirty=dirty,
-            )
+            try:
+                apply.apply_snapshot(
+                    snapshot,
+                    store=store,
+                    source_installation_id=source_installation_id,
+                    versions=versions,
+                    dirty=dirty,
+                )
+            except RemoteNotReadyError:
+                return {"pulled": 0, "skipped": "remote_not_ready"}
             _save_cloud_versions(versions, versions_path)
             pulled_pages = 1
         else:
@@ -5357,12 +5365,9 @@ function renderTelegram(){
     '<input id="tg_token" type="password" class="ltr" autocomplete="off" placeholder="'+(TELEGRAM.token_set?'برای تغییر، توکن جدید را وارد کنید (خالی = بدون تغییر)':'توکن ربات را وارد کنید')+'">'+
     '<label>Chat IDها (هر کدام یک خط)</label><textarea id="tg_ids" class="ltr">'+escHtml((TELEGRAM.chat_ids||[]).join('\n'))+'</textarea>'+
     '<button class="save" onclick="saveTelegram()">'+ICON.save+' ذخیره تنظیمات تلگرام</button><div class="toast" id="tg_toast"></div>'+
-    '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>'+
-    cloudShellHtml();
+    '<p class="hint">این تنظیمات بیرون از پوشه‌ی برنامه ذخیره می‌شوند، پس با نصب نسخه‌ی جدید پاک نمی‌شوند و لازم نیست دوباره وارد شوند.</p>';
   renderSystemLogs();
   loadSystemLogs();
-  paintCloud();          // the shell is new: repaint what we already know
-  if(document.getElementById('cloud-sync-section')) loadCloudStatus();
 }
 
 function saveTelegram(){
@@ -7863,6 +7868,85 @@ CRM_PAGE = r"""<!DOCTYPE html>
   @media (max-width:640px){body{padding:14px 10px 70px}
     .devgrid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(3){border-inline-start:none}}
 
+  /* --- CRM Cloud Sync Surface (v1.12.1) --- */
+  .cloud-card { display:grid; gap:14px; }
+  .cloud-banner { display:none; gap:11px; align-items:flex-start; padding:13px 15px;
+    border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));
+    border-inline-start:5px solid var(--warn); border-radius:12px;
+    background:var(--warn-soft); color:var(--txt); }
+  .cloud-banner.on { display:flex; }
+  .cloud-banner .cloud-banner-b { font-size:13.5px; font-weight:750; color:var(--warn); }
+  .cloud-banner .cloud-banner-p { margin:6px 0 0; font-size:12px; line-height:1.85; }
+  .cloud-state-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-height:32px; }
+  .cloud-pill { display:inline-flex; align-items:center; gap:7px; min-inline-size:140px;
+    justify-content:flex-start; padding:6px 13px; border-radius:999px; border:1px solid transparent;
+    font-size:12px; font-weight:700; cursor:pointer; font-family:inherit; }
+  .cloud-pill.ok { color:var(--ok); background:var(--ok-soft); border-color:color-mix(in srgb,var(--ok) 30%,var(--line)); }
+  .cloud-pill.warn { color:var(--warn); background:var(--warn-soft); border-color:color-mix(in srgb,var(--warn) 30%,var(--line)); }
+  .cloud-pill.bad { color:var(--danger); background:var(--danger-soft); border-color:color-mix(in srgb,var(--danger) 30%,var(--line)); }
+  .cloud-pill.mute { color:var(--muted); background:var(--card); border-color:var(--line); }
+  .cloud-actor { display:none; align-items:center; gap:7px; font-size:12px; color:var(--muted); }
+  .cloud-actor.on { display:inline-flex; }
+  .cloud-actor b { color:var(--txt); font-weight:700; }
+  .cloud-facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .cloud-fact { display:flex; flex-direction:column; justify-content:space-between; gap:6px;
+    min-height:64px; padding:11px 12px; border:1px solid var(--line); border-radius:11px;
+    background:var(--card); }
+  .cloud-fact-l { font-size:11px; color:var(--muted); line-height:1.6; }
+  .cloud-fact-v { font-size:15px; font-weight:750; color:var(--txt); word-break:break-word; }
+  .cloud-fact-v.cloud-code { direction:ltr; text-align:right; font-family:var(--mono, monospace);
+    font-size:12.5px; letter-spacing:.4px; color:var(--warn); overflow-wrap:anywhere; }
+  .cloud-error { display:none; gap:8px; align-items:flex-start; padding:10px 13px; border-radius:10px;
+    border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line));
+    background:var(--danger-soft); color:var(--danger); font-size:12.5px; line-height:1.8; }
+  .cloud-error.on { display:flex; }
+  .cloud-status { min-height:18px; font-size:12px; color:var(--muted); line-height:1.7; }
+  .cloud-status.ok { color:var(--ok); }
+  .cloud-status.bad { color:var(--danger); }
+  .cloud-actions { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
+  .cloud-btn { width:auto; min-width:160px; padding:10px 16px; border:0;
+    border-radius:10px; background:var(--brand); color:var(--on-brand); font-family:inherit;
+    font-size:12.5px; font-weight:650; cursor:pointer; display:inline-flex; align-items:center;
+    justify-content:center; gap:7px; transition:background .15s,opacity .15s; box-shadow:var(--shadow-1); }
+  .cloud-btn:hover { background:var(--brand-hover); }
+  .cloud-btn[disabled] { opacity:.55; cursor:progress; }
+  .cloud-btn.ghost { background:transparent; color:var(--txt); border:1px solid var(--line); box-shadow:none; }
+  .cloud-btn.ghost:hover { border-color:var(--brand); color:var(--brand); background:var(--brand-soft); }
+  .cloud-btn.ghost-danger { background:transparent; color:var(--danger);
+    border:1px solid color-mix(in srgb,var(--danger) 40%,var(--line)); box-shadow:none; }
+  .cloud-btn.ghost-danger:hover { background:var(--danger-soft); }
+  .cloud-btn.mini { min-width:auto; padding:6px 12px; font-size:11.5px; }
+  .cloud-block { display:grid; gap:10px; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+  .cloud-block > strong { font-size:13.5px; font-weight:750; }
+  .cloud-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .cloud-field { display:grid; gap:6px; min-width:0; }
+  .cloud-field label { font-size:11.5px; color:var(--muted); }
+  .cloud-field input { min-height:40px; }
+  .cloud-notice { display:none; gap:8px; align-items:flex-start; padding:10px 13px; border-radius:10px;
+    border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
+    background:var(--warn-soft); color:var(--warn); font-size:12.5px; line-height:1.8; }
+  .cloud-notice.on { display:flex; }
+  .cloud-conflicts { display:none; gap:9px; padding-top:13px; border-top:1px dashed var(--line); }
+  .cloud-conflicts.on { display:grid; }
+  .cloud-conflict-count { font-size:12.5px; color:var(--muted); margin-bottom:4px; }
+  .cloud-conflict-card { display:grid; gap:9px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--card2); }
+  .cloud-conflict-head { display:flex; justify-content:space-between; align-items:center; font-size:12.5px; }
+  .cloud-conflict-table { width:100%; border-collapse:collapse; font-size:11.5px; margin:4px 0; }
+  .cloud-conflict-table th, .cloud-conflict-table td { padding:5px 8px; border:1px solid var(--line); text-align:start; }
+  .cloud-conflict-table th { background:var(--card); color:var(--muted); font-weight:600; }
+  .cloud-conflict-table td.diff-loc { color:var(--brand); }
+  .cloud-conflict-table td.diff-srv { color:var(--ok); }
+  .cloud-conflict-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .cloud-tutorial { display:grid; gap:12px; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card2); }
+  .cloud-tutorial h4 { margin:0; font-size:14px; font-weight:750; color:var(--brand); display:flex; align-items:center; gap:8px; }
+  .cloud-tutorial-step { display:grid; gap:4px; font-size:12.5px; line-height:1.75; }
+  .cloud-tutorial-code { direction:ltr; text-align:left; background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; padding:8px 12px; font-family:monospace; font-size:12px; overflow-x:auto; }
+  @media (max-width:900px){
+    .cloud-facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .cloud-fields { grid-template-columns:minmax(0,1fr); }
+  }
+
 </style>
 </head>
 <body>
@@ -7874,6 +7958,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
       <a class="navlink" href="/site-1"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>سامانه مدیریت گمرک</a>
     </nav>
     <div class="headacts">
+      <button class="iconbtn cloud-pill mute" id="crmCloudPill" onclick="setTab('cloud')" title="وضعیت سرور ابری" style="margin-inline-end:4px"><span id="crmCloudPillIcon"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg></span><span id="crmCloudPillText">سرور ابری</span></button>
       <div class="wwrap">
         <button class="iconbtn" id="widthBtn" aria-expanded="false" aria-haspopup="true" title="عرض صفحه"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg> عرض</button>
         <div class="wpop" id="wPop">
@@ -7987,7 +8072,7 @@ var TABS = [
   ['owner_archive','بایگانی مسافر‌ها'],
   ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
   ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
-  ['settings','تنظیمات']
+  ['settings','تنظیمات'],['cloud','سرور ابری']
 ];
 /* v1.4.0 per-tab search/filter state (session memory only — never sent to
    the server): TAB_Q keeps the query per tab, TAB_STAGE_FILTER is the
@@ -9024,6 +9109,7 @@ function bodyHtml(){
   else if(TAB==='periodic')body=periodicHtml();
   else if(TAB==='ledger')body=ledgerHtml();
   else if(TAB==='settings')body=settingsHtml();
+  else if(TAB==='cloud')body=cloudTabHtml();
   else body=reportsHtml();
   return body;
 }
@@ -10319,6 +10405,363 @@ function quickBoxShow(){
   try{localStorage.removeItem('irica-quickbox');}catch(e){}
   renderQuickBox();
 }
+
+/* ================= CRM Cloud Sync Surface (v1.12.1) ================= */
+var CLOUD={last:null,timer:null,burst:null,busy:false};
+var CLOUD_UNKNOWN_MESSAGE='خطای همگام‌سازی؛ کد آن را به پشتیبانی اعلام کنید.';
+var CLOUD_ICONS={
+  dot:'<svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>',
+  checkCircle:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>',
+  xCircle:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
+  alert:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  lock:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10.5" rx="2.5"/><path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"/></svg>',
+  info:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  minusCircle:'<svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>'
+};
+var CLOUD_LINK={
+  unconfigured:{cls:'mute',icon:'dot',label:'پیکربندی‌نشده'},
+  connected:{cls:'ok',icon:'checkCircle',label:'متصل'},
+  syncing:{cls:'ok',icon:'dot',label:'در حال همگام‌سازی'},
+  offline:{cls:'bad',icon:'xCircle',label:'آفلاین'},
+  read_only:{cls:'warn',icon:'alert',label:'فقط‌خواندنی'},
+  auth_required:{cls:'warn',icon:'lock',label:'نیازمند ورود'},
+  not_enrolled:{cls:'warn',icon:'info',label:'ثبت‌نشده'},
+  conflict:{cls:'warn',icon:'alert',label:'نیازمند بررسی تداخل'},
+  disabled:{cls:'mute',icon:'minusCircle',label:'غیرفعال'},
+  error:{cls:'bad',icon:'xCircle',label:'خطا'}
+};
+var CLOUD_CONFLICTS_CACHE=null;
+var CLOUD_CONFLICTS_FETCHING=false;
+var CLOUD_ENTITY_NAMES={
+  'customers':'مشتری',
+  'customer_transactions':'تراکنش مشتری',
+  'owners':'مسافر / مالک',
+  'identities':'استخر هویتی',
+  'devices':'دستگاه / پرونده',
+  'crm_devices':'دستگاه / پرونده',
+  'periods':'دوره مالی',
+  'settings':'تنظیمات'
+};
+
+function cloudTabHtml(){
+  return '<div class="cloud-card" id="cloud-sync-section">'+
+    '<div class="card" style="display:grid;gap:12px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'+
+        '<div><h3 style="margin:0;font-size:16px;font-weight:750">سرور ابری و پایگاه داده مشترک</h3>'+
+        '<p class="hint" style="margin:4px 0 0">داده‌های CRM (پرونده‌ها، مشتریان، مسافران، دوره‌ها و تراکنش‌ها) روی سرور ابری ذخیره می‌شوند و بین همهٔ سیستم‌های همکاران همگام‌سازی می‌گردند.</p></div>'+
+        '<div class="cloud-state-row">'+
+          '<span class="cloud-pill mute" id="cloud-pill"><span id="cloud-pill-icon">'+CLOUD_ICONS.dot+'</span><span id="cloud-pill-text">در حال بررسی…</span></span>'+
+          '<span class="cloud-actor" id="cloud-actor"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>کاربر فعال:</span><b id="cloud-actor-name"></b></span>'+
+        '</div>'+
+      '</div>'+
+      '<div class="cloud-banner" id="cloud-readonly-banner" role="alert">'+CLOUD_ICONS.alert+
+        '<div><span class="cloud-banner-b">دستگاه در حالت فقط‌خواندنی است</span>'+
+        '<p class="cloud-banner-p">مهلت کارکرد آفلاین هفت‌روزه به پایان رسیده است. تا زمانی که دوباره وارد نشوید، ویرایش‌های محلی پذیرفته نمی‌شوند؛ خواندن داده‌ها ادامه دارد.</p></div></div>'+
+      '<div class="cloud-notice" id="cloud-must-change" role="alert">'+CLOUD_ICONS.alert+
+        '<div><span class="cloud-banner-b">رمز عبور باید تغییر کند</span>'+
+        '<p class="cloud-banner-p">برای ادامه، رمز عبور حساب خود در سرور را تغییر دهید.</p></div></div>'+
+      '<div class="cloud-facts">'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">آخرین همگام‌سازی موفق</span><span class="cloud-fact-v" id="cloud-last-sync">—</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">تغییرات در صف ارسال</span><span class="cloud-fact-v" id="cloud-pending">۰</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">تداخل‌های نیازمند بررسی</span><span class="cloud-fact-v" id="cloud-conflicts">۰</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">کد آخرین خطا</span><span class="cloud-fact-v cloud-code" id="cloud-error-code">—</span></div>'+
+      '</div>'+
+      '<div class="cloud-error" id="cloud-error-line" role="alert">'+CLOUD_ICONS.alert+'<span id="cloud-error-text"></span></div>'+
+      '<div class="cloud-status" id="cloud-beat-line" role="status"></div>'+
+      '<div class="cloud-status" id="cloud-action-status" role="status" aria-live="polite"></div>'+
+      '<div class="cloud-actions">'+
+        '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
+        '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال پرونده‌های محلی به سرور (Import یکباره)</span></button>'+
+        '<button type="button" class="cloud-btn ghost-danger hidden" id="cloud-logout-btn" onclick="cloudLogout()"><span class="cloud-lbl">خروج از حساب سرور</span></button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="cloud-block">'+
+      '<strong>تنظیمات اتصال به سرور ابری</strong>'+
+      '<p class="hint">آدرس سرور و شناسه‌ی سازمان باید روی همهٔ سیستم‌های همکاران یکسان تنظیم شود.</p>'+
+      '<div class="cloud-fields">'+
+        '<div class="cloud-field"><label for="cloud-api">آدرس وب‌سرویس سرور (API Base)</label>'+
+          '<input id="cloud-api" type="text" class="ltr" autocomplete="off" spellcheck="false" placeholder="https://api.example.com"></div>'+
+        '<div class="cloud-field"><label for="cloud-tenant">شناسه‌ی سازمان (Tenant ID)</label>'+
+          '<input id="cloud-tenant" type="text" class="ltr" autocomplete="off" spellcheck="false"></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:8px">'+
+        '<button type="button" class="cloud-btn mini" id="cloud-save-btn" onclick="cloudSaveConfig()"><span class="cloud-lbl">ذخیره تنظیمات اتصال</span></button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="cloud-block hidden" id="cloud-login-block">'+
+      '<strong>ورود و اتصال دستگاه به سرور</strong>'+
+      '<p class="hint">با نام کاربری و رمز عبوری که در سرور ساخته شده است وارد شوید تا این دستگاه ثبت و متصل گردد.</p>'+
+      '<div class="cloud-fields">'+
+        '<div class="cloud-field"><label for="cloud-user">نام کاربری در سرور</label>'+
+          '<input id="cloud-user" type="text" class="ltr" autocomplete="username" spellcheck="false"></div>'+
+        '<div class="cloud-field"><label for="cloud-pass">رمز عبور در سرور</label>'+
+          '<input id="cloud-pass" type="password" class="ltr" autocomplete="current-password"></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:8px">'+
+        '<button type="button" class="cloud-btn mini" id="cloud-login-btn" onclick="cloudLogin()"><span class="cloud-lbl">ورود و ثبت دستگاه</span></button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="cloud-conflicts" id="cloud-conflicts-view"></div>'+
+    '<div class="cloud-tutorial">'+
+      '<h4><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg> راهنمای افزودن کاربر (همکار جدید) در سرور ابری</h4>'+
+      '<div class="cloud-tutorial-step">'+
+        '<b>۱. ایجاد حساب کاربری برای همکار روی سرور:</b>'+
+        '<span>از طریق ترمینال SSH یا سرور cPanel وارد پوشهٔ پکیج سرور شوید و دستور زیر را اجرا کنید:</span>'+
+        '<div class="cloud-tutorial-code">php bin/create-user.php --username=colleague1 --password=StrongPassword123 --role=operator</div>'+
+        '<span class="hint">نکته: نقش operator برای ثبت و ویرایش پرونده‌ها توسط همکار مناسب است. نقش admin برای مدیریت سازمان و کاربران است.</span>'+
+      '</div>'+
+      '<div class="cloud-tutorial-step">'+
+        '<b>۲. ارائه اطلاعات اتصال به همکار:</b>'+
+        '<span>سه مورد را در اختیار همکار قرار دهید: ۱. آدرس وب‌سرویس سرور (API Base)، ۲. شناسه‌ی سازمان (Tenant ID)، ۳. نام کاربری و رمز عبوری که ساختید.</span>'+
+      '</div>'+
+      '<div class="cloud-tutorial-step">'+
+        '<b>۳. اتصال در سیستم همکار:</b>'+
+        '<span>همکار کافیست در پنل سیستم خود به همین تب «سرور ابری» بیاید، آدرس و شناسه سازمان را ذخیره کند و سپس با نام کاربری خود وارد شود.</span>'+
+      '</div>'+
+      '<div class="cloud-tutorial-step">'+
+        '<b>۴. همگام‌سازی خودکار:</b>'+
+        '<span>به محض ورود همکار، تمام پرونده‌ها و اطلاعات CRM به صورت خودکار از سرور دریافت و همگام می‌شوند. روی سیستم همکار <b>نیازی به زدن دکمهٔ انتقال پرونده‌ها (Import) نیست</b> (انتقال پرونده‌ها فقط یکبار در سیستم اصلی که داده‌های اولیه را داشت زده می‌شود).</span>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function paintCloud(){
+  var s=CLOUD.last;
+  var link=s&&s.link?s.link:'unconfigured';
+  if(link==='connected'&&s&&s.state==='syncing')link='syncing';
+  var meta=CLOUD_LINK[link]||CLOUD_LINK.error;
+
+  var hpill=document.getElementById('crmCloudPill');
+  if(hpill){
+    hpill.className='iconbtn cloud-pill '+meta.cls;
+    var hicon=document.getElementById('crmCloudPillIcon');
+    if(hicon)hicon.innerHTML=CLOUD_ICONS[meta.icon]||CLOUD_ICONS.dot;
+    var htext=document.getElementById('crmCloudPillText');
+    if(htext)htext.textContent=meta.label;
+  }
+
+  if(!document.getElementById('cloud-sync-section'))return;
+  var pill=document.getElementById('cloud-pill');
+  if(pill){
+    pill.className='cloud-pill '+meta.cls;
+    var picon=document.getElementById('cloud-pill-icon');
+    if(picon)picon.innerHTML=CLOUD_ICONS[meta.icon]||CLOUD_ICONS.dot;
+    var ptext=document.getElementById('cloud-pill-text');
+    if(ptext)ptext.textContent=meta.label;
+  }
+  var rBanner=document.getElementById('cloud-readonly-banner');
+  if(rBanner)rBanner.classList.toggle('on',Boolean(s&&s.read_only));
+  var mChange=document.getElementById('cloud-must-change');
+  if(mChange)mChange.classList.toggle('on',Boolean(s&&s.must_change_password));
+  var name=s&&s.actor?String(s.actor):'';
+  var actorEl=document.getElementById('cloud-actor');
+  if(actorEl)actorEl.classList.toggle('on',Boolean(name));
+  var actorName=document.getElementById('cloud-actor-name');
+  if(actorName)actorName.textContent=name;
+  var lastSync=document.getElementById('cloud-last-sync');
+  if(lastSync)lastSync.textContent=(s&&s.last_sync)?faDateTime(s.last_sync):'—';
+  var pending=document.getElementById('cloud-pending');
+  if(pending)pending.textContent=fa(s?Number(s.pending||0):0);
+  var conflicts=document.getElementById('cloud-conflicts');
+  if(conflicts)conflicts.textContent=fa(s?Number(s.conflicts||0):0);
+  var errCode=document.getElementById('cloud-error-code');
+  if(errCode)errCode.textContent=(s&&s.error_code)?s.error_code:'—';
+  var msg=(s&&s.error_message)?String(s.error_message):'';
+  var errLine=document.getElementById('cloud-error-line');
+  if(errLine)errLine.classList.toggle('on',Boolean(msg));
+  var errText=document.getElementById('cloud-error-text');
+  if(errText)errText.textContent=msg;
+  var beatLine=document.getElementById('cloud-beat-line');
+  if(beatLine)beatLine.textContent=cloudBeatLine(s);
+  var loginBlock=document.getElementById('cloud-login-block');
+  if(loginBlock)loginBlock.classList.toggle('hidden',Boolean(name));
+  var logoutBtn=document.getElementById('cloud-logout-btn');
+  if(logoutBtn)logoutBtn.classList.toggle('hidden',!Boolean(name));
+  var syncBtn=document.getElementById('cloud-sync-btn');
+  if(syncBtn)syncBtn.disabled=Boolean(CLOUD.busy)||!(s&&s.configured);
+  var importBtn=document.getElementById('cloud-import-btn');
+  if(importBtn)importBtn.classList.toggle('hidden',!(s&&s.can_import));
+  var apiInput=document.getElementById('cloud-api');
+  if(apiInput&&!apiInput.value&&s&&s.api_base)apiInput.value=s.api_base;
+  var tenantInput=document.getElementById('cloud-tenant');
+  if(tenantInput&&!tenantInput.value&&s&&s.tenant_id)tenantInput.value=s.tenant_id;
+  renderCloudConflicts(document.getElementById('cloud-conflicts-view'),s);
+}
+
+function cloudBeatLine(s){
+  if(!s)return '';
+  var line=s.worker==='running'?'سرویس همگام‌سازی در حال اجراست.':'سرویس همگام‌سازی متوقف است.';
+  var b=s.worker_last;
+  if(!b)return line;
+  if(b.message)return line+' '+b.message;
+  if(b.attempted)return line+' ارسال گروهی انجام شد.';
+  return line+' تغییری برای ارسال نبود.';
+}
+
+function loadCloudStatus(){
+  return fetch('/cloud-status',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      CLOUD.last=(d&&typeof d==='object')?d:null;
+      paintCloud();
+      renderTabs();
+      return d;
+    })
+    .catch(function(){
+      paintCloud();
+      return null;
+    });
+}
+
+function cloudSetBusy(on,label){
+  CLOUD.busy=on;
+  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn','cloud-import-btn'].forEach(function(id){
+    var b=document.getElementById(id);if(b)b.disabled=on;
+  });
+  var st=document.getElementById('cloud-action-status');
+  if(!st)return;
+  st.className='cloud-status';
+  st.textContent=label||'';
+}
+
+function cloudResult(ok,text,code){
+  var st=document.getElementById('cloud-action-status');
+  if(st){
+    st.className='cloud-status'+(ok?' ok':' bad');
+    st.textContent=text+(code?' ['+code+']':'');
+  }
+  paintCloud();
+}
+
+function cloudPost(path,body,onOk){
+  cloudSetBusy(true,'در حال انجام…');
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body||{})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      cloudSetBusy(false,'');
+      if(d&&d.ok){cloudResult(true,'انجام شد.');if(onOk)onOk(d);}
+      else{cloudResult(false,(d&&d.errors&&d.errors[0])?d.errors[0]:CLOUD_UNKNOWN_MESSAGE,d&&d.code);}
+      loadCloudStatus();
+    })
+    .catch(function(){
+      cloudSetBusy(false,'');
+      cloudResult(false,'ارتباط با پنل برقرار نشد؛ دوباره تلاش کنید.');
+      loadCloudStatus();
+    });
+}
+
+function cloudSyncNow(){
+  cloudPost('/cloud-sync-now',{},function(){toast('همگام‌سازی با موفقیت انجام شد.',true);});
+}
+
+function cloudSaveConfig(){
+  cloudPost('/cloud-config',{api_base:document.getElementById('cloud-api').value,
+    tenant_id:document.getElementById('cloud-tenant').value},function(d){
+      CLOUD.last=d;paintCloud();toast('تنظیمات اتصال به سرور ذخیره شد.',true);
+    });
+}
+
+function cloudLogin(){
+  var u=document.getElementById('cloud-user'),p=document.getElementById('cloud-pass');
+  var username=u.value,password=p.value;
+  p.value='';
+  cloudPost('/cloud-login',{username:username,password:password},function(){
+    u.value='';toast('دستگاه با موفقیت در سرور ثبت شد.',true);
+  });
+}
+
+function cloudLogout(){
+  if(!confirm('آیا از خروج از حساب سرور اطمینان دارید؟'))return;
+  cloudPost('/cloud-logout',{},function(){toast('از حساب سرور خارج شدید.',true);});
+}
+
+function cloudImportPrompt(){
+  if(confirm('آیا از انتقال پرونده‌های فعلی به سرور (Import) اطمینان دارید؟ این عملیات فقط یک بار در سیستم اصلی انجام می‌شود.')){
+    cloudPost('/cloud-import',{},function(d){
+      var n=d&&d.rows!=null?d.rows:0;
+      toast('انتقال با موفقیت انجام شد ('+fa(n)+' رکورد منتقل شد).',true);
+    });
+  }
+}
+
+function renderCloudConflicts(container,s){
+  if(!container)return;
+  if(s&&Number(s.conflicts||0)>0){
+    container.classList.add('on');
+    var count=fa(s.conflicts);
+    var head='<div class="cloud-conflict-count"><strong>تداخل‌ها:</strong> '+count+' مورد در انتظار تصمیم شماست.</div>';
+    if(typeof CLOUD_CONFLICTS_CACHE!=='undefined'&&CLOUD_CONFLICTS_CACHE&&CLOUD_CONFLICTS_CACHE.length>0){
+      var cards='';
+      for(var i=0;i<CLOUD_CONFLICTS_CACHE.length;i++){
+        var c=CLOUD_CONFLICTS_CACHE[i];
+        var ent=(typeof CLOUD_ENTITY_NAMES!=='undefined'&&CLOUD_ENTITY_NAMES[c.entity])?CLOUD_ENTITY_NAMES[c.entity]:(c.entity||'مورد');
+        cards+='<div class="cloud-conflict-card">'+
+          '<div class="cloud-conflict-head"><strong>'+esc(ent)+'</strong> <span class="kbd ltr">'+esc(c.id||'')+'</span></div>'+
+          diffHtml(c.local_record,c.server_record)+
+          '<div class="cloud-conflict-actions">'+
+            '<button type="button" class="cloud-btn mini" onclick="resolveCloudConflict(\''+c.operation_id+'\',\'keep_local\',this)"><span class="cloud-lbl">نگه‌داشتن تغییرات من (روی سرور ذخیره شود)</span></button>'+
+            '<button type="button" class="cloud-btn mini ghost" onclick="resolveCloudConflict(\''+c.operation_id+'\',\'accept_server\',this)"><span class="cloud-lbl">پذیرش نسخه سرور (تغییرات محلی لغو شود)</span></button>'+
+          '</div>'+
+        '</div>';
+      }
+      container.innerHTML=head+cards;
+    }else{
+      container.innerHTML=head+'<div class="hint">در حال دریافت اطلاعات تداخل‌ها…</div>';
+      if(typeof fetch==='function'&&!CLOUD_CONFLICTS_FETCHING){
+        fetchCloudConflicts();
+      }
+    }
+  }else{
+    container.classList.remove('on');
+    container.innerHTML='';
+    if(typeof CLOUD_CONFLICTS_CACHE!=='undefined')CLOUD_CONFLICTS_CACHE=null;
+  }
+
+  function diffHtml(loc,srv){
+    loc=loc||{}; srv=srv||{};
+    var keys={};
+    for(var k in loc)keys[k]=true;
+    for(var k in srv)keys[k]=true;
+    var rows='';
+    for(var key in keys){
+      var lv=loc[key], sv=srv[key];
+      var ls=(lv===undefined||lv===null)?'—':(typeof lv==='object'?JSON.stringify(lv):String(lv));
+      var ss=(sv===undefined||sv===null)?'—':(typeof sv==='object'?JSON.stringify(sv):String(sv));
+      if(ls!==ss){
+        rows+='<tr><th>'+esc(key)+'</th><td class="diff-loc">'+esc(ls)+'</td><td class="diff-srv">'+esc(ss)+'</td></tr>';
+      }
+    }
+    if(!rows)return '<div class="hint">تغییر فیلد مشخصی ثبت نشده است.</div>';
+    return '<table class="cloud-conflict-table"><thead><tr><th>فیلد</th><th>نسخه محلی (من)</th><th>نسخه سرور</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+}
+
+function fetchCloudConflicts(){
+  CLOUD_CONFLICTS_FETCHING=true;
+  fetch('/cloud-conflicts',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      CLOUD_CONFLICTS_FETCHING=false;
+      if(d&&d.ok&&Array.isArray(d.conflicts)){
+        CLOUD_CONFLICTS_CACHE=d.conflicts;
+        var el=document.getElementById('cloud-conflicts-view');
+        if(el)renderCloudConflicts(el,CLOUD.last);
+      }
+    })
+    .catch(function(){
+      CLOUD_CONFLICTS_FETCHING=false;
+    });
+}
+
+function resolveCloudConflict(opId,resolution,btn){
+  if(btn)btn.disabled=true;
+  cloudPost('/cloud-resolve-conflict',{operation_id:opId,resolution:resolution},function(){
+    CLOUD_CONFLICTS_CACHE=null;
+    loadCloudStatus();
+  });
+}
 function dueIn(d,hours){
   if(d.periodic_opt_out)return '—';
   var last=String(d.last_inquiry_at||'');
@@ -11276,7 +11719,7 @@ var HISTORY_EVENT_KEYS = {
   identities:['identity_id','entity_id'],
   periodic:['device_id','entity_id'],
   ledger:['customer_id','entity_id'],
-  reports:[],settings:['settings','entity_id']};
+  reports:[],settings:['settings','entity_id'],cloud:['cloud_sync','cloud','entity_id']};
 function historyHtml(){
   var keys=HISTORY_EVENT_KEYS[TAB]||[];
   var rows=(LOGS||[]).filter(l=>{
@@ -11302,6 +11745,7 @@ function renderTabs(){
     identities:(STATE&&STATE.identities||[]).length,
     periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
     ledger:null,reports:null,
+    cloud:(typeof CLOUD!=='undefined'&&CLOUD.last&&Number(CLOUD.last.conflicts||0)>0?CLOUD.last.conflicts:null),
     done_tab:devs.filter(d=>d.stage==='done').length,
     problem_tab:devs.filter(d=>d.stage==='problem').length,
     closed_tab:devs.filter(d=>d.stage==='closed').length};
@@ -11311,6 +11755,7 @@ function renderTabs(){
 }
 function setTab(t){
   ibtnClearBusy();TAB=t;renderTabs();renderView();
+  if(t==='cloud'&&typeof loadCloudStatus==='function')loadCloudStatus();
   /* v1.9: the quietest cue, because tab switching is frequent. The initial
      render reads TAB from the URL and does not come through here, so loading
      the panel does not beep. */
@@ -11393,6 +11838,8 @@ paintSoundBtn();   /* the button is in the header, so the 5s refresh never touch
    first 5s; refresh() repaints it once STATE is loaded. */
 refresh();
 setInterval(refresh, 5000);
+loadCloudStatus();
+setInterval(loadCloudStatus, 5000);
 </script>
 
 </body>

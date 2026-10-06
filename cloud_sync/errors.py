@@ -39,7 +39,7 @@ __all__ = [
     "HTTP_409", "HTTP_429", "HTTP_500", "HTTP_ERROR", "SERVER_ERROR",
     "NET_TIMEOUT", "NET_UNREACHABLE", "QUEUE_FULL", "LEASE_EXPIRED",
     "IMPORT_REJECTED", "CONFIG_INVALID", "SECRET_UNAVAILABLE",
-    "TRANSITION_NOT_LEGAL",
+    "TRANSITION_NOT_LEGAL", "REMOTE_NOT_READY",
     # helpers
     "code_for_status", "is_retryable", "parse_retry_after",
     "envelope_code", "safe_request_id", "safe_code",
@@ -48,7 +48,7 @@ __all__ = [
     "UnreachableError", "HttpError", "AuthError", "AuthRequiredError",
     "AuthExpiredError", "AuthRevokedError", "BadResponseError",
     "RequestValidationError", "ConfigError", "SecretStoreError",
-    "QueueFullError", "UnresolvedReferenceCloudError",
+    "QueueFullError", "UnresolvedReferenceCloudError", "RemoteNotReadyError",
 ]
 
 # =====================================================================
@@ -108,6 +108,9 @@ TRANSITION_NOT_LEGAL = "TRANSITION_NOT_LEGAL"
 #: ``UnresolvedReferenceError``). Fail closed — the unresolved UUID is never
 #: written to ``crm_store.json``, which the robots read.
 UNRESOLVED_REFERENCE = "UNRESOLVED_REFERENCE"
+#: The server dataset is not seeded or bootstrap is not marked done.
+#: The local non-empty store must not be wiped by an empty server snapshot.
+REMOTE_NOT_READY = "REMOTE_NOT_READY"
 
 #: Everything this client may emit. Includes every code workstream A documented
 #: as client-produced, plus the ones this transport needs on its own.
@@ -118,7 +121,7 @@ CLIENT_ERROR_CODES = frozenset({
     SERVER_ERROR, NET_TIMEOUT, NET_UNREACHABLE,
     QUEUE_FULL, LEASE_EXPIRED, IMPORT_REJECTED,
     CONFIG_INVALID, SECRET_UNAVAILABLE, TRANSITION_NOT_LEGAL,
-    UNRESOLVED_REFERENCE,
+    UNRESOLVED_REFERENCE, REMOTE_NOT_READY,
 })
 
 
@@ -431,3 +434,12 @@ class QueueFullError(CloudSyncError):
     """The durable outbox refused another entry (spec §9, ruling 10)."""
 
     code = QUEUE_FULL
+
+
+class RemoteNotReadyError(CloudSyncError):
+    """The server dataset is empty or unseeded while local store has records.
+
+    Raised at the snapshot apply boundary to prevent destroying local CRM data.
+    """
+
+    code = REMOTE_NOT_READY

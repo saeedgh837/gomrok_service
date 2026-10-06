@@ -66,7 +66,8 @@ from cloud_sync.ids import ENTITIES, legacy_to_uuid
 __all__ = [
     "ENTITY_FIELDS", "ENVELOPE_FIELDS", "LIFTED_OUT_FIELDS",
     "SETTINGS_ALLOWLIST", "SETTINGS_LEGACY_ID", "SETTINGS_LEGACY_KEY",
-    "STORE_COLLECTIONS", "REFERENCE_FIELDS", "SYNTHETIC_ID_ENTITIES",
+    "STORE_COLLECTIONS", "REFERENCE_FIELDS", "NULLABLE_REFERENCE_FIELDS",
+    "SYNTHETIC_ID_ENTITIES",
     "MappingError", "UnknownEntityError", "MissingFieldError",
     "FieldTypeError", "InvalidTimestampError", "UnresolvedReferenceError",
     "SettingsAllowlistWarning", "UnexpectedFieldWarning",
@@ -288,6 +289,15 @@ REFERENCE_FIELDS = {
     "customer_transactions": {"customer_id": "customers",
                                "device_id": "crm_devices"},
     "settings": {"current_period_id": "periods"},
+}
+
+# Reference columns that allow SQL NULL on the host (001_initial.sql).
+# Dangling legacy references on these columns sanitize to empty / NULL rather
+# than crashing the entire sync.
+NULLABLE_REFERENCE_FIELDS = {
+    "crm_devices": frozenset({"customer_id", "owner_id", "period_id"}),
+    "customer_transactions": frozenset({"device_id"}),
+    "settings": frozenset({"current_period_id"}),
 }
 
 # Fields that are in ENTITY_FIELDS but must not be in a row: they are lifted

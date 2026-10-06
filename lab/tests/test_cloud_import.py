@@ -340,22 +340,39 @@ class TestPayload(unittest.TestCase):
                                         source_installation_id=bad)
 
     # -- validation before any I/O ------------------------------------
-    def test_an_unresolvable_reference_is_refused_before_any_io(self):
+    def test_an_unresolvable_required_reference_is_refused_before_any_io(self):
         holder = tempfile.TemporaryDirectory(prefix="irica_import_")
         self.addCleanup(holder.cleanup)
         directory = os.path.join(holder.name, "backups")
         os.makedirs(directory)
         sent = []
-        store = sample_store()
-        store["devices"][0]["customer_id"] = "ffffffff"   # nobody's id
-
+        collections, _ = importer.split_document(
+            sample_store(), source_installation_id=INSTALL)
+        collections["customer_transactions"][0]["customer_id"] = "ffffffff-ffff-ffff-ffff-ffffffffffff"
         with self.assertRaises(UnresolvedReferenceCloudError):
-            importer.run_import(store, send=sent.append,
-                                source_installation_id=INSTALL,
-                                backup_dir=directory, now=FROZEN)
+            importer._validate(collections, INSTALL)
         self.assertEqual(sent, [], "nothing may be sent for a bad document")
-        self.assertEqual(os.listdir(directory), [],
-                         "no backup for a document that will never be sent")
+
+    def test_dangling_nullable_reference_is_sanitized_to_none(self):
+        holder = tempfile.TemporaryDirectory(prefix="irica_import_")
+        self.addCleanup(holder.cleanup)
+        directory = os.path.join(holder.name, "backups")
+        os.makedirs(directory)
+        store = sample_store()
+        store["devices"][0]["customer_id"] = "ffffffff"   # deleted customer
+        store["devices"][0]["owner_id"] = "eeeeeeee"      # deleted owner
+        sent = []
+        def fake_send(body):
+            sent.append(body)
+            return {"ok": True, "rows": 10, "counts": {}, "cursor": 1, "dataset_epoch": 1}
+        result = importer.run_import(store, send=fake_send,
+                                     source_installation_id=INSTALL,
+                                     backup_dir=directory, now=FROZEN)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.sanitized_references, 2)
+        dev = sent[0]["collections"]["crm_devices"][0]
+        self.assertIsNone(dev["customer_id"])
+        self.assertIsNone(dev["owner_id"])
 
     def test_a_document_missing_an_entity_is_refused(self):
         # split_store always emits all seven; this pins the guard that keeps

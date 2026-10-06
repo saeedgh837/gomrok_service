@@ -34,7 +34,7 @@ import panel
 import panel_auth
 from cloud_sync import apply, ids, importer, mapper
 from cloud_sync.errors import (
-    AuthRequiredError, CloudSyncError, ConfigError, HttpError
+    AuthRequiredError, CloudSyncError, ConfigError, HttpError, RemoteNotReadyError
 )
 from cloud_sync.lease import LeaseExpiredError, OfflineLease
 from cloud_sync.outbox import Entry, Outbox
@@ -457,6 +457,24 @@ class PullIntegrationTests(unittest.TestCase):
         self.assertIn(("owners", "own-dirty"), dirty)
         self.assertIn("own-dirty", dirty)
 
+    def test_pull_step_returns_skipped_when_remote_not_ready(self):
+        config = _fake_config(api_base="https://api.test", sync_device_id="dev-1",
+                              cursor=0, source_installation_id="inst-1")
+        client = MagicMock()
+        client.bootstrap.return_value = {
+            "collections": {entity: [] for entity in ("customers", "owners", "identities", "devices", "periods", "settings", "customer_transactions")},
+            "cursor": 0,
+            "dataset_epoch": 0,
+            "bootstrap_status": "pending",
+        }
+        lease = _FakeLease(granted=time.time())
+        runtime = _fake_runtime(config=config, client=client, lease=lease)
+
+        with patch("cloud_sync.apply.apply_snapshot", side_effect=RemoteNotReadyError):
+            res = panel.cloud_pull_step(runtime)
+
+        self.assertEqual(res, {"pulled": 0, "skipped": "remote_not_ready"})
+
     def test_worker_beat_catches_lease_expired_by_name(self):
         config = _fake_config(api_base="https://api.test", sync_device_id="dev-1")
         lease = _FakeLease(granted=1.0, expired=True)
@@ -663,6 +681,13 @@ class UIAndJSTests(unittest.TestCase):
         self.assertIn("پذیرش نسخه سرور (تغییرات محلی لغو شود)", body)
         self.assertIn("cloud-conflict-card", body)
         self.assertIn("cloud-conflict-table", body)
+
+    def test_crm_page_contains_cloud_sync_surface_and_guide(self):
+        self.assertIn("['cloud','سرور ابری']", panel.CRM_PAGE)
+        self.assertIn('id="crmCloudPill"', panel.CRM_PAGE)
+        self.assertIn("cloudTabHtml", panel.CRM_PAGE)
+        self.assertIn("php bin/create-user.php", panel.CRM_PAGE)
+        self.assertIn("loadCloudStatus", panel.CRM_PAGE)
 
     @unittest.skipUnless(NODE, "node is not installed")
     def test_all_cloud_functions_syntax_valid(self):

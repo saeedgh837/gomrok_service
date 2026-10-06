@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.12.1] - 2026-10-06
+
+### Fixed
+
+- **Data-loss prevention on fresh server connection (Zero-Data Guard).** Added
+  `RemoteNotReadyError` in `cloud_sync.apply` and `panel.py`. When connecting
+  to an unseeded or pending cloud backend, the local CRM store is strictly
+  protected: empty server snapshots will never wipe non-empty local files.
+  Background worker logs the condition as `remote_not_ready` without touching
+  disk.
+- **Dangling foreign key sanitization during one-shot import.** Legacy local stores
+  with dangling references on nullable foreign key columns (`customer_id`, `owner_id`,
+  `period_id`, `device_id`) are safely sanitized to SQL `NULL` (`None`) during
+  `_validate()`. Prevents `UnresolvedReferenceCloudError` and MySQL error 1452 aborts
+  while keeping non-nullable constraints fail-closed.
+
+### Added
+
+- **Relocated Cloud Sync directly into CRM interface.** Moved the entire Cloud Sync
+  status, enrollment, manual sync trigger, one-shot import, and conflict resolution
+  interface into a dedicated tab (`سرور ابری`) in `CRM_PAGE`. Added live cloud
+  connectivity pill in the CRM header.
+- **Colleague account creation guide.** Step-by-step visual tutorial directly inside
+  the CRM Cloud tab explaining how to create new operator users via
+  `php bin/create-user.php` on the server and connect colleague machines seamlessly.
+
 ## [1.12.0] - 2026-10-06
 
 ### Added

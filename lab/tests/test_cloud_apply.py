@@ -28,7 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cloud_sync import apply, ids, mapper
-from cloud_sync.errors import BAD_PAYLOAD, BadResponseError
+from cloud_sync.errors import BAD_PAYLOAD, BadResponseError, RemoteNotReadyError
 
 INSTALL = "11111111-1111-4111-8111-111111111111"
 TENANT = "22222222-2222-4222-8222-222222222222"
@@ -975,6 +975,51 @@ class FileStoreTests(ApplyCase):
             apply.apply_changes(page(), store=self.store,
                                 source_installation_id=INSTALL,
                                 versions={}, dirty={"e5f6a7b8"})
+
+    def test_empty_remote_snapshot_does_not_wipe_local_store(self):
+        # Safety guard against the data-loss loop on fresh server connection
+        before = self.seed()
+        empty_payload = {
+            "ok": True,
+            "collections": {entity: [] for entity in ids.ENTITIES},
+            "cursor": 0,
+            "dataset_epoch": 0,
+            "tenant_id": TENANT,
+            "bootstrap_status": "pending",
+        }
+        with self.assertRaises(RemoteNotReadyError):
+            self.snapshot(empty_payload)
+        self.assertStable(before, "local store was corrupted by empty remote snapshot")
+
+    def test_pending_bootstrap_status_refuses_snapshot_apply(self):
+        before = self.seed()
+        payload = bootstrap_payload(store_fixture())
+        payload["bootstrap_status"] = "pending"
+        with self.assertRaises(RemoteNotReadyError):
+            self.snapshot(payload)
+        self.assertStable(before, "pending bootstrap status touched disk")
+
+    def test_empty_remote_snapshot_allowed_if_local_store_is_also_empty(self):
+        empty_doc = {
+            "version": 1,
+            "customers": [],
+            "owners": [],
+            "identities": [],
+            "devices": [],
+            "periods": [],
+            "settings": {},
+        }
+        self.write_store(empty_doc)
+        empty_payload = {
+            "ok": True,
+            "collections": {entity: [] for entity in ids.ENTITIES},
+            "cursor": 0,
+            "dataset_epoch": 1,
+            "tenant_id": TENANT,
+            "bootstrap_status": "done",
+        }
+        report = self.snapshot(empty_payload)
+        self.assertEqual(report.applied, 0)
 
 
 # --------------------------------------------------------------------------

@@ -71,9 +71,9 @@ from cloud_sync.errors import (
 )
 from cloud_sync.ids import legacy_to_uuid
 from cloud_sync.mapper import (  # read-only: B owns this module
-    IRAN_TZ, MappingError, REFERENCE_FIELDS, SETTINGS_ALLOWLIST,
-    STORE_COLLECTIONS, SYNTHETIC_ID_ENTITIES, UnresolvedReferenceError,
-    split_store,
+    IRAN_TZ, MappingError, NULLABLE_REFERENCE_FIELDS, REFERENCE_FIELDS,
+    SETTINGS_ALLOWLIST, STORE_COLLECTIONS, SYNTHETIC_ID_ENTITIES,
+    UnresolvedReferenceError, split_store,
 )
 
 __all__ = [
@@ -177,7 +177,7 @@ def _require_installation(value):
 # =====================================================================
 # Payload
 # =====================================================================
-def split_document(store, *, source_installation_id, tz=IRAN_TZ):
+def split_document(store, *, source_installation_id, tz=IRAN_TZ, stats=None):
     """``store`` → ``(collections, dropped_settings)``, fully validated.
 
     ``collections`` is the §8 wire shape: **every** entity a list (spec §15.1
@@ -211,7 +211,7 @@ def split_document(store, *, source_installation_id, tz=IRAN_TZ):
         if entity == "settings" and isinstance(value, dict):
             value = [value]              # uniform list form (spec §15.13)
         collections[entity] = value
-    _validate(collections, source_installation_id)
+    _validate(collections, source_installation_id, stats=stats)
     return collections, dropped
 
 
@@ -226,7 +226,7 @@ def build_document(store, *, source_installation_id, tz=IRAN_TZ):
     }
 
 
-def _validate(collections, source_installation_id):
+def _validate(collections, source_installation_id, stats=None):
     """Prove the document the host is about to be asked to insert."""
     expected = set(_ids.ENTITIES)
     present = set(collections)
@@ -270,18 +270,32 @@ def _validate(collections, source_installation_id):
 
     # Every foreign key must resolve *inside this document*: map_reference is
     # a one-way uuid5 and would happily mint a UUID for a parent that is not
-    # here, which the host would then reject as SQL error 1452 (spec §4).
+    # here. If the target column allows SQL NULL (spec §4 / 001_initial.sql),
+    # dangling legacy references are sanitized to None (SQL NULL) so legacy
+    # records import safely without crashing on SQL error 1452.
+    # Non-nullable reference fields continue to fail closed.
+    sanitized_count = 0
     for entity, references in REFERENCE_FIELDS.items():
+        nullable_fields = NULLABLE_REFERENCE_FIELDS.get(entity, frozenset())
         for record in collections[entity]:
             for field, target in references.items():
                 value = record.get(field)
                 if value is None or value == "":
                     continue
-                if not isinstance(value, str) or (target, value) not in addressed:
+                if not isinstance(value, str):
+                    raise RequestValidationError(route=IMPORT_ROUTE) from ValueError(
+                        "%s.%s must be a string" % (entity, field))
+                if (target, value) not in addressed:
+                    if field in nullable_fields:
+                        record[field] = None
+                        sanitized_count += 1
+                        continue
                     raise UnresolvedReferenceCloudError(
                         route=IMPORT_ROUTE) from ValueError(
                             "%s.%s points at a %s row this document omits"
                             % (entity, field, target))
+    if isinstance(stats, dict):
+        stats["sanitized_references"] = sanitized_count
 
 
 # =====================================================================
@@ -349,10 +363,11 @@ class ImportResult(object):
     """
 
     __slots__ = ("ok", "code", "import_id", "backup_path", "attempts",
-                 "payload", "dropped_settings", "terminal")
+                 "payload", "dropped_settings", "terminal",
+                 "sanitized_references")
 
     def __init__(self, *, ok, code, import_id, backup_path, attempts,
-                 payload, dropped_settings, terminal):
+                 payload, dropped_settings, terminal, sanitized_references=0):
         #: ``True`` only when the host committed the import.
         self.ok = bool(ok)
         #: Stable code, ``""`` on success. Never the server's message (§6).
@@ -372,6 +387,8 @@ class ImportResult(object):
         #: fault that merely ran out of budget stays ``False``, so the caller
         #: may try again later; ``409`` never may (spec §8.4, §9).
         self.terminal = bool(terminal)
+        #: Number of dangling nullable references sanitized to SQL NULL.
+        self.sanitized_references = int(sanitized_references or 0)
 
     @property
     def rows(self):
@@ -437,8 +454,11 @@ def run_import(store, *, send, source_installation_id, backup_dir,
     document = store() if callable(store) else store
     if not isinstance(document, dict):
         raise RequestValidationError(route=IMPORT_ROUTE)
+    stats = {}
     collections, dropped = split_document(
-        document, source_installation_id=source_installation_id, tz=tz)
+        document, source_installation_id=source_installation_id, tz=tz,
+        stats=stats)
+    sanitized_references = stats.get("sanitized_references", 0)
     import_id = import_id_for(collections, source_installation_id)
     body = {
         "import_id": import_id,
@@ -456,7 +476,8 @@ def run_import(store, *, send, source_installation_id, backup_dir,
             if not is_retryable(error) or attempt >= max_attempts:
                 return _refusal(error, import_id=import_id,
                                 backup_path=backup_path, dropped=dropped,
-                                attempts=attempt)
+                                attempts=attempt,
+                                sanitized_references=sanitized_references)
             _pause(attempt, base_delay, sleep, rng)
             continue
         except requests.RequestException as error:
@@ -466,7 +487,8 @@ def run_import(store, *, send, source_installation_id, backup_dir,
             if not is_retryable(typed) or attempt >= max_attempts:
                 return _refusal(typed, import_id=import_id,
                                 backup_path=backup_path, dropped=dropped,
-                                attempts=attempt)
+                                attempts=attempt,
+                                sanitized_references=sanitized_references)
             _pause(attempt, base_delay, sleep, rng)
             continue
 
@@ -474,12 +496,14 @@ def run_import(store, *, send, source_installation_id, backup_dir,
             return ImportResult(ok=True, code="", import_id=import_id,
                                 backup_path=backup_path, attempts=attempt,
                                 payload=payload, dropped_settings=dropped,
-                                terminal=False)
+                                terminal=False,
+                                sanitized_references=sanitized_references)
         # A returned failure envelope carries no status, so no retry can be
         # justified from it: classify the code and stop (spec §9).
         return _refusal(_envelope_failure(payload), import_id=import_id,
                         backup_path=backup_path, dropped=dropped,
-                        attempts=attempt)
+                        attempts=attempt,
+                        sanitized_references=sanitized_references)
 
 
 def _pause(attempt, base_delay, sleep, rng):
@@ -508,7 +532,8 @@ def _envelope_failure(payload):
                      status=None, code_source="envelope")
 
 
-def _refusal(error, *, import_id, backup_path, dropped, attempts):
+def _refusal(error, *, import_id, backup_path, dropped, attempts,
+             sanitized_references=0):
     """The result for a failed attempt: a code, never the server's sentence."""
     code = safe_code(getattr(error, "code", None))
     status = getattr(error, "status", None)
@@ -522,4 +547,5 @@ def _refusal(error, *, import_id, backup_path, dropped, attempts):
     return ImportResult(ok=False, code=code, import_id=import_id,
                         backup_path=backup_path, attempts=attempts,
                         payload=None, dropped_settings=dropped,
-                        terminal=not is_retryable(error))
+                        terminal=not is_retryable(error),
+                        sanitized_references=sanitized_references)
