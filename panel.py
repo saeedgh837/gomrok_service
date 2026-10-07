@@ -9697,14 +9697,34 @@ function devicesHtml(){
           :(activePeriod()?'هنوز پرونده‌ای نیست؛ با دکمهٔ «+ پروندهٔ جدید» بالا شروع کنید.'
             :NO_PERIOD_TIP));
   }
-  // B7: a clean case table — every per-case action moved into the
-  // caseDetail modal (row click / «جزئیات»); rows keep the devcard-<id>
-  // anchor the summary rail focuses, and the only list-area buttons are
-  // «+ پروندهٔ جدید», the per-row «جزئیات» and the global stop-robot banner.
-  // v1.4.0 (operator request): row number first, then device / customer /
-  // passenger; the case id moved next to the dates. Row numbers count the
-  // FILTERED view, so they always start at ۱.
-  var rows=ds.map(function(d,i){
+  var ORDINAL_FA = {
+    1:'اول', 2:'دوم', 3:'سوم', 4:'چهارم', 5:'پنجم',
+    6:'ششم', 7:'هفتم', 8:'هشتم', 9:'نهم', 10:'دهم',
+    11:'یازدهم', 12:'دوازدهم', 13:'سیزدهم', 14:'چهاردهم', 15:'پانزدهم',
+    16:'شانزدهم', 17:'هفدهم', 18:'هجدهم', 19:'نوزدهم', 20:'بیستم'
+  };
+  var PERIOD_PALETTE = [
+    { border: '#3b82f6', bg: 'rgba(59,130,246,0.06)', badge: '#2563eb' },
+    { border: '#10b981', bg: 'rgba(16,185,129,0.06)', badge: '#059669' },
+    { border: '#8b5cf6', bg: 'rgba(139,92,246,0.06)', badge: '#7c3aed' },
+    { border: '#f59e0b', bg: 'rgba(245,158,11,0.06)', badge: '#d97706' },
+    { border: '#ec4899', bg: 'rgba(236,72,153,0.06)', badge: '#db2777' },
+    { border: '#06b6d4', bg: 'rgba(6,182,212,0.06)', badge: '#0891b2' },
+    { border: '#f97316', bg: 'rgba(249,115,22,0.06)', badge: '#ea580c' },
+    { border: '#6366f1', bg: 'rgba(99,102,241,0.06)', badge: '#4f46e5' }
+  ];
+  function periodCardPalette(index){
+    return PERIOD_PALETTE[Math.abs(index) % PERIOD_PALETTE.length];
+  }
+  function periodCardTitle(p){
+    if(!p) return 'پرونده‌های بدون دوره';
+    if(p.label && p.label.trim()) return p.label.trim();
+    var num = Number(p.number || 0);
+    if(num && ORDINAL_FA[num]) return 'دورهٔ ' + ORDINAL_FA[num];
+    if(num) return 'دورهٔ ' + fa(num);
+    return 'دوره';
+  }
+  function deviceRowHtml(d, i){
     var est=d.estelam||{};
     var cust=custName(d.customer_id);
     var owner=ownerName(d.owner_id);
@@ -9722,13 +9742,83 @@ function devicesHtml(){
       +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
       +'<td><div class="ibacts">'+caseShotBtn(d,'hamta')+caseShotBtn(d,'gomrok')+
         '<button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
-  }).join('');
-  return periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
+  }
+  function periodGroupCardHtml(p, rowsHtml, count, colorIndex){
+    var col = p ? periodCardPalette(colorIndex != null ? colorIndex : ((p.number || 1) - 1))
+                : { border: 'var(--line-strong)', bg: 'rgba(128,128,128,0.03)', badge: 'var(--muted)' };
+    var title = periodCardTitle(p);
+    var badgePill = p ? periodPill(p) : '<span class="pill n">بدون دوره</span>';
+    var dateRange = p ? periodRange(p) : '';
+
+    return '<div class="card tblcard pergroup-card" style="margin-bottom:18px;border:1.5px solid '+col.border+';border-right:6px solid '+col.border+';border-radius:12px;overflow:hidden">'
+      +'<div class="pergroup-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px;background:'+col.bg+';border-bottom:1px solid var(--line)">'
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +'<span style="background:'+col.badge+';color:#fff;padding:3px 12px;border-radius:6px;font-weight:700;font-size:13px">'+esc(title)+'</span>'
+      +badgePill
+      +(dateRange ? '<span class="muted kbd" style="font-size:12px">'+esc(dateRange)+'</span>' : '')
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px">'
+      +'<span class="chip" style="font-weight:600">'+fa(count)+' پرونده</span>'
+      +(p ? '<button type="button" class="btn mini ghost" onclick="dlgPeriod(\''+p.id+'\')">'+ICONS.eye+' جزئیات دوره</button>' : '')
+      +'</div></div>'
+      +'<div class="tbl-wrap"><table class="casetbl">'
+      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
+      +rowsHtml+'</tbody></table></div></div>';
+  }
+
+  var toolbarHtml = periodBar+runningBanner+'<div class="row" style="margin-bottom:12px;gap:12px">'
     +'<button class="btn primary"'+periodGateAttrs()+' onclick="dlgDevice()">+ پروندهٔ جدید</button>'
-    +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>'
-    +'<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
-    +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
-    +rows+'</tbody></table></div></div>';
+    +'<span class="muted">مرتب‌سازی: نیازمند اقدام در بالا · استعلام‌ها خودکار و بدون تکرار اجرا می‌شوند</span></div>';
+
+  var f = periodFilterResolved();
+  if (f === 'all') {
+    var pers = periodSorted();
+    var groups = [];
+    var seenPeriods = {};
+    pers.forEach(function(p, idx){
+      seenPeriods[String(p.id)] = { period: p, devices: [], colorIndex: idx };
+      groups.push(seenPeriods[String(p.id)]);
+    });
+    var noPeriod = { period: null, devices: [], colorIndex: groups.length };
+
+    ds.forEach(function(d){
+      var pid = String(d.period_id || '');
+      if(pid && seenPeriods[pid]){
+        seenPeriods[pid].devices.push(d);
+      } else {
+        noPeriod.devices.push(d);
+      }
+    });
+
+    var cardsHtml = '';
+    var activeGroupIndex = 0;
+    groups.forEach(function(g){
+      if(!g.devices.length) return;
+      var rHtml = g.devices.map(function(d, i){ return deviceRowHtml(d, i); }).join('');
+      cardsHtml += periodGroupCardHtml(g.period, rHtml, g.devices.length, g.colorIndex);
+      activeGroupIndex++;
+    });
+
+    if(noPeriod.devices.length){
+      var rHtml = noPeriod.devices.map(function(d, i){ return deviceRowHtml(d, i); }).join('');
+      cardsHtml += periodGroupCardHtml(null, rHtml, noPeriod.devices.length, activeGroupIndex);
+    }
+
+    if(!cardsHtml){
+      return toolbarHtml + searchEmptyCard();
+    }
+    return toolbarHtml + cardsHtml;
+  } else {
+    var targetPeriod = f === 'cur' ? activePeriod() : periodById(f);
+    var rows = ds.map(function(d, i){ return deviceRowHtml(d, i); }).join('');
+    if(targetPeriod){
+      var colorIdx = (targetPeriod.number || 1) - 1;
+      return toolbarHtml + periodGroupCardHtml(targetPeriod, rows, ds.length, colorIdx);
+    }
+    return toolbarHtml + '<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
+      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
+      +rows+'</tbody></table></div></div>';
+  }
 }
 function caseShotBtn(d,svc){
   var e=d.estelam||{}, has=svc==='hamta'?e.has_hamta_screenshot:e.has_gomrok_screenshot;

@@ -441,9 +441,24 @@ def send_photo(photo_path, caption="", parse_mode="HTML", extra_chat_ids=None,
     deadline = (time.monotonic() + timeout) if timeout else None
     upload_path, temp_path = _shrink_photo(photo_path)
     try:
+        mode = _resolve_mode(cfg)
+        photo_b64 = None
+        if mode == "host":
+            try:
+                import base64
+                with open(upload_path, "rb") as f:
+                    photo_b64 = base64.b64encode(f.read()).decode("ascii")
+            except Exception:
+                photo_b64 = None
+
+        def _photo_payload(chat_id):
+            p = {"chat_id": chat_id, "caption": caption, "parse_mode": parse_mode}
+            if photo_b64:
+                p["photo_base64"] = photo_b64
+            return p
+
         return _fanout("sendPhoto", cfg, _target_chat_ids(cfg, extra_chat_ids),
-                       lambda chat_id: {"chat_id": chat_id, "caption": caption,
-                                        "parse_mode": parse_mode},
+                       _photo_payload,
                        files_factory=lambda: {"photo": open(upload_path, "rb")},
                        deadline=deadline)
     finally:

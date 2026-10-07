@@ -37,6 +37,9 @@ if ($httpMethod === 'GET' && empty($_GET['method']) && empty($_SERVER['PATH_INFO
         'ok' => true,
         'service' => 'irica-telegram-relay',
         'status' => 'operational',
+        'file_uploads' => (bool) ini_get('file_uploads'),
+        'upload_max_filesize' => ini_get('upload_max_filesize'),
+        'post_max_size' => ini_get('post_max_size'),
         'time' => gmdate('Y-m-d\TH:i:s\Z'),
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
@@ -167,6 +170,25 @@ if ($ch === false) {
 
 $postFields = [];
 $isMultipart = !empty($_FILES);
+$tempFilesToDelete = [];
+
+// Helper to get safe upload directory inside project or sys temp
+$safeTempDir = function () use ($hostRoot): string {
+    $candidates = [
+        $hostRoot . '/var/tmp',
+        __DIR__ . '/.tmp',
+        sys_get_temp_dir(),
+    ];
+    foreach ($candidates as $dir) {
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0750, true);
+        }
+        if (is_dir($dir) && is_writable($dir)) {
+            return $dir;
+        }
+    }
+    return sys_get_temp_dir();
+};
 
 if ($isMultipart) {
     // Copy POST fields, excluding internal relay params
@@ -175,18 +197,22 @@ if ($isMultipart) {
             $postFields[$k] = $v;
         }
     }
-    // Attach files as CURLFile
+    // Attach files as CURLFile (move to local temp if needed for open_basedir safety)
+    $tmpDir = $safeTempDir();
     foreach ($_FILES as $fieldName => $file) {
         if (is_array($file['error'])) {
             continue; // nested file arrays not used
         }
         if ($file['error'] === UPLOAD_ERR_OK && is_uploaded_file($file['tmp_name'])) {
             $mime = !empty($file['type']) ? $file['type'] : 'application/octet-stream';
-            $postFields[$fieldName] = new \CURLFile(
-                $file['tmp_name'],
-                $mime,
-                $file['name'] ?? 'upload.bin'
-            );
+            $safeName = preg_replace('/[^A-Za-z0-9_\-\.]/', '_', (string) ($file['name'] ?? 'upload.bin'));
+            $localTarget = $tmpDir . '/tg_up_' . bin2hex(random_bytes(6)) . '_' . $safeName;
+            if (@move_uploaded_file($file['tmp_name'], $localTarget)) {
+                $tempFilesToDelete[] = $localTarget;
+                $postFields[$fieldName] = new \CURLFile($localTarget, $mime, $safeName);
+            } else {
+                $postFields[$fieldName] = new \CURLFile($file['tmp_name'], $mime, $safeName);
+            }
         }
     }
 } elseif (!empty($_POST)) {
@@ -203,6 +229,37 @@ if ($isMultipart) {
         if (is_array($decoded)) {
             unset($decoded['token'], $decoded['bot_token'], $decoded['method'], $decoded['secret'], $decoded['relay_secret']);
             $postFields = $decoded;
+        }
+    }
+}
+
+// Support base64 encoded photo upload for environments where multipart temp files fail
+if (!empty($postFields['photo_base64'])) {
+    $rawPhoto = base64_decode((string) $postFields['photo_base64'], true);
+    unset($postFields['photo_base64']);
+    if ($rawPhoto !== false && strlen($rawPhoto) > 0) {
+        $tmpDir = $safeTempDir();
+        $targetPath = $tmpDir . '/tg_photo_' . bin2hex(random_bytes(6)) . '.jpg';
+        if (@file_put_contents($targetPath, $rawPhoto) !== false) {
+            $tempFilesToDelete[] = $targetPath;
+            $postFields['photo'] = new \CURLFile($targetPath, 'image/jpeg', 'receipt.jpg');
+            $isMultipart = true;
+        }
+    }
+}
+
+// Support base64 encoded document upload
+if (!empty($postFields['document_base64'])) {
+    $rawDoc = base64_decode((string) $postFields['document_base64'], true);
+    $docName = preg_replace('/[^A-Za-z0-9_\-\.]/', '_', (string) ($postFields['document_name'] ?? 'document.bin'));
+    unset($postFields['document_base64'], $postFields['document_name']);
+    if ($rawDoc !== false && strlen($rawDoc) > 0) {
+        $tmpDir = $safeTempDir();
+        $targetPath = $tmpDir . '/tg_doc_' . bin2hex(random_bytes(6)) . '_' . $docName;
+        if (@file_put_contents($targetPath, $rawDoc) !== false) {
+            $tempFilesToDelete[] = $targetPath;
+            $postFields['document'] = new \CURLFile($targetPath, 'application/octet-stream', $docName);
+            $isMultipart = true;
         }
     }
 }
@@ -233,11 +290,19 @@ curl_setopt_array($ch, [
     CURLOPT_SSL_VERIFYHOST => 2,
 ]);
 
-$response = curl_exec($ch);
-$httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlErrno = curl_errno($ch);
-$curlError = curl_error($ch);
-curl_close($ch);
+try {
+    $response = curl_exec($ch);
+    $httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErrno = curl_errno($ch);
+    $curlError = curl_error($ch);
+} finally {
+    curl_close($ch);
+    foreach ($tempFilesToDelete as $tmpFile) {
+        if (file_exists($tmpFile)) {
+            @unlink($tmpFile);
+        }
+    }
+}
 
 if ($curlErrno !== 0 || $response === false) {
     http_response_code(502);

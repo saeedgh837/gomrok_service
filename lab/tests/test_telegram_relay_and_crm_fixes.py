@@ -211,6 +211,49 @@ class CRMPageAndStageFixTests(unittest.TestCase):
         self.assertIn('settingsLoadTelegram', panel.CRM_PAGE)
         self.assertIn('settingsTestTelegram', panel.CRM_PAGE)
 
+    def test_period_grouping_rendered_in_devices_tab(self):
+        # Verification that all-periods view in devices tab groups cases by period
+        self.assertIn('pergroup-card', panel.CRM_PAGE)
+        self.assertIn('periodGroupCardHtml', panel.CRM_PAGE)
+        self.assertIn('periodCardPalette', panel.CRM_PAGE)
+        self.assertIn('periodCardTitle', panel.CRM_PAGE)
+        self.assertIn("f === 'all'", panel.CRM_PAGE)
+
+
+class TelegramNotifyPhotoHostTests(unittest.TestCase):
+    def test_send_photo_includes_photo_base64_in_host_mode(self):
+        import tempfile
+        from PIL import Image
+
+        cfg = {
+            "mode": "host",
+            "relay_url": "https://api.oneserver.in/telegram.php",
+            "bot_token": "123:ABC",
+            "chat_ids": ["999"],
+        }
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tmp_path = tf.name
+        try:
+            img = Image.new("RGB", (50, 50), color=(10, 20, 30))
+            img.save(tmp_path)
+
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.json.return_value = {"ok": True, "result": {"message_id": 100}}
+
+            with patch("telegram_notify.ensure_config", return_value=cfg), \
+                 patch("requests.post", return_value=mock_resp) as mock_post:
+                res = telegram_notify.send_photo(tmp_path, caption="test")
+                self.assertTrue(res[0].get("ok"))
+                mock_post.assert_called_once()
+                _args, kwargs = mock_post.call_args
+                payload = kwargs.get("data") or {}
+                self.assertIn("photo_base64", payload)
+                self.assertGreater(len(payload["photo_base64"]), 10)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 class PHPTelegramRelayTests(unittest.TestCase):
     def test_php_script_syntax(self):
