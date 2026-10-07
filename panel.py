@@ -2461,6 +2461,7 @@ def test_telegram_api(attempts=3):
         if secret:
             headers["X-Relay-Secret"] = secret
         post_kwargs["headers"] = headers
+        post_kwargs["proxies"] = {"http": None, "https": None}
         used_target = relay
     elif mode == "proxy":
         proxy = str(cfg.get("proxy_url") or "").strip()

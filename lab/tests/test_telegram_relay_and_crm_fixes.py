@@ -84,7 +84,7 @@ class TelegramNotifyModeTests(unittest.TestCase):
             headers = kwargs.get("headers") or {}
             self.assertEqual(headers.get("X-Relay-Secret"), "my-secret")
             self.assertEqual(headers.get("X-Telegram-Bot-Token"), "123:ABC")
-            self.assertIsNone(kwargs.get("proxies"))
+            self.assertEqual(kwargs.get("proxies"), {"http": None, "https": None})
 
     def test_post_confirmed_passes_proxies_in_proxy_mode(self):
         cfg = {

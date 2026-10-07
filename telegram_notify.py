@@ -154,6 +154,7 @@ def _post_confirmed(method, cfg, data, files_factory=None, attempts=4, deadline=
             headers["X-Telegram-Bot-Token"] = token
         if headers:
             post_kwargs["headers"] = headers
+        post_kwargs["proxies"] = {"http": None, "https": None}
     elif mode == "proxy":
         proxy_url = str(cfg.get("proxy_url") or "").strip()
         if proxy_url:
