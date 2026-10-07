@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] - 2026-10-07
+
+### Added
+
+- **Host Telegram Relay API (`host/public/telegram.php`).** Dedicated secure PHP relay
+  running on cPanel host. Allows desktop panels in restricted network environments to
+  deliver messages, notifications, and receipt photos to Telegram without third-party
+  VPNs or client proxies. Supports multipart file uploads (`CURLFile`), bot token
+  validation, and optional `X-Relay-Secret` authentication.
+- **Tri-Mode Telegram Connection Selector.** Added configuration and testing support
+  for three connection routes in `telegram_notify.py` and `panel.py`:
+  - `host`: Secure host API relay forwarder.
+  - `proxy`: Custom client-side SOCKS5/HTTP proxy.
+  - `direct`: Cloudflare Worker reverse-proxy or direct Telegram API.
+- **Dedicated Telegram Settings in CRM.** Added configuration card in CRM Settings
+  tab featuring mode switching, secret token protection, credential persistence, and
+  an online connection test button (`/telegram-test`).
+
+### Fixed
+
+- **Form Input Reset in CRM Cloud Sync Tab.** Replaced full `renderBody()` innerHTML
+  destruction during 5-second background sync polls with non-destructive `paintCloud()`,
+  preventing loss of typed operator input on connection and credentials fields.
+- **CRM Handed Stage Transition.** Corrected transition action in `panel.py:stageContinue()`
+  for `handed` stage from invalid `__start_payment` to `to_payment`, aligning with
+  the backend `crm.py` state machine table.
+- **Case Detail Navigation Across All Tabs.** Added case detail inspection buttons and
+  unique DOM row IDs (`devrow-{id}`) to completed (`done`), problem (`problem`), and
+  closed (`closed`) tabs.
+- **Chromium HTML5 Input Validation.** Fixed periodic polling interval input in
+  `periodicHtml()` to supply raw ASCII integer values instead of Persian localized
+  digits, preventing browser validation errors.
+- **Live Signature Synchronization.** Updated `dlgCaseSig()` to incorporate customer
+  and passenger entity attributes, ensuring modals refresh live when associated entities
+  are updated.
+
 ## [1.12.1] - 2026-10-06
 
 ### Fixed

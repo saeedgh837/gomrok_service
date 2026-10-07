@@ -76,6 +76,13 @@ try {
         exit;
     }
 
+    // Optional Telegram relay runner for shared hosting (delegates to telegram.php if present)
+    if ((str_ends_with($request->path, '/telegram.php') || str_contains($request->path, '/telegram.php/'))
+        && file_exists(__DIR__ . '/telegram.php')) {
+        require __DIR__ . '/telegram.php';
+        exit;
+    }
+
     $route = routeOf($request->path, (string) ($config['base_path'] ?? '/v1'));
 
     // Route table. A path that exists under another verb answers 405, so a

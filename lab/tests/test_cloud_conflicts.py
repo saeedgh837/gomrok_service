@@ -689,6 +689,10 @@ class UIAndJSTests(unittest.TestCase):
         self.assertIn("php bin/create-user.php", panel.CRM_PAGE)
         self.assertIn("loadCloudStatus", panel.CRM_PAGE)
 
+    def test_render_body_preserves_cloud_tab_inputs_during_refresh(self):
+        self.assertIn("if(TAB==='cloud'&&document.getElementById('cloud-sync-section'))", panel.CRM_PAGE)
+        self.assertIn("paintCloud();", panel.CRM_PAGE)
+
     @unittest.skipUnless(NODE, "node is not installed")
     def test_all_cloud_functions_syntax_valid(self):
         for name in ("cloudShellHtml", "paintCloud", "renderCloudConflicts",

@@ -61,14 +61,38 @@ def ensure_config():
     return cfg
 
 
+def _resolve_mode(cfg):
+    """Determine delivery route: 'host' (PHP relay), 'proxy', or 'direct'."""
+    mode = str(cfg.get("mode") or "").strip().lower()
+    if mode in ("host", "proxy", "direct"):
+        return mode
+    if cfg.get("relay_url"):
+        return "host"
+    if cfg.get("proxy_url"):
+        return "proxy"
+    if cfg.get("api_base"):
+        return "direct"
+    return "host"
+
+
 def _api(method, cfg, base=None):
-    base = (base or cfg["api_base"]).rstrip("/")
-    token = cfg["bot_token"]
+    mode = _resolve_mode(cfg)
+    token = str(cfg.get("bot_token") or "")
+    if mode == "host":
+        relay = (base or cfg.get("relay_url") or "https://api.oneserver.in/telegram.php").rstrip("/")
+        return f"{relay}?method={method}&token={token}"
+    base = (base or cfg.get("api_base") or "https://api.telegram.org").rstrip("/")
     return f"{base}/bot{token}/{method}"
 
 
 def _bases(cfg):
     """Return the configured Telegram API endpoint."""
+    mode = _resolve_mode(cfg)
+    if mode == "host":
+        relay = str(cfg.get("relay_url") or "").rstrip("/")
+        return [relay] if relay else []
+    if mode == "proxy":
+        return ["https://api.telegram.org"]
     primary = str(cfg.get("api_base") or "").rstrip("/")
     return [primary] if primary else []
 
@@ -118,6 +142,23 @@ def _post_confirmed(method, cfg, data, files_factory=None, attempts=4, deadline=
     import requests
     last_error = None
     bases = _bases(cfg)
+    mode = _resolve_mode(cfg)
+    post_kwargs = {}
+    if mode == "host":
+        headers = {}
+        secret = str(cfg.get("relay_secret") or "").strip()
+        if secret:
+            headers["X-Relay-Secret"] = secret
+        token = str(cfg.get("bot_token") or "").strip()
+        if token:
+            headers["X-Telegram-Bot-Token"] = token
+        if headers:
+            post_kwargs["headers"] = headers
+    elif mode == "proxy":
+        proxy_url = str(cfg.get("proxy_url") or "").strip()
+        if proxy_url:
+            post_kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
+
     for attempt in range(1, attempts + 1):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError(
@@ -131,8 +172,13 @@ def _post_confirmed(method, cfg, data, files_factory=None, attempts=4, deadline=
         try:
             files = files_factory() if files_factory else None
             try:
-                response = requests.post(_api(method, cfg, base), data=data, files=files,
-                                         timeout=request_timeout)
+                response = requests.post(
+                    _api(method, cfg, base),
+                    data=data,
+                    files=files,
+                    timeout=request_timeout,
+                    **post_kwargs,
+                )
             finally:
                 if files:
                     for value in files.values():
@@ -174,28 +220,16 @@ def _is_permanent_chat_error(error):
     return any(marker in text for marker in _PERMANENT_CHAT_ERRORS)
 
 
-def _redact(text, token):
-    """Replace the bot token with *** wherever it appears in `text`.
-
-    requests builds the request URL as /bot<token>/<method> and puts that URL
-    into its exception text ("Max retries exceeded with url: ..."), which then
-    reaches the per-destination stdout line, the delivery record and the
-    exception `_fanout` raises for the caller's own log. A token is a
-    credential, so none of those sinks may carry it. The token pattern
-    ([0-9]+:[A-Za-z0-9_-]+) survives requests' URL quoting unchanged -- verified
-    against requests.utils.requote_uri -- but the quoted form is redacted too so
-    a token can never come back with a future api_base. Everything else in the
-    text (host, port, exception type, "Max retries exceeded", "deadline reached
-    after N attempts", "read timeout=...") is left intact: the diagnostics are
-    the point of the message. Returns `text` unchanged for an empty/placeholder
-    token."""
+def _redact(text, token, secret=None):
+    """Replace the bot token and relay secret with *** wherever they appear in `text`."""
     text = str(text or "")
-    token = str(token or "").strip()
-    if not token or _is_placeholder(token):
-        return text
-    for needle in (token, urllib.parse.quote(token, safe="")):
-        if needle:
-            text = text.replace(needle, "***")
+    for s in (token, secret):
+        s = str(s or "").strip()
+        if not s or _is_placeholder(s):
+            continue
+        for needle in (s, urllib.parse.quote(s, safe="")):
+            if needle:
+                text = text.replace(needle, "***")
     return text
 
 
@@ -261,6 +295,7 @@ def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=Non
     clock = time.perf_counter()     # monotonic is ~15ms-granular on Windows
     total = len(chat_ids)
     token = cfg.get("bot_token")    # never let it reach stdout / the record / the raise
+    secret = cfg.get("relay_secret")
     for index, chat_id in enumerate(chat_ids):
         # Anti-starvation: an equal slice of what is LEFT, per destination
         # still to go. Without a caller budget nothing changes.
@@ -279,7 +314,7 @@ def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=Non
             level = "NA-MOTABAR" if _is_permanent_chat_error(exc) else "KHATA"
             # redact BEFORE truncating: a cut-off token is still a secret
             print(f">>> telegram [{level}] chat_id={chat_id}: "
-                  f"{_redact(_error_line(exc), token)[:150]}")
+                  f"{_redact(_error_line(exc), token, secret)[:150]}")
     if failures:
         _report_missed_destinations(
             method, total, delivered, failures,
@@ -288,7 +323,7 @@ def _fanout(method, cfg, chat_ids, payload_for, files_factory=None, deadline=Non
             token=token)
     if results:
         return results
-    detail = "; ".join(f"{cid}: {_redact(exc, token)}"
+    detail = "; ".join(f"{cid}: {_redact(exc, token, secret)}"
                        for cid, exc in failures) or "no chat_ids configured"
     if failures and all(isinstance(exc, TimeoutError) for _cid, exc in failures):
         raise TimeoutError(f"Telegram delivery timed out for all chats: {detail}")

@@ -1223,40 +1223,70 @@ def load_telegram_config():
     except Exception:
         cfg = {}
     ids = cfg.get("chat_ids") or ([cfg.get("chat_id")] if cfg.get("chat_id") else [])
-    return {"api_base": cfg.get("api_base", "https://api.telegram.org"),
-            "bot_token": cfg.get("bot_token", ""),
-            "chat_ids": [str(x).strip() for x in ids if str(x).strip()]}
+    mode = str(cfg.get("mode") or "").strip().lower()
+    if mode not in ("host", "proxy", "direct"):
+        if cfg.get("relay_url"):
+            mode = "host"
+        elif cfg.get("proxy_url"):
+            mode = "proxy"
+        elif cfg.get("api_base") and str(cfg["api_base"]).strip() != "https://api.telegram.org":
+            mode = "direct"
+        else:
+            mode = "host"
+    return {
+        "mode": mode,
+        "relay_url": str(cfg.get("relay_url") or "https://api.oneserver.in/telegram.php").strip(),
+        "relay_secret": str(cfg.get("relay_secret") or "").strip(),
+        "proxy_url": str(cfg.get("proxy_url") or "").strip(),
+        "api_base": str(cfg.get("api_base") or "https://api.telegram.org").strip(),
+        "bot_token": str(cfg.get("bot_token") or "").strip(),
+        "chat_ids": [str(x).strip() for x in ids if str(x).strip()],
+    }
 
 
 def save_telegram_config(cfg):
-    """Token faghat vaghti ke karbar meghdar-e JADID bedahad avaz mishavad.
-    (UI token-e zakhire-shode ra NEMIFRESTAD, pas khali = 'taghir nade').
+    """Token and secret only change when the user provides a new non-empty value.
+    (UI never sends stored tokens, so blank = 'keep current').
 
-    `chat_ids` ham reshte (textarea-ye UI: har khat/comma) va ham list ra
-    mipazirad — /telegram-config dar khandan list barmigardanad, pas neveshtan
-    bayad haman shekl-ra ghabul konad.
+    `chat_ids` accepts both list and newline/comma-separated strings.
     """
     current = load_telegram_config()
     incoming_token = str(cfg.get("bot_token") or "").strip()
+    incoming_secret = str(cfg.get("relay_secret") or "").strip()
     incoming_ids = cfg.get("chat_ids") or ""
     if isinstance(incoming_ids, (list, tuple)):
         raw_ids = [str(x) for x in incoming_ids]
     else:
         raw_ids = str(incoming_ids).replace(",", "\n").splitlines()
-    clean = {"api_base": str(cfg.get("api_base") or "https://api.telegram.org").strip(),
-             "bot_token": incoming_token or current.get("bot_token", ""),
-             "chat_ids": [x.strip() for x in raw_ids if x.strip()]}
+    mode = str(cfg.get("mode") or current.get("mode") or "host").strip().lower()
+    if mode not in ("host", "proxy", "direct"):
+        mode = "host"
+    clean = {
+        "mode": mode,
+        "relay_url": str(cfg.get("relay_url") or current.get("relay_url") or "https://api.oneserver.in/telegram.php").strip(),
+        "relay_secret": incoming_secret if ("relay_secret" in cfg and incoming_secret) else current.get("relay_secret", ""),
+        "proxy_url": str(cfg.get("proxy_url") or "").strip(),
+        "api_base": str(cfg.get("api_base") or "https://api.telegram.org").strip(),
+        "bot_token": incoming_token or current.get("bot_token", ""),
+        "chat_ids": [x.strip() for x in raw_ids if x.strip()],
+    }
     with open(TELEGRAM_PATH, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
     return public_telegram_config()
 
 
 def public_telegram_config():
-    """Nokhse-ye BEDUN-e token baraye UI — token hargez be morurgar nemiravad."""
+    """Version without secrets for the UI — tokens never leak to the browser."""
     cfg = load_telegram_config()
-    return {"api_base": cfg.get("api_base", "https://api.telegram.org"),
-            "chat_ids": cfg.get("chat_ids", []),
-            "token_set": bool(str(cfg.get("bot_token") or "").strip())}
+    return {
+        "mode": cfg.get("mode", "host"),
+        "relay_url": cfg.get("relay_url", "https://api.oneserver.in/telegram.php"),
+        "relay_secret_set": bool(str(cfg.get("relay_secret") or "").strip()),
+        "proxy_url": cfg.get("proxy_url", ""),
+        "api_base": cfg.get("api_base", "https://api.telegram.org"),
+        "chat_ids": cfg.get("chat_ids", []),
+        "token_set": bool(str(cfg.get("bot_token") or "").strip()),
+    }
 
 
 # =====================================================================
@@ -2397,27 +2427,67 @@ def test_telegram_api(attempts=3):
     """Connectivity/auth test via getMe; does not send a message."""
     import requests
     cfg = load_telegram_config()
-    base = str(cfg.get("api_base") or "").rstrip("/")
     token = str(cfg.get("bot_token") or "").strip()
+    base = str(cfg.get("api_base") or "").rstrip("/")
+    mode = str(cfg.get("mode") or "").strip().lower()
+    if not mode:
+        if cfg.get("relay_url"):
+            mode = "host"
+        elif cfg.get("proxy_url"):
+            mode = "proxy"
+        elif base:
+            mode = "direct"
+        else:
+            mode = "host"
+
     result = {
         "ok": False,
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "api_base": base,
+        "mode": mode,
         "used_base": "",
         "message": "تنظیمات API تلگرام کامل نیست.",
     }
-    if not (base and token):
+    if not token or (mode == "direct" and not base):
         _write_telegram_health(result)
         return result
 
+    post_kwargs = {}
+    if mode == "host":
+        relay = str(cfg.get("relay_url") or "https://api.oneserver.in/telegram.php").rstrip("/")
+        req_url = f"{relay}?method=getMe&token={token}"
+        secret = str(cfg.get("relay_secret") or "").strip()
+        headers = {"X-Telegram-Bot-Token": token}
+        if secret:
+            headers["X-Relay-Secret"] = secret
+        post_kwargs["headers"] = headers
+        used_target = relay
+    elif mode == "proxy":
+        proxy = str(cfg.get("proxy_url") or "").strip()
+        if proxy:
+            post_kwargs["proxies"] = {"http": proxy, "https": proxy}
+        base_url = "https://api.telegram.org"
+        req_url = f"{base_url}/bot{token}/getMe"
+        used_target = f"proxy ({proxy})" if proxy else base_url
+    else:  # direct
+        base_url = base or "https://api.telegram.org"
+        req_url = f"{base_url}/bot{token}/getMe"
+        used_target = base_url
+
     last_message = result["message"]
-    for attempt in range(1, max(1, int(attempts)) +1):
+    for attempt in range(1, max(1, int(attempts)) + 1):
         try:
-            response = requests.get(f"{base}/bot{token}/getMe", timeout=20)
-            payload = response.json()
+            if mode == "host":
+                response = requests.post(req_url, timeout=20, **post_kwargs)
+            else:
+                response = requests.get(req_url, timeout=20, **post_kwargs)
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
             if response.ok and payload.get("ok"):
                 username = str((payload.get("result") or {}).get("username") or "ربات")
-                result.update(ok=True, used_base=base,
+                result.update(ok=True, used_base=used_target,
                               message=f"ارتباط API تلگرام برقرار است — @{username}")
                 result["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 _write_telegram_health(result)
@@ -2427,11 +2497,39 @@ def test_telegram_api(attempts=3):
         except Exception as exc:
             last_message = f"ارتباط API تلگرام ناموفق بود: {type(exc).__name__}"
         if attempt < attempts:
-            time.sleep(2.0 * attempt)
+            time.sleep(1.5 * attempt)
     result["message"] = last_message
     result["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
     _write_telegram_health(result)
     return result
+
+
+def run_telegram_test(data=None):
+    """Run full telegram test: checks getMe and optionally sends a test message to chats."""
+    data = data if isinstance(data, dict) else {}
+    send_msg = bool(data.get("send_message", True))
+    api_res = test_telegram_api(attempts=1)
+    if not api_res.get("ok"):
+        return {"ok": False, "message": api_res.get("message", "خطا در اتصال به تلگرام")}
+    if send_msg:
+        import telegram_notify
+        cfg = load_telegram_config()
+        chat_ids = cfg.get("chat_ids") or []
+        target_chat = data.get("chat_id")
+        targets = [str(target_chat).strip()] if target_chat else chat_ids
+        if not targets:
+            return {"ok": True, "message": api_res.get("message") + " — شناسه‌ای برای ارسال پیام تنظیم نشده است."}
+        try:
+            telegram_notify.send_message(
+                "پیام آزمایشی از پنل ایریکا — ارتباط تلگرام با موفقیت برقرار است.",
+                extra_chat_ids=targets if not target_chat else None,
+                chat_id=target_chat if target_chat else None,
+                timeout=20,
+            )
+            return {"ok": True, "message": api_res.get("message") + " و پیام آزمایشی ارسال شد."}
+        except Exception as e:
+            return {"ok": False, "message": f"{test_res.get('message')} اما ارسال پیام با خطا مواجه شد: {e}"}
+    return {"ok": True, "message": api_res.get("message")}
 
 
 def _write_telegram_health(result):
@@ -8150,7 +8248,10 @@ function toastCtx(name, msg, ok){
 var CASE_MODAL={id:'',sig:'',live:false,origin:''};
 function dlgCaseSig(d){
   var e=d.estelam||{},p=d.pay||{};
-  return [d.stage,d.updated,d.owner_id,d.profile_id,d.periodic_opt_out?1:0,
+  var o=(STATE.owners||[]).find(x=>x.id===d.owner_id)||{};
+  var c=(STATE.customers||[]).find(x=>x.id===d.customer_id)||{};
+  return [d.stage,d.updated,d.name,d.notes,d.customer_id,c.name,d.owner_id,o.name,o.passport,o.national,
+          d.profile_id,d.periodic_opt_out?1:0,
           e.status,e.hamta_status,p.run_status,p.browser_visible?1:0,
           (p.payment_link?'l':''),(STATE.identities||[]).length].join('|');
 }
@@ -8564,7 +8665,8 @@ var STAGE_SKIP_WARN = {
   'ready_owner':'نیاز به مسافر نادیده گرفته می‌شود؛ مشخصات مسافر برای ثبت پرونده و تحویل لازم است، نه برای هویت استعلام.',
   'handed':'استعلام ثبت‌بودن دستگاه در گمرک نادیده گرفته می‌شود و پرونده مستقیم به گام پرداخت می‌رود.',
   'to_payment':'ربات پرداخت خودکار اجرا نمی‌شود؛ لینک پرداخت گرفته نمی‌شود.',
-  'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.'};
+  'payment':'تأیید پرداخت بدون بررسی انجام می‌شود و مبلغ پرداختی در دفتر ثبت نمی‌شود.',
+  'problem':'پرونده بدون تکرار استعلام به گام استعلام برمی‌گردد.'};
 function stageReady(d){
   var fn=STAGE_READY[d.stage];
   return fn===true?true:(typeof fn==='function'?Boolean(fn(d)):false);
@@ -8576,7 +8678,7 @@ function stageContinue(d){
   return {action:d.stage==='new'?'queue_inquiry':
              d.stage==='inquiry'?'mark_ready':
              d.stage==='ready_owner'?'handover':
-             d.stage==='handed'?(d.auto_advance?'__noop':'__start_payment'):
+             d.stage==='handed'?'to_payment':
              d.stage==='to_payment'?(d.auto_advance?'__noop':'__start_payment'):
              d.stage==='payment'?'confirm_payment':'deliver_code',
           label:label, ready:ready,
@@ -8672,6 +8774,7 @@ function doneTabHtml(){
   return note+ds.map(d=>devRow(d,
     '<span class="kbd">تاریخ تکمیل: '+esc(faDate(d.done_at))+'</span>'
     +'<div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="مشاهده پرونده" data-tip="مشاهده پرونده" onclick="caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button>'
     +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش پرونده" data-tip="ویرایش پرونده" onclick="dlgDeviceEdit(\''+d.id+'\')">'+ICONS.edit+'</button>'
     +'<button type="button" class="ibtn danger" aria-label="بازگشت به مرحلهٔ قبل" data-tip="بازگشت به مرحلهٔ قبل" onclick="doneRollback(\''+d.id+'\')">'+ICONS.undo+'</button>'
     +'</div>')).join('');
@@ -8703,6 +8806,7 @@ function problemTabHtml(){
   }
   return note+ds.map(d=>devRow(d,
     '<div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="مشاهده پرونده" data-tip="مشاهده پرونده" onclick="caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button>'
     +'<button type="button" class="ibtn primary" aria-label="بازگشت به صف" data-tip="بازگشت به صف" onclick="devRequeue(\''+d.id+'\')">'+ICONS.undo+'</button>'
     +'<button type="button" class="ibtn danger" aria-label="مختومه کردن پرونده" data-tip="مختومه کردن پرونده" onclick="devTick(\''+d.id+'\',\'__close_case\')">'+ICONS.ban+'</button>'
     +'</div>')).join('');
@@ -8718,7 +8822,7 @@ function closedTabHtml(){
     if(searchActive())return note+searchEmptyCard();
     return note+emptyHtml('پروندهٔ مختومه‌ای نیست','پرونده‌هایی که قابل ادامه نباشند پس از مختومه‌کردن این‌جا می‌آیند.');
   }
-  return note+ds.map(d=>'<div class="card" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
+  return note+ds.map(d=>'<div class="card" id="devrow-'+d.id+'" style="margin-bottom:8px"><div class="row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">'
     +'<b>'+esc(d.name)+'</b>'
     +'<span class="pill n">'+(STAGE_FA[d.stage]||esc(d.stage))+'</span>'
     +'<span class="chip">'+ICONS.dev+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</span>'
@@ -8726,6 +8830,9 @@ function closedTabHtml(){
     +'<span class="chip closedreason">دلیل: '+esc(d.closed_reason||'—')+'</span>'
     +'<span class="chip">'+esc(faDate(d.closed_at))+'</span>'
     +'<span class="kbd">ایجاد: '+esc(faDate(d.created))+' · آخرین تغییر: '+esc(faDateTime(d.updated))+'</span>'
+    +'<div class="ibacts">'
+    +'<button type="button" class="ibtn" data-static="1" aria-label="مشاهده پرونده" data-tip="مشاهده پرونده" onclick="caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button>'
+    +'</div>'
     +'</div></div>').join('');
 }
 function devRequeue(id){
@@ -8749,11 +8856,9 @@ function closeCaseYes(id){
   if(!reason){toast('ثبت دلیل الزامی است',false);return;}
   var cn=((STATE.devices||[]).find(x=>x.id===id)||{}).name||'';
   closeDlg();
-  confirmDlg('مختومه کردن پرونده','پرونده با دلیل «'+reason+'» مختومه می‌شود. مطمئنی؟','مختومه کردن',function(){
-    api('/crm-tick',{device_id:id,action:'close_case',reason:reason}).then(async r=>{
-      toastCtx(cn,'مختومه شد');await refresh();})
-      .catch(e=>toastCtx(cn,String(e),false));
-  });
+  api('/crm-tick',{device_id:id,action:'close_case',reason:reason}).then(async r=>{
+    toastCtx(cn,'مختومه شد');await refresh();})
+    .catch(e=>toastCtx(cn,String(e),false));
 }
 /* v1.5 B4: the main grid lists active cases only; done/problem/closed
    devices appear exclusively in their own tabs (no case in two sections). */
@@ -9115,7 +9220,17 @@ function bodyHtml(){
 }
 function renderBody(){
   var el=document.getElementById('tabBody');
-  if(el)el.innerHTML=bodyHtml();
+  if(!el)return;
+  if(TAB==='cloud'&&document.getElementById('cloud-sync-section')){
+    paintCloud();
+    return;
+  }
+  if(TAB==='settings'&&document.getElementById('stFee')){
+    var ae=document.activeElement;
+    if(ae&&el.contains(ae))return;
+  }
+  el.innerHTML=bodyHtml();
+  if(TAB==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
 }
 
 /* ================= KPI strip ================= */
@@ -10217,7 +10332,7 @@ function periodicHtml(){
     (schedOn?'<button class="btn warn" onclick="periodicToggle()">غیرفعال کردن</button>'
             :'<button class="btn primary" onclick="periodicToggle()">فعال کردن</button>')+
     '<label class="f" style="flex-direction:row;align-items:center;gap:6px">بازهٔ استعلام دوره‌ای (ساعت): '+
-    '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+fa(hours)+'" inputmode="numeric">'+
+    '<input id="periodicInterval" class="ltr" style="width:64px" type="number" min="1" max="72" value="'+hours+'" inputmode="numeric">'+
     '</label><button class="btn" onclick="periodicSaveInterval()">ذخیره بازه</button>'+
     '<button class="btn primary"'+gomrokGateAttrs()+' onclick="periodicRunAll()" '+(STATE.estelam_running?'disabled':'')+'>شروع فوری استعلام</button>'+
     '<button class="btn"'+gomrokGateAttrs()+' onclick="periodicRunSelected()" '+(STATE.estelam_running?'disabled':'')+'>استعلام انتخاب‌شده‌ها</button>'+
@@ -10298,20 +10413,60 @@ function settingsHtml(){
   +'<input id="stBizPhone" dir="ltr" inputmode="tel" style="width:170px" value="'+esc(settings.business_phone||'')+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveBiz()">ذخیره</button></div>'
   +'<p class="muted">نام و شمارهٔ تماس کسب‌وکار در سربرگ صورت‌حساب مشتری و فاکتور چاپی درج می‌شود.</p></div>'
+  +'<div class="card"><h3>اتصال و ربات تلگرام</h3>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f" style="flex:1">توکن ربات تلگرام (Bot Token)'
+  +'<input id="stTgToken" class="ltr" type="password" autocomplete="off" placeholder="توکن ربات...">'
+  +'</label><div id="stTgTokenBadge" style="align-self:flex-end;margin-bottom:8px"></div></div>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f" style="flex:1">روش اتصال به تلگرام'
+  +'<select id="stTgMode" onchange="settingsTgModeChange()">'
+  +'<option value="host">سرویس هاست ابری (بدون نیاز به پروکسی)</option>'
+  +'<option value="proxy">پروکسی اختصاصی (SOCKS5 / HTTP)</option>'
+  +'<option value="direct">مستقیم / ورکر کلودفلر</option>'
+  +'</select></label></div>'
+  +'<div id="stTgHostFields" class="row" style="margin-bottom:8px;gap:8px">'
+  +'<label class="f" style="flex:2">آدرس سرویس فایل هاست (Relay URL)'
+  +'<input id="stTgRelayUrl" class="ltr" placeholder="https://api.oneserver.in/telegram.php"></label>'
+  +'<label class="f" style="flex:1">کلید امنیتی رله (اختیاری)'
+  +'<input id="stTgRelaySecret" class="ltr" type="password" placeholder="در صورت تنظیم روی هاست"></label>'
+  +'</div>'
+  +'<div id="stTgProxyFields" class="row" style="margin-bottom:8px;display:none">'
+  +'<label class="f" style="flex:1">آدرس پروکسی (Proxy URL)'
+  +'<input id="stTgProxyUrl" class="ltr" placeholder="socks5h://127.0.0.1:10808 یا http://127.0.0.1:7890"></label>'
+  +'</div>'
+  +'<div id="stTgDirectFields" class="row" style="margin-bottom:8px;display:none">'
+  +'<label class="f" style="flex:1">آدرس پایه API تلگرام (API Base)'
+  +'<input id="stTgApiBase" class="ltr" placeholder="https://api.telegram.org یا آدرس ورکر"></label>'
+  +'</div>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f" style="flex:1">شناسه‌های چت پیش‌فرض (با کاما جدا کنید)'
+  +'<input id="stTgChats" class="ltr" placeholder="123456789, -100123456789"></label>'
+  +'</div>'
+  +'<div class="row" style="gap:8px;margin-top:10px;align-items:center">'
+  +'<button class="btn primary" id="stTgSaveBtn" onclick="settingsSaveTelegram()">ذخیره تنظیمات تلگرام</button>'
+  +'<button class="btn" id="stTgTestBtn" onclick="settingsTestTelegram()">ارسال پیام آزمایشی (تست اتصال)</button>'
+  +'<span id="stTgStatusText" class="muted" style="font-size:12px"></span>'
+  +'</div>'
+  +'<p class="muted" style="margin-top:8px">در حالت «سرویس هاست ابری»، ارسال پیام‌ها و عکس‌ها بدون فیلترشکن از طریق فایل telegram.php روی هاست انجام می‌شود.</p></div>'
   +'<div class="card"><h3>تحویل اطلاعات ثبت به تلگرام</h3>'
-  +'<div class="row"><label class="f">شناسهٔ عددی کانال/گروه ثبت مسافری'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f">شناسهٔ عددی کانال/گروه ثبت مسافری'
   +'<input id="stRegChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.registration_chat_id||'')+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveRegChat()">ذخیره</button></div>'
   +'<p class="muted">اطلاعات دستگاه و مسافر که برای فرآیند ثبت لازم است، برای تحویل به مسئول ثبت به این کانال/گروه تلگرام ارسال می‌شود.</p></div>'
   +'<div class="card"><h3>کانال تلگرام گزارش‌ها</h3>'
-  +'<div class="row"><label class="f">شناسهٔ عددی کانال گزارش‌ها'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f">شناسهٔ عددی کانال گزارش‌ها'
   +'<input id="stReportChat" dir="ltr" inputmode="numeric" style="width:200px" value="'+esc(settings.report_chat_id||'')+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveReportChat()">ذخیره</button></div>'
   +'<p class="muted">گزارش پرونده‌ها، گزارش مالی، صورت‌حساب و نتیجهٔ استعلام‌های گمرک و همتا، علاوه بر چت‌های فعلی، یک نسخه هم به این کانال می‌رود. برای اینکه ارسال انجام شود، ربات باید در آن کانال عضو و مدیر باشد. خالی بگذارید تا نسخه‌ای به کانال نرود.</p></div>'
-  +'<div class="card"><h3>زمان‌بند استعلام دوره‌ای</h3>'
-    +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند فعال باشد</span></label>'
+  +'<div class="card"><h3>زمان‌بند و روال خودکار</h3>'
+    +'<div class="row"><label class="f check"><input type="checkbox" id="stSched" '+(settings.scheduler_enabled?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">زمان‌بند استعلام دوره‌ای فعال باشد</span></label>'
     +'<button class="btn primary" onclick="settingsSave()">ذخیره</button></div>'
-    +'<p class="muted">زمان‌بند، استعلام گمرکِ پرونده‌های تحویل‌شده را هر بازهٔ تنظیم‌شده اجرا می‌کند.</p></div>'
+    +'<div class="row" style="margin-top:8px"><label class="f check"><input type="checkbox" id="stAutoAdv" '+(settings.auto_advance_default?'checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پیش‌فرض برای پرونده‌های جدید</span></label>'
+    +'<button class="btn primary" onclick="settingsSaveAutoAdv()">ذخیره</button></div>'
+    +'<p class="muted">زمان‌بند، استعلام گمرکِ پرونده‌های تحویل‌شده را هر بازهٔ تنظیم‌شده اجرا می‌کند. پرداخت خودکار پرونده را پس از ثبت بلافاصله به گام پرداخت می‌برد.</p></div>'
     +'<div class="card"><h3>دکمه‌های سایت‌های مرتبط (گوشهٔ پایین صفحه)</h3>'
     +'<div id="linkRows">'+(loadLinks().map(function(l,i){
       return '<div class="row" style="gap:6px;margin-bottom:6px">'
@@ -10360,6 +10515,103 @@ function settingsSave(){
   api('/crm-settings',{scheduler_enabled:document.getElementById('stSched').checked})
     .then(async r=>{toast('تنظیمات ذخیره شد');await refresh();})
     .catch(e=>toast(e,false));
+}
+function settingsSaveAutoAdv(){
+  api('/crm-settings',{auto_advance_default:document.getElementById('stAutoAdv').checked})
+    .then(async r=>{toast('تنظیم پرداخت خودکار ذخیره شد');await refresh();})
+    .catch(e=>toast(e,false));
+}
+function settingsLoadTelegram(){
+  fetch('/telegram-config',{cache:'no-store'})
+    .then(r=>r.json())
+    .then(d=>{
+      if(!d||typeof d!=='object')return;
+      var modeEl=document.getElementById('stTgMode');
+      if(modeEl)modeEl.value=d.mode||'host';
+      var rUrl=document.getElementById('stTgRelayUrl');
+      if(rUrl)rUrl.value=d.relay_url||'https://api.oneserver.in/telegram.php';
+      var pUrl=document.getElementById('stTgProxyUrl');
+      if(pUrl)pUrl.value=d.proxy_url||'';
+      var aBase=document.getElementById('stTgApiBase');
+      if(aBase)aBase.value=d.api_base||'https://api.telegram.org';
+      var chats=document.getElementById('stTgChats');
+      if(chats)chats.value=(d.chat_ids||[]).join(', ');
+      var badge=document.getElementById('stTgTokenBadge');
+      var tokenInp=document.getElementById('stTgToken');
+      if(badge){
+        if(d.token_set){
+          badge.innerHTML='<span class="pill ok">✓ توکن ذخیره است</span>';
+          if(tokenInp)tokenInp.placeholder='(توکن قبلی ذخیره است؛ برای تغییر مقدار جدید بنویسید)';
+        }else{
+          badge.innerHTML='<span class="pill warn">توکن تنظیم نشده</span>';
+          if(tokenInp)tokenInp.placeholder='123456:ABC-DEF...';
+        }
+      }
+      settingsTgModeChange();
+    }).catch(function(){});
+}
+function settingsTgModeChange(){
+  var mode=(document.getElementById('stTgMode')||{}).value||'host';
+  var hf=document.getElementById('stTgHostFields');
+  var pf=document.getElementById('stTgProxyFields');
+  var df=document.getElementById('stTgDirectFields');
+  if(hf)hf.style.display=(mode==='host')?'flex':'none';
+  if(pf)pf.style.display=(mode==='proxy')?'flex':'none';
+  if(df)df.style.display=(mode==='direct')?'flex':'none';
+}
+function settingsSaveTelegram(){
+  var btn=document.getElementById('stTgSaveBtn');
+  if(btn)btn.disabled=true;
+  var payload={
+    mode:(document.getElementById('stTgMode')||{}).value||'host',
+    bot_token:(document.getElementById('stTgToken')||{}).value||'',
+    relay_url:(document.getElementById('stTgRelayUrl')||{}).value||'',
+    relay_secret:(document.getElementById('stTgRelaySecret')||{}).value||'',
+    proxy_url:(document.getElementById('stTgProxyUrl')||{}).value||'',
+    api_base:(document.getElementById('stTgApiBase')||{}).value||'',
+    chat_ids:(document.getElementById('stTgChats')||{}).value||''
+  };
+  fetch('/telegram-config',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+    .then(r=>r.json())
+    .then(d=>{
+      if(btn)btn.disabled=false;
+      toast('تنظیمات تلگرام ذخیره شد');
+      var tokenInp=document.getElementById('stTgToken');
+      if(tokenInp)tokenInp.value='';
+      var secInp=document.getElementById('stTgRelaySecret');
+      if(secInp)secInp.value='';
+      settingsLoadTelegram();
+    })
+    .catch(e=>{
+      if(btn)btn.disabled=false;
+      toast('خطا در ذخیره تنظیمات: '+e,false);
+    });
+}
+function settingsTestTelegram(){
+  var btn=document.getElementById('stTgTestBtn');
+  var st=document.getElementById('stTgStatusText');
+  if(btn)btn.disabled=true;
+  if(st)st.textContent='در حال آزمون ارتباط...';
+  fetch('/telegram-test',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({send_message:true})
+  })
+    .then(r=>r.json())
+    .then(d=>{
+      if(btn)btn.disabled=false;
+      if(st)st.textContent=d.ok?'ارتباط موفق بود':'خطا در اتصال';
+      toast(d.message||(d.ok?'ارتباط با تلگرام برقرار است':'خطا در اتصال'),d.ok);
+    })
+    .catch(e=>{
+      if(btn)btn.disabled=false;
+      if(st)st.textContent='خطا در ارسال درخواست';
+      toast('خطا: '+e,false);
+    });
 }
 function settingsSaveSound(){
   api('/crm-settings',{sound_enabled:document.getElementById('stSound').checked})
@@ -11756,6 +12008,7 @@ function renderTabs(){
 function setTab(t){
   ibtnClearBusy();TAB=t;renderTabs();renderView();
   if(t==='cloud'&&typeof loadCloudStatus==='function')loadCloudStatus();
+  if(t==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
   /* v1.9: the quietest cue, because tab switching is frequent. The initial
      render reads TAB from the URL and does not come through here, so loading
      the panel does not beep. */
@@ -11789,6 +12042,8 @@ function renderView(){
     el.innerHTML='<div class="crm-cols"><div class="crm-main">'
       +'<div id="tabShell" data-tab="'+esc(TAB)+'">'+tabBarHtml()
       +'<div id="tabBody">'+bodyHtml()+'</div></div></div>'+aside+'</div>';
+    if(TAB==='cloud')paintCloud();
+    if(TAB==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
   }else{
     renderBody();
     /* outerHTML, not innerHTML: the aside string carries its own
@@ -13166,6 +13421,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, render_crm_page(self.actor).encode("utf-8"))
         elif route == "/crm-state":
             self._json(crm_state_payload())
+        elif route == "/telegram-config":
+            self._json(public_telegram_config())
         elif route == "/crm-periodic-logs":
             self._json({"logs": [l for l in load_estelam_logs()
                                  if l.get("device_id")]})
@@ -13449,6 +13706,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/telegram-config":
             self._json(save_telegram_config(self._read_json()))
+
+        elif self.path == "/telegram-test":
+            self._json(run_telegram_test(self._read_json()))
 
         # Cloud sync (spec §11). Origin / Host / CSRF were already checked by
         # _gate before any route ran; _cloud_route_guard is where the two

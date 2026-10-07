@@ -96,4 +96,8 @@ return [
     // Optional setup key for web-based installation on shared hosting without SSH.
     // If set, you can visit https://api.<domain>/setup.php?key=YOUR_SETUP_KEY
     'setup_key' => null,
+
+    // Optional secret key to secure public/telegram.php relay from unauthorized use.
+    // If set, clients must supply X-Relay-Secret header or relay_secret parameter.
+    'telegram_relay_secret' => null,
 ];
