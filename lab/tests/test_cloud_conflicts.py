@@ -693,6 +693,12 @@ class UIAndJSTests(unittest.TestCase):
         self.assertIn("if(TAB==='cloud'&&document.getElementById('cloud-sync-section'))", panel.CRM_PAGE)
         self.assertIn("paintCloud();", panel.CRM_PAGE)
 
+    def test_cloud_sync_route_and_js_matching(self):
+        self.assertIn("cloudPost('/cloud-sync'", panel.CRM_PAGE)
+        with open(panel.__file__, "r", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('elif self.path in ("/cloud-sync", "/cloud-sync-now"):', src)
+
     @unittest.skipUnless(NODE, "node is not installed")
     def test_all_cloud_functions_syntax_valid(self):
         for name in ("cloudShellHtml", "paintCloud", "renderCloudConflicts",

@@ -1699,6 +1699,12 @@ def cloud_login(username, password):
         # the device id and the DPAPI-protected refresh token itself.
         client.enroll()
     _cloud_apply_login_event(runtime)
+    cloud_worker_start()
+    cloud_worker_kick()
+    try:
+        cloud_worker_beat()
+    except Exception:
+        pass
     return {"ok": True, "actor": _CLOUD_ACTOR,
             "must_change_password": _CLOUD_MUST_CHANGE,
             "enrolled": bool(runtime["config"].sync_device_id)}, 200
@@ -1736,6 +1742,10 @@ def cloud_sync_now():
         return cloud_error_body("CONFIG_INVALID", 409)
     thread = cloud_worker_start()
     cloud_worker_kick()
+    try:
+        cloud_worker_beat()
+    except Exception:
+        pass
     return {"ok": True, "queued": True,
             "worker": "running" if thread is not None else "stopped"}, 200
 
@@ -10996,7 +11006,7 @@ function cloudPost(path,body,onOk){
 }
 
 function cloudSyncNow(){
-  cloudPost('/cloud-sync-now',{},function(){toast('همگام‌سازی با موفقیت انجام شد.',true);});
+  cloudPost('/cloud-sync',{},function(){toast('همگام‌سازی با موفقیت انجام شد.',true);});
 }
 
 function cloudSaveConfig(){
@@ -13816,7 +13826,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(data.get("password") or "")))
         elif self.path == "/cloud-logout":
             self._json(*_cloud_route_guard(cloud_logout))
-        elif self.path == "/cloud-sync":
+        elif self.path in ("/cloud-sync", "/cloud-sync-now"):
             self._json(*_cloud_route_guard(cloud_sync_now))
         elif self.path == "/cloud-resolve-conflict":
             resp, status = _cloud_route_guard(cloud_resolve_conflict,
