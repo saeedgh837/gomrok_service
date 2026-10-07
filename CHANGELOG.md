@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.13.1] - 2026-10-07
+
+### Added
+
+- **Period-based Case Grouping in CRM Devices Tab.** When viewing "All Periods"
+  («همهٔ دوره‌ها») in the CRM Devices tab, cases are now grouped into structured
+  period cards instead of a single mixed table. Each period group features:
+  - Distinct colored border and leading accent bar from an 8-color system palette.
+  - Header badge with Persian ordinal title (e.g. «دورهٔ اول»، «دورهٔ دوم») or custom label.
+  - Active/closed status pill, date range, and filtered case count.
+  - Independent 1-based row numbering per period.
+  - Cases without a period are grouped in a neutral card at the bottom.
+  - Direct button to open period details modal (`dlgPeriod`).
+
+### Fixed
+
+- **Host Telegram Relay Multipart File Uploads on Shared Hosting.** Resolved
+  cURL `there is no photo in the request` failure on cPanel shared hosting:
+  - Fixed `telegram.php` cURL option order where `CURLOPT_POST => true` was
+    inadvertently resetting `CURLOPT_POSTFIELDS` multipart form-data encoding.
+  - Moved uploaded files to local project temp directory (`var/tmp` / `__DIR__`)
+    before passing to `CURLFile` to prevent cURL access blocks by `open_basedir`.
+  - Added dual upload transport: native multipart alongside automatic Base64
+    payload decoding (`photo_base64`), ensuring 100% receipt photo delivery to Telegram.
+- **Ambient System Proxy Bypass for Host Relay.** Configured `proxies={'http': None, 'https': None}`
+  for host relay mode in `telegram_notify.py` and `panel.py` so desktop panel requests
+  reach `api.oneserver.in` directly without being disrupted by local VPN/proxy drops.
+
 ## [1.13.0] - 2026-10-07
 
 ### Added
