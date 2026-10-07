@@ -596,6 +596,10 @@ class SyncClient(object):
         return self._request("POST", "/bootstrap/import", body=body,
                              acting=True)
 
+    def trigger_backup(self):
+        """``POST /admin/backup`` — triggers automated DB dump to Telegram on the host."""
+        return self._request("POST", "/admin/backup", body={}, acting=True)
+
     def push(self, operations):
         """``POST /sync/mutations`` — batched push; conflicts come back as data.
 

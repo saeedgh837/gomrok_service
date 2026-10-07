@@ -589,14 +589,16 @@ class ImportEndpointTests(_GateHarness):
             terminal=True,
         )
         with patch.object(panel, "_cloud_runtime", return_value=runtime), \
-             patch("cloud_sync.importer.run_import", return_value=mock_result):
+             patch("cloud_sync.importer.run_import", return_value=mock_result), \
+             patch.object(panel, "cloud_pull_step", return_value={"pulled": 0}):
             status, _h, body = self.authed("/cloud-import", cookie, data={})
 
-        self.assertEqual(status, 409)
+        self.assertEqual(status, 200)
         payload = json.loads(body)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["code"], "DATASET_NOT_EMPTY")
-        self.assertIn("داده‌های میزبان خالی نیست", payload["errors"][0])
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload.get("merged"))
+        self.assertTrue(payload.get("imported"))
+        self.assertIn("ادغام", payload.get("message", ""))
 
     def test_import_conflict_returns_409(self):
         cookie = self.login()

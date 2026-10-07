@@ -70,6 +70,8 @@ DEFAULT_SETTINGS = {
     # (see _normalise_settings) — [] is a deliberate "no buttons", not the
     # sentinel for "not configured yet".
     "sound_enabled": True,
+    # Online real-time multi-user collaboration mode ("online" = 2s micro-sync, "local" = periodic)
+    "database_mode": "online",
     "links": None,   # set from LINKS_DEFAULT below (defined after this dict)
 }
 

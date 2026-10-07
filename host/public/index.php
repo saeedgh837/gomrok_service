@@ -97,6 +97,7 @@ try {
         '/sync/changes' => ['GET'],
         '/sync/mutations' => ['POST'],
         '/bootstrap/import' => ['POST'],
+        '/admin/backup' => ['POST'],
     ];
     // Only a known route may be written to the log: an unknown path is user
     // input, and user input never reaches a log line (spec §5).
@@ -235,6 +236,21 @@ try {
             $statusCode = 200;
             $errorCode = '';
             Response::ok($payload);
+            break;
+
+        case '/admin/backup':
+            $device = requireDevice($auth, $request);
+            $acting = $auth->actingUser($request);
+            if ($acting === null) {
+                throw new ApiException(401, Codes::AUTH_REQUIRED,
+                    'backup requires a user access token in X-Acting-User');
+            }
+            Roles::requireAdmin($acting->role);
+            require_once dirname(__DIR__) . '/bin/backup-to-telegram.php';
+            $backupResult = run_database_backup($db, $config);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($backupResult);
             break;
 
         default:

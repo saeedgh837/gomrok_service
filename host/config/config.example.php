@@ -100,4 +100,11 @@ return [
     // Optional secret key to secure public/telegram.php relay from unauthorized use.
     // If set, clients must supply X-Relay-Secret header or relay_secret parameter.
     'telegram_relay_secret' => null,
+
+    // Automated 4-hour database backup to Telegram (bin/backup-to-telegram.php).
+    // Can also fallback to tenant settings table or environment variables.
+    'backup' => [
+        'bot_token' => 'REPLACE_WITH_TELEGRAM_BOT_TOKEN',
+        'chat_id' => 'REPLACE_WITH_TELEGRAM_CHAT_ID',
+    ],
 ];

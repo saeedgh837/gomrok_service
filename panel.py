@@ -1873,6 +1873,19 @@ _CLOUD_WORKER_STOP = False
 _CLOUD_WORKER_KICK = False
 
 
+def _cloud_worker_interval_resolved():
+    """Return worker poll interval in seconds: 2.0s for online real-time sync, 15.0s for local."""
+    try:
+        import crm as crm_mod
+        settings = (crm_mod._store_read().get("settings") or {})
+        mode = str(settings.get("database_mode") or "online").strip().lower()
+        if mode == "local":
+            return 15.0
+        return 2.0
+    except Exception:
+        return 2.0
+
+
 def _cloud_worker_loop():
     """The sync beat: bounded interval, daemon, never a tight loop.
 
@@ -1887,8 +1900,8 @@ def _cloud_worker_loop():
         with _CLOUD_WORKER_CV:
             if not (_CLOUD_WORKER_STOP or _CLOUD_WORKER_KICK):
                 # One bounded wait; a kick or a stop notifies and returns
-                # early, a timeout returns after _CLOUD_WORKER_INTERVAL.
-                _CLOUD_WORKER_CV.wait(_CLOUD_WORKER_INTERVAL)
+                # early, a timeout returns after resolved interval (2.0s in online mode).
+                _CLOUD_WORKER_CV.wait(_cloud_worker_interval_resolved())
             if _CLOUD_WORKER_STOP:
                 return
             _CLOUD_WORKER_KICK = False
@@ -2090,7 +2103,10 @@ def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert"):
 
         wire_record = None
         if kind == "upsert" and record is not None:
-            wire_record = mapper.to_row(canon, record, source_installation_id=inst)
+            clean_rec = record
+            if canon == "settings" and isinstance(record, dict) and "database_mode" in record:
+                clean_rec = {k: v for k, v in record.items() if k != "database_mode"}
+            wire_record = mapper.to_row(canon, clean_rec, source_installation_id=inst)
             if canon == "customer_transactions":
                 cloud_id = wire_record["id"]
 
@@ -2411,6 +2427,57 @@ def cloud_run_import():
 
     if not result.ok:
         code = result.code or "IMPORT_REJECTED"
+        if code == importer.DATASET_NOT_EMPTY:
+            # Smart Data Merge:
+            # The cloud server already holds business rows (from an earlier import or another user).
+            # Instead of failing with 409 DATASET_NOT_EMPTY, enqueue local records into
+            # the cloud outbox as upserts, kick the sync worker, and pull server data.
+            local_data = crm_mod._store_read()
+            merged_count = 0
+
+            for ent_name, ent_canon, id_key in [
+                ("customers", "customers", "id"),
+                ("owners", "owners", "id"),
+                ("identities", "identities", "id"),
+                ("devices", "crm_devices", "id"),
+                ("periods", "periods", "id"),
+            ]:
+                items = local_data.get(ent_name) or []
+                for item in items:
+                    if isinstance(item, dict) and item.get(id_key):
+                        _cloud_enqueue_mutation(ent_canon, str(item[id_key]), item, kind="upsert")
+                        merged_count += 1
+
+            for cust in local_data.get("customers") or []:
+                if isinstance(cust, dict):
+                    cid = cust.get("id")
+                    for seq, tx in enumerate(cust.get("transactions") or [], start=1):
+                        tx_rec = dict(tx)
+                        tx_rec["customer_id"] = cid
+                        tx_rec["seq"] = seq
+                        _cloud_enqueue_mutation("customer_transactions", f"{cid}/{seq}", tx_rec, kind="upsert")
+                        merged_count += 1
+
+            if local_data.get("settings"):
+                _cloud_enqueue_mutation("settings", "settings/settings", local_data["settings"], kind="upsert")
+                merged_count += 1
+
+            cloud_worker_kick()
+            try:
+                cloud_pull_step(runtime)
+            except Exception:
+                pass
+            cloud_worker_beat()
+
+            return {
+                "ok": True,
+                "merged": True,
+                "count": merged_count,
+                "rows": merged_count,
+                "message": "اطلاعات محلی با موفقیت با داده‌های سرور ادغام و همگام‌سازی شد.",
+                "imported": True
+            }, 200
+
         status = 409 if code in (importer.DATASET_NOT_EMPTY, importer.IMPORT_CONFLICT) else 400
         return cloud_error_body(code, status)
 
@@ -2430,7 +2497,38 @@ def cloud_run_import():
         if callable(save_fn):
             save_fn()
 
-    return {"ok": True, "backup_path": result.backup_path, "imported": True}, 200
+    return {"ok": True, "backup_path": result.backup_path, "imported": True, "rows": getattr(result, "rows", 0)}, 200
+
+
+def cloud_run_backup_now():
+    """POST /cloud-backup-now: trigger on-demand database backup on host, admin only."""
+    from cloud_sync.lease import LeaseExpiredError
+
+    runtime = _cloud_runtime()
+    client = runtime["client"]
+    lease = runtime["lease"]
+
+    if lease and lease.is_expired():
+        raise LeaseExpiredError()
+
+    vault = getattr(client, "vault", None)
+    user_token = getattr(vault, "user_access_token", None) if vault else None
+    if not _CLOUD_ACTOR or not user_token:
+        return cloud_error_body("AUTH_REQUIRED", 401)
+
+    if _CLOUD_ROLE != "admin":
+        return cloud_error_body("HTTP_403", 403)
+
+    trigger = getattr(client, "trigger_backup", None)
+    if not callable(trigger):
+        _req = getattr(client, "_request", None)
+        if callable(_req):
+            res = _req("POST", "/admin/backup", body={}, acting=True)
+            return {"ok": True, "message": "پشتیبان‌گیری پایگاه داده ابری انجام و به تلگرام ارسال شد.", "details": res}, 200
+        return cloud_error_body("CONFIG_INVALID", 500)
+
+    res = trigger()
+    return {"ok": True, "message": "پشتیبان‌گیری پایگاه داده ابری انجام و به تلگرام ارسال شد.", "details": res}, 200
 
 
 def test_telegram_api(attempts=3):
@@ -3386,6 +3484,11 @@ def crm_update_settings(fields):
                 "telegram_report_full_data", "sound_enabled"):
         if key in fields:
             settings[key] = bool(fields[key])
+    if "database_mode" in fields:
+        val = str(fields.get("database_mode") or "").strip().lower()
+        if val in ("online", "local"):
+            settings["database_mode"] = val
+            cloud_worker_kick()
     if "registry_fee_amount" in fields:
         raw = str(fields.get("registry_fee_amount") or "").strip()
         # The field arrives pre-filled from the panel's own fa() formatter,
@@ -10824,8 +10927,21 @@ function cloudTabHtml(){
       '<div class="cloud-status" id="cloud-action-status" role="status" aria-live="polite"></div>'+
       '<div class="cloud-actions">'+
         '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
-        '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال پرونده‌های محلی به سرور (Import یکباره)</span></button>'+
+        '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال و ادغام پرونده‌های محلی با سرور</span></button>'+
+        '<button type="button" class="cloud-btn ghost" id="cloud-backup-btn" onclick="cloudBackupNow()"><span class="cloud-lbl">پشتیبان‌گیری فوری ابری به تلگرام</span></button>'+
         '<button type="button" class="cloud-btn ghost-danger hidden" id="cloud-logout-btn" onclick="cloudLogout()"><span class="cloud-lbl">خروج از حساب سرور</span></button>'+
+      '</div>'+
+    '</div>'+
+    '<div class="cloud-block">'+
+      '<strong>حالت کارکرد پایگاه داده (همکاری آنلاین همکاران)</strong>'+
+      '<p class="hint">در حالت ابری (آنلاین)، تغییرات پرونده‌ها با سرعت لحظه‌ای (۲ ثانیه) بین سیستم شما و همکاران همگام می‌شود و ربات‌های استعلام و ثبت به کار خود ادامه می‌دهند.</p>'+
+      '<div class="cloud-fields" style="margin-top:8px">'+
+        '<div class="cloud-field"><label for="cloud-db-mode">حالت پایگاه داده</label>'+
+          '<select id="cloud-db-mode" onchange="cloudSetDbMode(this.value)">'+
+            '<option value="online">ابری (آنلاین - همکاران همزمان، همگام‌سازی لحظه‌ای ۲ ثانیه)</option>'+
+            '<option value="local">محلی (آفلاین با همگام‌سازی دوره‌ای)</option>'+
+          '</select>'+
+        '</div>'+
       '</div>'+
     '</div>'+
     '<div class="cloud-block">'+
@@ -10887,11 +11003,13 @@ function paintCloud(){
 
   var hpill=document.getElementById('crmCloudPill');
   if(hpill){
-    hpill.className='iconbtn cloud-pill '+meta.cls;
+    var dbMode=(STATE&&STATE.settings&&STATE.settings.database_mode)?STATE.settings.database_mode:'online';
+    var isOnline=link==='connected'&&dbMode==='online';
+    hpill.className='iconbtn cloud-pill '+(isOnline?'ok':meta.cls);
     var hicon=document.getElementById('crmCloudPillIcon');
-    if(hicon)hicon.innerHTML=CLOUD_ICONS[meta.icon]||CLOUD_ICONS.dot;
+    if(hicon)hicon.innerHTML=isOnline?CLOUD_ICONS.checkCircle:(CLOUD_ICONS[meta.icon]||CLOUD_ICONS.dot);
     var htext=document.getElementById('crmCloudPillText');
-    if(htext)htext.textContent=meta.label;
+    if(htext)htext.textContent=isOnline?'ابری (آنلاین)':meta.label;
   }
 
   if(!document.getElementById('cloud-sync-section'))return;
@@ -10939,6 +11057,10 @@ function paintCloud(){
   if(apiInput&&!apiInput.value&&s&&s.api_base)apiInput.value=s.api_base;
   var tenantInput=document.getElementById('cloud-tenant');
   if(tenantInput&&!tenantInput.value&&s&&s.tenant_id)tenantInput.value=s.tenant_id;
+  var dbModeEl=document.getElementById('cloud-db-mode');
+  if(dbModeEl&&STATE&&STATE.settings&&STATE.settings.database_mode){
+    dbModeEl.value=STATE.settings.database_mode;
+  }
   renderCloudConflicts(document.getElementById('cloud-conflicts-view'),s);
 }
 
@@ -10969,7 +11091,7 @@ function loadCloudStatus(){
 
 function cloudSetBusy(on,label){
   CLOUD.busy=on;
-  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn','cloud-import-btn'].forEach(function(id){
+  ['cloud-sync-btn','cloud-login-btn','cloud-save-btn','cloud-logout-btn','cloud-import-btn','cloud-backup-btn'].forEach(function(id){
     var b=document.getElementById(id);if(b)b.disabled=on;
   });
   var st=document.getElementById('cloud-action-status');
@@ -11009,6 +11131,28 @@ function cloudSyncNow(){
   cloudPost('/cloud-sync',{},function(){toast('همگام‌سازی با موفقیت انجام شد.',true);});
 }
 
+function cloudSetDbMode(mode){
+  api('/crm-settings',{database_mode:mode})
+    .then(async function(r){
+      if(STATE&&STATE.settings)STATE.settings.database_mode=mode;
+      toast(mode==='online'?'حالت دیتابیس آنلاین (همگام‌سازی لحظه‌ای) فعال شد.':'حالت دیتابیس محلی (آفلاین) فعال شد.',true);
+      paintCloud();
+      await refresh();
+    })
+    .catch(function(e){toast(e,false);});
+}
+
+function cloudBackupNow(){
+  var btn=document.getElementById('cloud-backup-btn');
+  if(btn)btn.disabled=true;
+  toast('در حال تهیه نسخه پشتیبان از پایگاه داده ابری و ارسال به تلگرام…',true);
+  cloudPost('/cloud-backup-now',{},function(d){
+    if(btn)btn.disabled=false;
+    var msg=d&&d.message?d.message:'پشتیبان پایگاه داده ابری با موفقیت به تلگرام ارسال شد.';
+    toast(msg,true);
+  });
+}
+
 function cloudSaveConfig(){
   cloudPost('/cloud-config',{api_base:document.getElementById('cloud-api').value,
     tenant_id:document.getElementById('cloud-tenant').value},function(d){
@@ -11031,10 +11175,13 @@ function cloudLogout(){
 }
 
 function cloudImportPrompt(){
-  if(confirm('آیا از انتقال پرونده‌های فعلی به سرور (Import) اطمینان دارید؟ این عملیات فقط یک بار در سیستم اصلی انجام می‌شود.')){
+  if(confirm('آیا از انتقال و ادغام پرونده‌های محلی با سرور اطمینان دارید؟ اطلاعات محلی با سرور هوشمندانه ادغام خواهند شد.')){
     cloudPost('/cloud-import',{},function(d){
-      var n=d&&d.rows!=null?d.rows:0;
-      toast('انتقال با موفقیت انجام شد ('+fa(n)+' رکورد منتقل شد).',true);
+      var n=d&&d.rows!=null?d.rows:(d&&d.count!=null?d.count:0);
+      var msg=d&&d.message?d.message:'انتقال و ادغام پرونده‌ها با موفقیت انجام شد ('+fa(n)+' رکورد).';
+      toast(msg,true);
+      loadCloudStatus();
+      if(typeof refresh==='function')refresh();
     });
   }
 }
@@ -12192,10 +12339,19 @@ paintSoundBtn();   /* the button is in the header, so the 5s refresh never touch
 /* v1.9: the box reads STATE.settings.links, which is empty until the first
    fetch lands. Painting it here would show «لینکی ثبت نشده» for the whole
    first 5s; refresh() repaints it once STATE is loaded. */
-refresh();
-setInterval(refresh, 5000);
+var _REFRESH_TIMER=null;
+function scheduleNextRefresh(){
+  var isOnline=!(STATE&&STATE.settings&&STATE.settings.database_mode==='local');
+  var ms=isOnline?2500:5000;
+  if(_REFRESH_TIMER)clearTimeout(_REFRESH_TIMER);
+  _REFRESH_TIMER=setTimeout(async function(){
+    await refresh();
+    scheduleNextRefresh();
+  }, ms);
+}
+refresh().then(scheduleNextRefresh).catch(scheduleNextRefresh);
 loadCloudStatus();
-setInterval(loadCloudStatus, 5000);
+setInterval(loadCloudStatus, 4000);
 </script>
 
 </body>
@@ -13826,7 +13982,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(data.get("password") or "")))
         elif self.path == "/cloud-logout":
             self._json(*_cloud_route_guard(cloud_logout))
-        elif self.path in ("/cloud-sync", "/cloud-sync-now"):
+        elif self.path in ("/cloud-sync", "/cloud-sync-now"):  # self.path == "/cloud-sync"
             self._json(*_cloud_route_guard(cloud_sync_now))
         elif self.path == "/cloud-resolve-conflict":
             resp, status = _cloud_route_guard(cloud_resolve_conflict,
@@ -13834,6 +13990,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(resp, status)
         elif self.path == "/cloud-import":
             resp, status = _cloud_route_guard(cloud_run_import)
+            self._json(resp, status)
+        elif self.path in ("/cloud-backup-now", "/cloud-backup"):
+            resp, status = _cloud_route_guard(cloud_run_backup_now)
             self._json(resp, status)
 
         elif self.path == "/estelam-person":
