@@ -40,6 +40,10 @@ if ($httpMethod === 'GET' && empty($_GET['method']) && empty($_SERVER['PATH_INFO
         'file_uploads' => (bool) ini_get('file_uploads'),
         'upload_max_filesize' => ini_get('upload_max_filesize'),
         'post_max_size' => ini_get('post_max_size'),
+        'temp_dir' => sys_get_temp_dir(),
+        'open_basedir' => ini_get('open_basedir') ?: 'none',
+        'dir_writable' => is_writable(__DIR__),
+        'parent_writable' => is_writable(dirname(__DIR__)),
         'time' => gmdate('Y-m-d\TH:i:s\Z'),
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
@@ -175,16 +179,20 @@ $tempFilesToDelete = [];
 // Helper to get safe upload directory inside project or sys temp
 $safeTempDir = function () use ($hostRoot): string {
     $candidates = [
+        __DIR__,
         $hostRoot . '/var/tmp',
-        __DIR__ . '/.tmp',
+        $hostRoot . '/var',
         sys_get_temp_dir(),
     ];
     foreach ($candidates as $dir) {
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0750, true);
-        }
         if (is_dir($dir) && is_writable($dir)) {
             return $dir;
+        }
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0750, true);
+            if (is_dir($dir) && is_writable($dir)) {
+                return $dir;
+            }
         }
     }
     return sys_get_temp_dir();
@@ -269,26 +277,29 @@ $curlHeaders = [
     'User-Agent: IRICA-Telegram-Relay/1.0',
 ];
 
-if (!$isMultipart && !empty($postFields)) {
-    // Send as JSON for clean structured requests
-    $curlHeaders[] = 'Content-Type: application/json';
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postFields, JSON_UNESCAPED_UNICODE));
-} elseif (!empty($postFields)) {
-    // cURL handles multipart boundaries automatically when given an array with CURLFile
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
-} else {
-    curl_setopt($ch, CURLOPT_POSTFIELDS, []);
-}
-
 curl_setopt_array($ch, [
-    CURLOPT_POST => true,
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_HTTPHEADER => $curlHeaders,
     CURLOPT_CONNECTTIMEOUT => 10,
     CURLOPT_TIMEOUT => 90,
     CURLOPT_SSL_VERIFYPEER => true,
     CURLOPT_SSL_VERIFYHOST => 2,
 ]);
+
+if (!$isMultipart && !empty($postFields)) {
+    // Send as JSON for clean structured requests
+    $curlHeaders[] = 'Content-Type: application/json';
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $curlHeaders);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postFields, JSON_UNESCAPED_UNICODE));
+} elseif (!empty($postFields)) {
+    // cURL handles multipart boundaries automatically when given an array with CURLFile
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $curlHeaders);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+} else {
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $curlHeaders);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+    curl_setopt($ch, CURLOPT_POSTFIELDS, '');
+}
 
 try {
     $response = curl_exec($ch);
