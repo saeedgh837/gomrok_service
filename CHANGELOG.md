@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] - 2026-10-08
+
+### Added
+
+- **Real-Time Online Multi-User Collaboration Mode in CRM.**
+  - Instant synchronization between colleagues working on the same account.
+  - Zero-latency mutation kick (0ms) and reduced 2.0s worker sync interval.
+  - Dynamic 2.5s frontend refresh polling when in online mode.
+  - Header pill and Cloud tab status reflecting live "Online Database" operation.
+  - Safe, local-first execution keeping background inquiry/registration robots robust and untangled.
+- **Smart Initial Data Merge on Onboarding.**
+  - Eliminated the `409 DATASET_NOT_EMPTY` blocker on first login.
+  - Clicking «انتقال و ادغام پرونده‌های محلی با سرور» automatically queues local records into the outbox for a safe, non-destructive upsert merge with server data.
+- **Automated 4-Hour Database Backup to Telegram.**
+  - Added standalone host backup script (`host/bin/backup-to-telegram.php`) designed for cPanel cron jobs.
+  - Secure PDO table dump + gzip compression + SHA256 checksum + direct Telegram document upload.
+  - Concurrency safety with `flock` and temporary file cleanup.
+  - New admin route `POST /v1/admin/backup` and panel button «پشتیبان‌گیری فوری ابری به تلگرام» for on-demand backups.
+
 ## [1.13.1] - 2026-10-07
 
 ### Added
