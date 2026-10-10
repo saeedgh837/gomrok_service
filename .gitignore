@@ -67,7 +67,8 @@ solver/checkpoints/*.onnx
 # ---- chrome profile-haye mahalli (hajm-e bala + cookie/session) ----
 .exitban-chrome-profile/
 *-chrome-profile/
-.claude/
+.claude/*
+!.claude/settings.json
 .hermes/
 
 # ---- lab (khoruji-haye tasviri-ye test) ----
