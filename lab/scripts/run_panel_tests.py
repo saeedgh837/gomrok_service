@@ -164,6 +164,8 @@ DEFAULT = [
     "test_cloud_ui",
     "test_cloud_conflicts",
     "test_cloud_integration",
+    # Legacy CLI targeting regression; disposable SQLite, no provisioned DB.
+    "test_create_admin",
     "test_host_schema",
     "test_host_api",
 ]
