@@ -62,8 +62,29 @@ final class Codes
     public const DB_UNAVAILABLE = 'DB_UNAVAILABLE';
     public const SERVER_ERROR = 'SERVER_ERROR';
     public const IDEMPOTENCY_MISMATCH = 'IDEMPOTENCY_MISMATCH';
+    /** Phase B workspace context: the caller's expected context_version is stale. */
+    public const WORKSPACE_CONTEXT_STALE = 'WORKSPACE_CONTEXT_STALE';
+    /** Phase B membership: removing the last active admin of a workspace. */
+    public const LAST_WORKSPACE_ADMIN = 'LAST_WORKSPACE_ADMIN';
+    /** Phase B accounts: the canonical login is already taken, globally. */
+    public const ACCOUNT_LOGIN_CONFLICT = 'ACCOUNT_LOGIN_CONFLICT';
+    /** Phase B identity: removing the last active platform operator. */
+    public const LAST_OPERATOR_REQUIRED = 'LAST_OPERATOR_REQUIRED';
+    /** Phase B identity: the target account already holds a legacy mapping. */
+    public const ACCOUNT_ALREADY_LINKED = 'ACCOUNT_ALREADY_LINKED';
+    /** Phase B sessions: the account must change its password before this call. */
+    public const PASSWORD_CHANGE_REQUIRED = 'PASSWORD_CHANGE_REQUIRED';
+    /** Phase B /v2: the session credential was issued for another purpose. */
+    public const SESSION_PURPOSE_MISMATCH = 'SESSION_PURPOSE_MISMATCH';
 
-    /** Every code this package may emit — one list, one grammar check. */
+    /**
+     * Every code this package may emit — one list, one grammar check.
+     *
+     * Must equal the declared constants above EXACTLY: lab/tests/
+     * test_host_v2_api.py::PurePhpGates.test_d03 compares the reflected
+     * constant set with this array, so the list can never drift again
+     * (execution ruling 32).
+     */
     public const ALL = [
         self::BAD_PAYLOAD, self::HTTP_400, self::HTTP_404, self::HTTP_405,
         self::HTTP_413, self::HTTP_415, self::HTTP_429, self::HTTP_500,
@@ -74,6 +95,10 @@ final class Codes
         self::IMPORT_CONFLICT, self::VALIDATION_FAILED, self::DEVICE_REVOKED,
         self::HTTPS_REQUIRED, self::CONFIG_INVALID, self::DB_UNAVAILABLE,
         self::SERVER_ERROR, self::IDEMPOTENCY_MISMATCH,
+        self::WORKSPACE_CONTEXT_STALE, self::LAST_WORKSPACE_ADMIN,
+        self::ACCOUNT_LOGIN_CONFLICT, self::LAST_OPERATOR_REQUIRED,
+        self::ACCOUNT_ALREADY_LINKED, self::PASSWORD_CHANGE_REQUIRED,
+        self::SESSION_PURPOSE_MISMATCH,
     ];
 
     public static function isValid(string $code): bool

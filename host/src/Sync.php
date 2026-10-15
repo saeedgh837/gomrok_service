@@ -22,6 +22,9 @@
 
 declare(strict_types=1);
 
+// The workspace/legacy-contract gate this module calls inside its transactions.
+require_once __DIR__ . '/Workspaces.php';
+
 final class Sync
 {
     private const DEFAULT_PAGE = 500;
@@ -42,6 +45,12 @@ final class Sync
     {
         $value = $this->cfg[$key] ?? $default;
         return is_int($value) && $value > 0 ? $value : $default;
+    }
+
+    /** The /v1 workspace gate, reused by every entry point in this module. */
+    private function workspaces(): Workspaces
+    {
+        return new Workspaces($this->db);
     }
 
     // ==================================================================
@@ -267,6 +276,10 @@ final class Sync
     public function bootstrap(string $tenantId): array
     {
         return $this->db->transaction(function (\Database $tx) use ($tenantId): array {
+            // A workspace that is staging, frozen or already authoritative_v2
+            // must not answer a /v1 bootstrap at all, and the answer must not
+            // depend on whether it exists.
+            $this->workspaces()->lockLegacyWithin($tx, $tenantId, false);
             $collections = [];
             foreach (Schema::entities() as $entity => $table) {
                 $rows = $tx->query(
@@ -320,6 +333,12 @@ final class Sync
      * timestamp or arrive from a skewed clock (spec §6.2), so it is never
      * used here — not even as a secondary key.
      *
+     * The /v1 contract gate sits INSIDE this read's own transaction, exactly
+     * as it does for bootstrap and for the mutations: this method takes a raw
+     * tenant id, so a caller that is not the front controller — an admin
+     * export, a resync CLI, a later route — must not be able to page the
+     * change log of a staging, frozen or authoritative_v2 workspace.
+     *
      * @return array<string, mixed>
      * @throws ApiException 400 BAD_PAYLOAD
      */
@@ -339,50 +358,58 @@ final class Sync
                 'limit is outside the accepted range');
         }
 
-        $rows = $this->db->query(
-            'SELECT seq, entity, id, row_version FROM change_log'
-            . ' WHERE tenant_id = ? AND seq > ? ORDER BY seq LIMIT ' . ($limit + 1),
-            [$tenantId, $cursor]
-        );
-        $hasMore = count($rows) > $limit;
-        if ($hasMore) {
-            $rows = array_slice($rows, 0, $limit);
-        }
+        return $this->db->transaction(function (\Database $tx) use (
+            $tenantId, $cursor, $limit
+        ): array {
+            // A workspace that is staging, frozen or already authoritative_v2
+            // must not answer a /v1 changes page at all, and the answer must
+            // not depend on whether it exists.
+            $this->workspaces()->lockLegacyWithin($tx, $tenantId, false);
+            $rows = $tx->query(
+                'SELECT seq, entity, id, row_version FROM change_log'
+                . ' WHERE tenant_id = ? AND seq > ? ORDER BY seq LIMIT ' . ($limit + 1),
+                [$tenantId, $cursor]
+            );
+            $hasMore = count($rows) > $limit;
+            if ($hasMore) {
+                $rows = array_slice($rows, 0, $limit);
+            }
 
-        $live = $this->loadLiveRows($tenantId, $rows);
-        $changes = [];
-        foreach ($rows as $entry) {
-            $entity = (string) $entry['entity'];
-            $id = (string) $entry['id'];
-            $table = Schema::tableForEntity($entity);
-            if ($table === null) {
-                continue;
+            $live = $this->loadLiveRows($tenantId, $rows);
+            $changes = [];
+            foreach ($rows as $entry) {
+                $entity = (string) $entry['entity'];
+                $id = (string) $entry['id'];
+                $table = Schema::tableForEntity($entity);
+                if ($table === null) {
+                    continue;
+                }
+                $row = $live[$entity][$id] ?? null;
+                $record = null;
+                $version = (int) ($row['row_version'] ?? 0);
+                if ($row !== null && $row['deleted_at'] === null) {
+                    $record = $this->rowToRecord($table, $row);
+                } elseif ($row === null) {
+                    $version = (int) $entry['row_version'];
+                }
+                $changes[] = [
+                    'entity' => $entity,
+                    'id' => $id,
+                    'seq' => (int) $entry['seq'],
+                    'row_version' => $version,
+                    'record' => $record,
+                ];
             }
-            $row = $live[$entity][$id] ?? null;
-            $record = null;
-            $version = (int) ($row['row_version'] ?? 0);
-            if ($row !== null && $row['deleted_at'] === null) {
-                $record = $this->rowToRecord($table, $row);
-            } elseif ($row === null) {
-                $version = (int) $entry['row_version'];
+            $next = $cursor;
+            if ($changes !== []) {
+                $next = (int) $changes[count($changes) - 1]['seq'];
             }
-            $changes[] = [
-                'entity' => $entity,
-                'id' => $id,
-                'seq' => (int) $entry['seq'],
-                'row_version' => $version,
-                'record' => $record,
+            return [
+                'changes' => $changes,
+                'cursor' => $next,
+                'has_more' => $hasMore,
             ];
-        }
-        $next = $cursor;
-        if ($changes !== []) {
-            $next = (int) $changes[count($changes) - 1]['seq'];
-        }
-        return [
-            'changes' => $changes,
-            'cursor' => $next,
-            'has_more' => $hasMore,
-        ];
+        });
     }
 
     /**
@@ -473,6 +500,11 @@ final class Sync
         $result = $this->db->transaction(function (\Database $tx) use (
             $prepared, $tenantId, $context, $requestId
         ): array {
+            // First statement of the write path: the workspace must still be a
+            // live legacy_v1 tenant, and this lock is taken BEFORE the
+            // idempotency and business locks below so the whole batch is
+            // authorised against one consistent workspace state.
+            $this->workspaces()->lockLegacyWithin($tx, $tenantId, true);
             $replayed = $this->loadReplays($tx, $tenantId, $prepared);
             // Apply in FK-safe entity order (crm_devices needs its customer,
             // a ledger row needs its device, settings needs its period), but

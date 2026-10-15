@@ -23,6 +23,9 @@
 
 declare(strict_types=1);
 
+// The workspace/legacy-contract gate this module calls inside its transaction.
+require_once __DIR__ . '/Workspaces.php';
+
 final class Import
 {
     /** Insertion order that satisfies every foreign key in the schema. */
@@ -40,6 +43,12 @@ final class Import
         private readonly Log $log,
         private readonly array $cfg
     ) {
+    }
+
+    /** The /v1 workspace gate, reused by every entry point in this module. */
+    private function workspaces(): Workspaces
+    {
+        return new Workspaces($this->db);
     }
 
     /**
@@ -76,6 +85,11 @@ final class Import
             $tenantId, $importId, $installation, $documents, $payloadHash,
             $user, $device, $requestId
         ): array {
+            // The /v1 contract gate, INSIDE this transaction and BEFORE the
+            // tenant_state lock below: an import into a workspace that is
+            // staging, frozen or already authoritative_v2 is refused without
+            // ever touching the one-shot gate.
+            $this->workspaces()->lockLegacyWithin($tx, $tenantId, true);
             // The gate: one row, locked for the whole import (spec §8.4).
             $state = $tx->queryOne(
                 'SELECT * FROM tenant_state WHERE tenant_id = ? FOR UPDATE',

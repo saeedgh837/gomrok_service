@@ -16,10 +16,18 @@
  *     second presentation of a consumed token revokes the whole family;
  *   * every access token is re-checked against the live row it names on every
  *     request, so setting sync_devices.status='revoked' or bumping
- *     token_version stops in-flight tokens immediately (spec §5).
+ *     token_version stops in-flight tokens immediately (spec §5);
+ *   * the /v1 workspace gate is rechecked on every credential path here —
+ *     tenant resolution, bearer validation and refresh rotation — so a token
+ *     minted before a workspace moved to staging, was frozen, or moved to
+ *     authoritative_v2 stops working at once, and the refusal never says which.
  */
 
 declare(strict_types=1);
+
+// The workspace/legacy-contract gate this module rechecks on every legacy
+// credential path.
+require_once __DIR__ . '/Workspaces.php';
 
 /**
  * The identity an authenticated request carries.
@@ -108,10 +116,23 @@ final class Auth
         return is_string($slug) && $slug !== '' ? $slug : 'default';
     }
 
+    /** The /v1 workspace gate, reused by every legacy credential path here. */
+    private function workspaces(): Workspaces
+    {
+        return new Workspaces($this->db);
+    }
+
     /**
      * The single shared tenant (spec §7).
      *
-     * @throws ApiException 500 CONFIG_INVALID when it has not been created yet
+     * Resolution answers ONLY for a workspace that is still in service, live
+     * and on the legacy contract. A staging, frozen or already
+     * authoritative_v2 workspace is refused exactly like one that does not
+     * exist, so a configured slug can never be used to discover what has
+     * moved on.
+     *
+     * @throws ApiException 500 CONFIG_INVALID when no tenant has been created yet
+     * @throws ApiException 404 NOT_FOUND when the resolved tenant is not /v1's
      * @return array<string, mixed>
      */
     public function tenant(): array
@@ -127,10 +148,8 @@ final class Auth
             throw new ApiException(500, Codes::CONFIG_INVALID,
                 'the tenant does not exist — run bin/create-admin.php first');
         }
-        if (($row['status'] ?? '') !== 'active') {
-            throw new ApiException(403, Codes::PERMISSION_DENIED,
-                'the tenant is suspended');
-        }
+        // The gate: read-only, so no FOR UPDATE, but the same conditions.
+        $this->workspaces()->lockLegacyWithin($this->db, (string) $row['id'], false);
         $this->tenantRow = $row;
         return $row;
     }
@@ -324,6 +343,19 @@ final class Auth
             $result = $this->db->transaction(function (\Database $tx) use (
                 $hash, $kind, $now, $nowEpoch
             ): array {
+                // Resolve the tenant WITHOUT a lock first, so the workspace
+                // gate can be taken before the session row lock and this
+                // module keeps one lock order (tenant, then what it authorises).
+                $holder = $tx->queryOne(
+                    'SELECT tenant_id FROM auth_sessions WHERE token_hash = ?',
+                    [$hash]
+                );
+                if ($holder !== null) {
+                    // A refresh token keeps working only while its workspace is
+                    // still in service, live and on the legacy contract.
+                    $this->workspaces()->lockLegacyWithin(
+                        $tx, (string) $holder['tenant_id'], true);
+                }
                 $row = $tx->queryOne(
                     'SELECT * FROM auth_sessions WHERE token_hash = ? FOR UPDATE',
                     [$hash]
@@ -716,6 +748,13 @@ final class Auth
             throw new ApiException(401, Codes::AUTH_EXPIRED,
                 'the session behind this token has expired');
         }
+
+        // The tenant gate is rechecked on EVERY authenticated request, not once
+        // at login: a token minted before a workspace moved to staging or to
+        // authoritative_v2 must stop working immediately, and the refusal must
+        // not reveal which of those happened.
+        $this->workspaces()->lockLegacyWithin(
+            $this->db, (string) $session['tenant_id'], false);
 
         if ($kind === Tokens::KIND_DEVICE) {
             $device = $this->db->queryOne(

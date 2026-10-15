@@ -10,12 +10,16 @@
  * Order of operations, and why:
  *   1. display_errors off — an exception message must never reach a client;
  *   2. configuration, because everything below needs it;
- *   3. capture the request with the body-size cap applied to Content-Length,
- *      so an oversized body is refused without being read;
- *   4. HTTPS gate (spec §2) before any routing;
- *   5. explicit route table — no regex over user input, no dynamic dispatch;
- *   6. authentication and authorization per route (§6, §7);
- *   7. one structured log line: request_id, route, status, duration, code.
+ *   3. classify the RAW request target as /v2 or legacy, then capture the
+ *      request ONCE with the body-size cap that classification selected — a
+ *      v2 auth body is refused at 16 KiB, a legacy one at the import limit,
+ *      and an oversized body is never buffered at all (spec §10.6);
+ *   4. /v2 is dispatched by V2Api and emitted through Response::emit; /v1
+ *      continues below unchanged, and an apparent v2 path never falls into it;
+ *   5. HTTPS gate (spec §2) before any legacy routing;
+ *   6. explicit route table — no regex over user input, no dynamic dispatch;
+ *   7. authentication and authorization per route (§6, §7);
+ *   8. one structured log line: request_id, route, status, duration, code.
  */
 
 declare(strict_types=1);
@@ -32,7 +36,7 @@ define('HOST_ROOT', dirname(__DIR__));
 
 foreach ([
     'Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
-    'RateLimit', 'Auth', 'Sync', 'Import',
+    'RateLimit', 'Auth', 'Sync', 'Import', 'V2Api',
 ] as $classFile) {
     require_once HOST_ROOT . '/src/' . $classFile . '.php';
 }
@@ -67,8 +71,52 @@ try {
         $maxBody = 1048576;
     }
 
-    $request = Request::capture($_SERVER, $_GET, $maxBody);
+    // ------------------------------------------------------------------
+    // Version dispatch. The RAW request target is classified BEFORE capture,
+    // and exactly ONE capture runs afterwards with the cap that classification
+    // selected. Two properties depend on that ordering:
+    //   * a v2 auth body is refused at V2Api::MAX_BODY_BYTES (16 KiB) rather
+    //     than buffered at the legacy import limit;
+    //   * an apparent v2 path can never fall through into the v1 route table.
+    // A configured legacy base_path that collides with /v2 is CONFIG_INVALID,
+    // not permission to serve v1 handlers under a v2 name.
+    // ------------------------------------------------------------------
+    $rawUri = isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])
+        ? $_SERVER['REQUEST_URI'] : '/';
+    $isVersion2 = V2Api::isVersion2Request($rawUri);
+    if ($isVersion2) {
+        $routeLabel = V2Api::logLabel(
+            isset($_SERVER['REQUEST_METHOD']) && is_string($_SERVER['REQUEST_METHOD'])
+                ? $_SERVER['REQUEST_METHOD'] : 'GET', $rawUri);
+    }
+
+    $request = Request::capture($_SERVER, $_GET,
+        $isVersion2 ? V2Api::MAX_BODY_BYTES : $maxBody);
     $requestId = $request->requestId;
+
+    if ($isVersion2) {
+        // The SERVER's own TLS indication only. X-Forwarded-Proto is not
+        // consulted here and cannot be: assertTransport has no such parameter.
+        // Production always passes fixture=false; the guarded loopback
+        // cli-server adapter is the only caller allowed to pass true.
+        V2Api::assertTransport(
+            $request->remoteAddr,
+            isset($_SERVER['HTTPS']) && is_string($_SERVER['HTTPS'])
+                && strtolower($_SERVER['HTTPS']) === 'on',
+            false
+        );
+        foreach (['Accounts', 'Workspaces', 'AccountSessions'] as $identityFile) {
+            require_once HOST_ROOT . '/src/' . $identityFile . '.php';
+        }
+        $db = Database::fromConfig(Config::db());
+        $result = (new V2Api($db, $log, $config))->dispatch($request, time());
+        $statusCode = $result['status'];
+        $errorCode = isset($result['body']['error']['code'])
+            && is_string($result['body']['error']['code'])
+            ? $result['body']['error']['code'] : '';
+        Response::emit($result['status'], $result['body'], $result['headers']);
+        return;
+    }
 
     // Optional web-setup runner for shared hosting (delegates to setup.php if present)
     if (str_ends_with($request->path, '/setup.php') && file_exists(__DIR__ . '/setup.php')) {

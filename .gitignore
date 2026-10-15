@@ -67,7 +67,9 @@ solver/checkpoints/*.onnx
 # ---- chrome profile-haye mahalli (hajm-e bala + cookie/session) ----
 .exitban-chrome-profile/
 *-chrome-profile/
-.claude/
+# ---- .claude: keep session/state junk out, version the launch config only ----
+/.claude/*
+!/.claude/launch.json
 .hermes/
 
 # ---- lab (khoruji-haye tasviri-ye test) ----

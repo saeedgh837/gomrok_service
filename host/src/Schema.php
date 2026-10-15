@@ -36,6 +36,523 @@ final class Schema
         'created_at', 'updated_at', 'deleted_at', 'deleted_by',
     ];
 
+    /**
+     * Phase B: the closed set of security lifecycle event names.
+     *
+     * Written by the operation that owns the state change, in the SAME SQL
+     * transaction as that change — never through Log::audit(), whose write is
+     * swallowed on failure. A failed login is NOT one of these: it stays in the
+     * bounded login_attempts rate limiter, because a raw credential audit
+     * payload would be a secret store.
+     */
+    public const SECURITY_EVENT_TYPES = [
+        'account_created', 'password_reset', 'account_disabled',
+        'account_enabled', 'legacy_linked', 'membership_assigned',
+        'membership_removed', 'workspace_frozen', 'login_success',
+        'logout', 'password_changed',
+    ];
+
+    /** Objects a LATER migration introduces; an earlier file's postcondition must not expect them. */
+    private const LATER_INTRODUCTIONS = [
+        'columns' => ['tenants.lifecycle', 'tenants.api_contract',
+                      'tenants.context_version', 'tenants.replacement_tenant_id'],
+        // Everything a migration AFTER 001 adds to a table 001 owns. 001's
+        // postcondition is the whole declared legacy schema, so it must assert
+        // these ABSENT: without the entry here 001 could never verify on a
+        // target that has not run the later file yet, and adoption could never
+        // excuse its now-failing claim about the same object.
+        'indexes' => [
+            'users.uq_users_tenant_id',
+            'customers.uq_customers_tenant_id',
+            'owners.uq_owners_tenant_id',
+            'periods.uq_periods_tenant_id',
+            'crm_devices.uq_crm_devices_tenant_id',
+        ],
+        'foreign_keys' => [
+            'tenants.fk_tenants_replacement',
+            'settings.fk_settings_period_scoped',
+            'crm_devices.fk_crm_devices_customer_scoped',
+            'crm_devices.fk_crm_devices_owner_scoped',
+            'crm_devices.fk_crm_devices_period_scoped',
+            'customer_transactions.fk_customer_tx_customer_scoped',
+            'customer_transactions.fk_customer_tx_device_scoped',
+        ],
+    ];
+
+    /** Every table in the central schema uses this character set. */
+    private const TABLE_CHARSET = ['charset' => 'utf8mb4', 'collation' => 'utf8mb4_unicode_ci'];
+
+    /** Tables owned by each migration file, so an untracked object can be told apart from a known one. */
+    private const TABLES_FOR_VERSION = [
+        '001_initial' => [
+            'schema_migrations', 'tenants', 'users', 'memberships', 'sync_devices',
+            'auth_sessions', 'login_attempts', 'audit_events', 'idempotency_keys',
+            'change_log', 'tenant_state', 'periods', 'settings', 'customers',
+            'owners', 'identities', 'crm_devices', 'customer_transactions',
+        ],
+        '002_identity_foundation' => [
+            'accounts', 'account_workspace_memberships', 'account_sessions',
+            'legacy_account_map', 'identity_state', 'account_security_events',
+        ],
+        // 003 creates no table: it only adds unique parent keys and composite
+        // same-tenant foreign keys to tables 001 already owns.
+        '003_scoped_business_keys' => [],
+    ];
+
+    /**
+     * The six same-tenant business relationships, and the objects that enforce
+     * them.
+     *
+     * 001 declared each of these as a single-column foreign key on the
+     * surrogate id, which proves the referenced row EXISTS but not that it
+     * belongs to the SAME tenant as the row pointing at it. 003 adds the
+     * composite constraint; the ID-only key stays until a separately reviewed
+     * retirement.
+     *
+     * `columns` and `ref_columns` are ORDERED lists, never sets: the composite
+     * key (tenant_id, customer_id) and the key (customer_id, tenant_id) are
+     * different constraints, and only the first is the one installed. The
+     * ordering is what `MigrationPreflight::scopedIntegrity()` and the
+     * integrity suite both compare against information_schema.
+     *
+     * @var list<array{step_id: string, constraint: string, table: string,
+     *   columns: list<string>, ref_table: string, ref_columns: list<string>,
+     *   parent_key: string}>
+     */
+    private const SCOPED_RELATIONSHIPS = [
+        ['step_id' => 's05_settings_period_scoped_fk',
+         'constraint' => 'fk_settings_period_scoped', 'table' => 'settings',
+         'columns' => ['tenant_id', 'current_period_id'],
+         'ref_table' => 'periods', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_periods_tenant_id'],
+        ['step_id' => 's06_crm_devices_customer_scoped_fk',
+         'constraint' => 'fk_crm_devices_customer_scoped', 'table' => 'crm_devices',
+         'columns' => ['tenant_id', 'customer_id'],
+         'ref_table' => 'customers', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_customers_tenant_id'],
+        ['step_id' => 's07_crm_devices_owner_scoped_fk',
+         'constraint' => 'fk_crm_devices_owner_scoped', 'table' => 'crm_devices',
+         'columns' => ['tenant_id', 'owner_id'],
+         'ref_table' => 'owners', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_owners_tenant_id'],
+        ['step_id' => 's08_crm_devices_period_scoped_fk',
+         'constraint' => 'fk_crm_devices_period_scoped', 'table' => 'crm_devices',
+         'columns' => ['tenant_id', 'period_id'],
+         'ref_table' => 'periods', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_periods_tenant_id'],
+        ['step_id' => 's09_customer_tx_customer_scoped_fk',
+         'constraint' => 'fk_customer_tx_customer_scoped', 'table' => 'customer_transactions',
+         'columns' => ['tenant_id', 'customer_id'],
+         'ref_table' => 'customers', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_customers_tenant_id'],
+        ['step_id' => 's10_customer_tx_device_scoped_fk',
+         'constraint' => 'fk_customer_tx_device_scoped', 'table' => 'customer_transactions',
+         'columns' => ['tenant_id', 'device_id'],
+         'ref_table' => 'crm_devices', 'ref_columns' => ['tenant_id', 'id'],
+         'parent_key' => 'uq_crm_devices_tenant_id'],
+    ];
+
+    /**
+     * The unique parent keys 003 adds, IN THE ORDER the file installs them.
+     * InnoDB refuses a composite foreign key unless the referenced columns
+     * carry a unique index, so every one of these must precede the constraints
+     * that reference it.
+     *
+     * @var list<array{step_id: string, table: string, index: string}>
+     */
+    private const SCOPED_PARENT_KEYS = [
+        ['step_id' => 's01_customers_tenant_id_unique',
+         'table' => 'customers', 'index' => 'uq_customers_tenant_id'],
+        ['step_id' => 's02_owners_tenant_id_unique',
+         'table' => 'owners', 'index' => 'uq_owners_tenant_id'],
+        ['step_id' => 's03_periods_tenant_id_unique',
+         'table' => 'periods', 'index' => 'uq_periods_tenant_id'],
+        ['step_id' => 's04_crm_devices_tenant_id_unique',
+         'table' => 'crm_devices', 'index' => 'uq_crm_devices_tenant_id'],
+    ];
+
+    /**
+     * Grouped index declarations, in key order.
+     *
+     * `PRIMARY` is spelled out like every other index so the declaration can be
+     * compared with information_schema.STATISTICS without a special case. The
+     * migration verifier asserts that each declared index is PRESENT with this
+     * shape; it does not assert that no other index exists, because InnoDB
+     * creates helper indexes for foreign keys on its own.
+     *
+     * @var array<string, list<array{name: string, unique: bool, columns: list<string>}>>
+     */
+    private const INDEXES = [
+        'schema_migrations' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['version']],
+        ],
+        'migration_steps' => [
+            ['name' => 'PRIMARY', 'unique' => true,
+             'columns' => ['migration_version', 'step_id']],
+        ],
+        'tenants' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_tenants_slug', 'unique' => true, 'columns' => ['slug']],
+        ],
+        'users' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_users_tenant_username', 'unique' => true,
+             'columns' => ['tenant_id', 'username']],
+            // Phase B: legacy_account_map references users(tenant_id, id), and
+            // InnoDB needs a UNIQUE index on the referenced columns. Added by
+            // 002 BEFORE that table exists.
+            ['name' => 'uq_users_tenant_id', 'unique' => true,
+             'columns' => ['tenant_id', 'id']],
+            ['name' => 'ix_users_tenant', 'unique' => false, 'columns' => ['tenant_id']],
+        ],
+        'memberships' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_memberships_tenant_user', 'unique' => true,
+             'columns' => ['tenant_id', 'user_id']],
+        ],
+        'sync_devices' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'ix_sync_devices_tenant_status', 'unique' => false,
+             'columns' => ['tenant_id', 'status']],
+            ['name' => 'ix_sync_devices_last_auth', 'unique' => false,
+             'columns' => ['last_auth_at']],
+        ],
+        'auth_sessions' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_auth_sessions_token_hash', 'unique' => true,
+             'columns' => ['token_hash']],
+            ['name' => 'ix_auth_sessions_family', 'unique' => false,
+             'columns' => ['family_id']],
+            ['name' => 'ix_auth_sessions_tenant_kind', 'unique' => false,
+             'columns' => ['tenant_id', 'kind']],
+            ['name' => 'ix_auth_sessions_absolute_expiry', 'unique' => false,
+             'columns' => ['absolute_expires_at']],
+            ['name' => 'ix_auth_sessions_user', 'unique' => false, 'columns' => ['user_id']],
+            ['name' => 'ix_auth_sessions_device', 'unique' => false,
+             'columns' => ['sync_device_id']],
+        ],
+        'login_attempts' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'ix_login_attempts_account_time', 'unique' => false,
+             'columns' => ['account', 'attempted_at']],
+            ['name' => 'ix_login_attempts_ip_time', 'unique' => false,
+             'columns' => ['ip', 'attempted_at']],
+            ['name' => 'ix_login_attempts_tenant', 'unique' => false,
+             'columns' => ['tenant_id']],
+        ],
+        'audit_events' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'ix_audit_events_tenant_time', 'unique' => false,
+             'columns' => ['tenant_id', 'occurred_at']],
+            ['name' => 'ix_audit_events_action', 'unique' => false, 'columns' => ['action']],
+        ],
+        'idempotency_keys' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['operation_id']],
+            ['name' => 'ix_idempotency_keys_expiry', 'unique' => false,
+             'columns' => ['expires_at']],
+            ['name' => 'ix_idempotency_keys_tenant', 'unique' => false,
+             'columns' => ['tenant_id']],
+        ],
+        'change_log' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['seq']],
+            ['name' => 'ix_change_log_tenant_seq', 'unique' => false,
+             'columns' => ['tenant_id', 'seq']],
+            ['name' => 'ix_change_log_entity_id', 'unique' => false,
+             'columns' => ['tenant_id', 'entity', 'id']],
+            ['name' => 'ix_change_log_operation', 'unique' => false,
+             'columns' => ['operation_id']],
+        ],
+        'tenant_state' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['tenant_id']],
+            ['name' => 'ix_tenant_state_source', 'unique' => false,
+             'columns' => ['source_installation_id']],
+        ],
+        'periods' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_periods_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            // Phase B: the parent key the composite same-tenant foreign keys
+            // (003) reference. InnoDB refuses a composite foreign key without
+            // a UNIQUE index on exactly the referenced columns.
+            ['name' => 'uq_periods_tenant_id', 'unique' => true,
+             'columns' => ['tenant_id', 'id']],
+            ['name' => 'ix_periods_tenant_closed', 'unique' => false,
+             'columns' => ['tenant_id', 'closed_at']],
+        ],
+        'settings' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_settings_tenant', 'unique' => true, 'columns' => ['tenant_id']],
+            ['name' => 'uq_settings_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+        ],
+        'customers' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_customers_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            // Phase B: parent key of the scoped same-tenant foreign keys (003).
+            ['name' => 'uq_customers_tenant_id', 'unique' => true,
+             'columns' => ['tenant_id', 'id']],
+            ['name' => 'ix_customers_tenant_mobile', 'unique' => false,
+             'columns' => ['tenant_id', 'mobile']],
+        ],
+        'owners' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_owners_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            // Phase B: parent key of the scoped same-tenant foreign keys (003).
+            ['name' => 'uq_owners_tenant_id', 'unique' => true,
+             'columns' => ['tenant_id', 'id']],
+            ['name' => 'ix_owners_tenant_national', 'unique' => false,
+             'columns' => ['tenant_id', 'national']],
+        ],
+        'identities' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_identities_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            ['name' => 'ix_identities_tenant_national', 'unique' => false,
+             'columns' => ['tenant_id', 'national']],
+        ],
+        'crm_devices' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_crm_devices_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            // Phase B: parent key of the scoped same-tenant foreign keys (003).
+            ['name' => 'uq_crm_devices_tenant_id', 'unique' => true,
+             'columns' => ['tenant_id', 'id']],
+            ['name' => 'ix_crm_devices_tenant_stage', 'unique' => false,
+             'columns' => ['tenant_id', 'stage']],
+            ['name' => 'ix_crm_devices_tenant_period', 'unique' => false,
+             'columns' => ['tenant_id', 'period_id']],
+            ['name' => 'ix_crm_devices_serial1', 'unique' => false,
+             'columns' => ['tenant_id', 'serial1']],
+            ['name' => 'ix_crm_devices_customer', 'unique' => false,
+             'columns' => ['customer_id']],
+            ['name' => 'ix_crm_devices_owner', 'unique' => false, 'columns' => ['owner_id']],
+        ],
+        'customer_transactions' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_customer_tx_tenant_customer_seq', 'unique' => true,
+             'columns' => ['tenant_id', 'customer_id', 'seq']],
+            ['name' => 'uq_customer_tx_tenant_legacy', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_id']],
+            ['name' => 'ix_customer_tx_tenant_at', 'unique' => false,
+             'columns' => ['tenant_id', 'at']],
+            ['name' => 'ix_customer_tx_device', 'unique' => false, 'columns' => ['device_id']],
+        ],
+        'accounts' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_accounts_login', 'unique' => true, 'columns' => ['login']],
+        ],
+        'account_workspace_memberships' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_awm_account_tenant', 'unique' => true,
+             'columns' => ['account_id', 'tenant_id']],
+            ['name' => 'ix_awm_tenant_status_account', 'unique' => false,
+             'columns' => ['tenant_id', 'status', 'account_id']],
+        ],
+        'account_sessions' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'uq_account_sessions_token_hash', 'unique' => true,
+             'columns' => ['token_hash']],
+            ['name' => 'ix_account_sessions_account_revocation', 'unique' => false,
+             'columns' => ['account_id', 'revoked_at', 'absolute_expires_at']],
+        ],
+        'legacy_account_map' => [
+            ['name' => 'PRIMARY', 'unique' => true,
+             'columns' => ['tenant_id', 'legacy_user_id']],
+        ],
+        'identity_state' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+        ],
+        'account_security_events' => [
+            ['name' => 'PRIMARY', 'unique' => true, 'columns' => ['id']],
+            ['name' => 'ix_ase_subject_time', 'unique' => false,
+             'columns' => ['subject_account_id', 'created_at']],
+            ['name' => 'ix_ase_tenant_time', 'unique' => false,
+             'columns' => ['tenant_id', 'created_at']],
+        ],
+    ];
+
+    /**
+     * Grouped foreign-key declarations.
+     *
+     * @var array<string, list<array{name: string, columns: list<string>, ref_table: string, ref_columns: list<string>}>>
+     */
+    private const FOREIGN_KEYS = [
+        'schema_migrations' => [],
+        'migration_steps' => [],
+        'tenants' => [],
+        'users' => [
+            ['name' => 'fk_users_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_users_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'memberships' => [
+            ['name' => 'fk_memberships_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_memberships_user', 'columns' => ['user_id'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'sync_devices' => [
+            ['name' => 'fk_sync_devices_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_sync_devices_enrolled_by', 'columns' => ['enrolled_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+            ['name' => 'fk_sync_devices_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'auth_sessions' => [
+            ['name' => 'fk_auth_sessions_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_auth_sessions_user', 'columns' => ['user_id'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+            ['name' => 'fk_auth_sessions_device', 'columns' => ['sync_device_id'],
+             'ref_table' => 'sync_devices', 'ref_columns' => ['id']],
+            ['name' => 'fk_auth_sessions_parent', 'columns' => ['parent_id'],
+             'ref_table' => 'auth_sessions', 'ref_columns' => ['id']],
+            ['name' => 'fk_auth_sessions_rotated', 'columns' => ['rotated_to'],
+             'ref_table' => 'auth_sessions', 'ref_columns' => ['id']],
+        ],
+        'login_attempts' => [
+            ['name' => 'fk_login_attempts_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+        ],
+        'audit_events' => [
+            ['name' => 'fk_audit_events_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_audit_events_user', 'columns' => ['actor_user_id'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+            ['name' => 'fk_audit_events_device', 'columns' => ['actor_device_id'],
+             'ref_table' => 'sync_devices', 'ref_columns' => ['id']],
+        ],
+        'idempotency_keys' => [
+            ['name' => 'fk_idempotency_keys_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+        ],
+        'change_log' => [
+            ['name' => 'fk_change_log_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_change_log_user', 'columns' => ['actor_user_id'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+            ['name' => 'fk_change_log_device', 'columns' => ['actor_device_id'],
+             'ref_table' => 'sync_devices', 'ref_columns' => ['id']],
+        ],
+        'tenant_state' => [
+            ['name' => 'fk_tenant_state_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+        ],
+        'periods' => [
+            ['name' => 'fk_periods_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_periods_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'settings' => [
+            ['name' => 'fk_settings_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_settings_period', 'columns' => ['current_period_id'],
+             'ref_table' => 'periods', 'ref_columns' => ['id']],
+            // Phase B: the same reference, scoped to the tenant. The ID-only
+            // key above stays; this one additionally proves the period belongs
+            // to THIS tenant. Added by 003.
+            ['name' => 'fk_settings_period_scoped',
+             'columns' => ['tenant_id', 'current_period_id'],
+             'ref_table' => 'periods', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_settings_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'customers' => [
+            ['name' => 'fk_customers_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_customers_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'owners' => [
+            ['name' => 'fk_owners_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_owners_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'identities' => [
+            ['name' => 'fk_identities_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_identities_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'crm_devices' => [
+            ['name' => 'fk_crm_devices_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_crm_devices_customer', 'columns' => ['customer_id'],
+             'ref_table' => 'customers', 'ref_columns' => ['id']],
+            ['name' => 'fk_crm_devices_owner', 'columns' => ['owner_id'],
+             'ref_table' => 'owners', 'ref_columns' => ['id']],
+            ['name' => 'fk_crm_devices_period', 'columns' => ['period_id'],
+             'ref_table' => 'periods', 'ref_columns' => ['id']],
+            // Phase B: the same three references, scoped to the tenant. The
+            // ID-only keys above stay; these additionally prove the customer,
+            // the owner and the period belong to THIS tenant. Added by 003.
+            ['name' => 'fk_crm_devices_customer_scoped',
+             'columns' => ['tenant_id', 'customer_id'],
+             'ref_table' => 'customers', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_crm_devices_owner_scoped',
+             'columns' => ['tenant_id', 'owner_id'],
+             'ref_table' => 'owners', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_crm_devices_period_scoped',
+             'columns' => ['tenant_id', 'period_id'],
+             'ref_table' => 'periods', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_crm_devices_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'customer_transactions' => [
+            ['name' => 'fk_customer_tx_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+            ['name' => 'fk_customer_tx_customer', 'columns' => ['customer_id'],
+             'ref_table' => 'customers', 'ref_columns' => ['id']],
+            ['name' => 'fk_customer_tx_device', 'columns' => ['device_id'],
+             'ref_table' => 'crm_devices', 'ref_columns' => ['id']],
+            // Phase B: the same two references, scoped to the tenant. Added by 003.
+            ['name' => 'fk_customer_tx_customer_scoped',
+             'columns' => ['tenant_id', 'customer_id'],
+             'ref_table' => 'customers', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_customer_tx_device_scoped',
+             'columns' => ['tenant_id', 'device_id'],
+             'ref_table' => 'crm_devices', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_customer_tx_deleted_by', 'columns' => ['deleted_by'],
+             'ref_table' => 'users', 'ref_columns' => ['id']],
+        ],
+        'accounts' => [],
+        'account_workspace_memberships' => [
+            ['name' => 'fk_awm_account', 'columns' => ['account_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+            ['name' => 'fk_awm_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+        ],
+        'account_sessions' => [
+            ['name' => 'fk_account_sessions_account', 'columns' => ['account_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+        ],
+        'legacy_account_map' => [
+            ['name' => 'fk_lam_tenant_user',
+             'columns' => ['tenant_id', 'legacy_user_id'],
+             'ref_table' => 'users', 'ref_columns' => ['tenant_id', 'id']],
+            ['name' => 'fk_lam_account', 'columns' => ['account_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+        ],
+        'identity_state' => [
+            ['name' => 'fk_identity_state_operator', 'columns' => ['first_operator_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+        ],
+        'account_security_events' => [
+            ['name' => 'fk_ase_actor', 'columns' => ['actor_account_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+            ['name' => 'fk_ase_subject', 'columns' => ['subject_account_id'],
+             'ref_table' => 'accounts', 'ref_columns' => ['id']],
+            ['name' => 'fk_ase_tenant', 'columns' => ['tenant_id'],
+             'ref_table' => 'tenants', 'ref_columns' => ['id']],
+        ],
+    ];
+
     // Stable failure codes (spec §6 — the client maps codes, not messages).
     public const E_UNKNOWN_TABLE   = 'UNKNOWN_TABLE';
     public const E_UNKNOWN_ENTITY  = 'UNKNOWN_ENTITY';
@@ -50,6 +567,16 @@ final class Schema
     public const E_INVALID_LEGACY_ID = 'INVALID_LEGACY_ID';
     public const E_INVALID_JSON    = 'INVALID_JSON';
     public const E_EMPTY_REFERENCE = 'EMPTY_REFERENCE';
+    /**
+     * The value is an integer but outside the declared domain.
+     *
+     * Deliberately not TYPE_MISMATCH: the type is right, the domain is not, and
+     * a client must be able to tell "you sent a string" from "you sent 0 where
+     * a positive version is required". The domain exists because MySQL 5.7
+     * parses and ignores CHECK, so a CHECK alone is not an integrity oracle on
+     * the documented support matrix.
+     */
+    public const E_OUT_OF_RANGE   = 'OUT_OF_RANGE';
 
     /** @var array<string, array<string, mixed>>|null */
     private static ?array $schema = null;
@@ -69,6 +596,12 @@ final class Schema
      *   format   uuid|timestamp|json|legacy_id, or null
      *   ref      "table.column" foreign key target, or null
      *   auto     true when the server generates the value (AUTO_INCREMENT)
+     *   charset  explicit character set override, or null (derived from type)
+     *   collation explicit collation override, or null
+     *   min/max inclusive integer domain for type int|bigint, or null.
+     *            Declared only where the value is a version counter that must
+     *            never reach 0 or go negative; enforced by validate(), not by
+     *            SQL, because MySQL 5.7 parses CHECK and ignores it.
      *
      * `required` is DERIVED (NOT NULL, no default, not auto-generated), never
      * declared, so it can never disagree with the SQL.
@@ -119,6 +652,31 @@ final class Schema
                                       'nullable' => false, 'default' => ''],
                 ],
             ],
+            // Phase B: the named step journal. `schema_migrations` records the
+            // FILE (filename stem + file SHA-256); this table records each step
+            // inside a file so an interrupted run can be reconciled from engine
+            // metadata instead of being repaired by hand.
+            'migration_steps' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'migration_version' => ['sql' => 'varchar(64)', 'type' => 'varchar',
+                                            'nullable' => false],
+                    'step_id'           => ['sql' => 'varchar(64)', 'type' => 'varchar',
+                                            'nullable' => false],
+                    'checksum'          => ['sql' => 'char(64)', 'type' => 'char',
+                                            'nullable' => false],
+                    'status'            => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                            'nullable' => false,
+                                            'enum' => ['started', 'applied',
+                                                       'verified', 'failed']],
+                    'cursor_value'      => ['sql' => 'varchar(64)', 'type' => 'varchar',
+                                            'nullable' => true],
+                    'started_at'        => ['sql' => 'datetime', 'type' => 'datetime',
+                                            'nullable' => false, 'format' => 'timestamp'],
+                    'completed_at'      => ['sql' => 'datetime', 'type' => 'datetime',
+                                            'nullable' => true, 'format' => 'timestamp'],
+                ],
+            ],
             'tenants' => [
                 'entity' => null, 'envelope' => 'none',
                 'columns' => [
@@ -135,6 +693,24 @@ final class Schema
                                      'nullable' => false, 'format' => 'timestamp'],
                     'updated_at' => ['sql' => 'datetime', 'type' => 'datetime',
                                      'nullable' => false, 'format' => 'timestamp'],
+                    // Phase B (002_identity_foundation): lifecycle and contract
+                    // are SEPARATE from `status`. `status = 'suspended'` stays an
+                    // independent denial gate; `lifecycle` distinguishes a
+                    // private staging workspace from an active one, and
+                    // `api_contract` records whether /v1 or /v2 owns writes.
+                    'lifecycle'          => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                             'nullable' => false, 'default' => 'staging',
+                                             'enum' => ['staging', 'active']],
+                    'api_contract'       => ['sql' => 'varchar(24)', 'type' => 'varchar',
+                                             'nullable' => false,
+                                             'default' => 'authoritative_v2',
+                                             'enum' => ['legacy_v1', 'authoritative_v2']],
+                    'context_version'    => ['sql' => 'int', 'type' => 'int',
+                                             'nullable' => false, 'default' => 1,
+                                             'min' => 1],
+                    'replacement_tenant_id' => ['sql' => 'char(36)', 'type' => 'char',
+                                                'nullable' => true, 'format' => 'uuid',
+                                                'ref' => 'tenants.id'],
                 ],
             ],
             'users' => [
@@ -576,6 +1152,152 @@ final class Schema
                                       'nullable' => false, 'default' => ''],
                 ],
             ],
+
+            // ---- Phase B identity foundation (002_identity_foundation) -----
+            // Every table below has `entity => null`: accounts, sessions and
+            // security events are NOT synchronization entities and must never
+            // appear in Schema::entities() (workstream sync/import).
+            'accounts' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'id'                   => ['sql' => 'char(36)', 'type' => 'char',
+                                                'nullable' => false, 'format' => 'uuid'],
+                    'login'                => ['sql' => 'varchar(64)', 'type' => 'varchar',
+                                                'nullable' => false,
+                                                'charset' => 'ascii',
+                                                'collation' => 'ascii_bin'],
+                    'password_hash'        => ['sql' => 'varchar(255)', 'type' => 'varchar',
+                                                'nullable' => false],
+                    'display_name'         => ['sql' => 'varchar(120)', 'type' => 'varchar',
+                                                'nullable' => false, 'default' => ''],
+                    'status'               => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                                'nullable' => false, 'default' => 'active',
+                                                'enum' => ['active', 'disabled']],
+                    'must_change_password' => ['sql' => 'tinyint(1)', 'type' => 'tinyint',
+                                                'nullable' => false, 'default' => 1,
+                                                'enum' => [0, 1]],
+                    'security_version'     => ['sql' => 'int', 'type' => 'int',
+                                                'nullable' => false, 'default' => 1,
+                                                'min' => 1],
+                    'platform_role'        => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                                'nullable' => false,
+                                                'default' => 'member',
+                                                'enum' => ['operator', 'member']],
+                    'created_at'           => ['sql' => 'datetime', 'type' => 'datetime',
+                                                'nullable' => false, 'format' => 'timestamp'],
+                    'updated_at'           => ['sql' => 'datetime', 'type' => 'datetime',
+                                                'nullable' => false, 'format' => 'timestamp'],
+                ],
+            ],
+            'account_workspace_memberships' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'id'         => ['sql' => 'char(36)', 'type' => 'char',
+                                     'nullable' => false, 'format' => 'uuid'],
+                    'account_id' => ['sql' => 'char(36)', 'type' => 'char',
+                                     'nullable' => false, 'format' => 'uuid',
+                                     'ref' => 'accounts.id'],
+                    'tenant_id'  => ['sql' => 'char(36)', 'type' => 'char',
+                                     'nullable' => false, 'format' => 'uuid',
+                                     'ref' => 'tenants.id'],
+                    'role'       => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                     'nullable' => false, 'enum' => ['admin', 'user']],
+                    'status'     => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                     'nullable' => false, 'default' => 'active',
+                                     'enum' => ['active', 'removed']],
+                    'created_at' => ['sql' => 'datetime', 'type' => 'datetime',
+                                     'nullable' => false, 'format' => 'timestamp'],
+                    'updated_at' => ['sql' => 'datetime', 'type' => 'datetime',
+                                     'nullable' => false, 'format' => 'timestamp'],
+                ],
+            ],
+            'account_sessions' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'id'                  => ['sql' => 'char(36)', 'type' => 'char',
+                                              'nullable' => false, 'format' => 'uuid'],
+                    'account_id'          => ['sql' => 'char(36)', 'type' => 'char',
+                                              'nullable' => false, 'format' => 'uuid',
+                                              'ref' => 'accounts.id'],
+                    'token_hash'          => ['sql' => 'char(64)', 'type' => 'char',
+                                              'nullable' => false,
+                                              'charset' => 'ascii',
+                                              'collation' => 'ascii_bin'],
+                    'purpose'             => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                              'nullable' => false,
+                                              'enum' => ['desktop', 'admin_web']],
+                    'security_version'    => ['sql' => 'int', 'type' => 'int',
+                                              'nullable' => false, 'min' => 1],
+                    'issued_at'           => ['sql' => 'datetime', 'type' => 'datetime',
+                                              'nullable' => false, 'format' => 'timestamp'],
+                    'idle_expires_at'     => ['sql' => 'datetime', 'type' => 'datetime',
+                                              'nullable' => false, 'format' => 'timestamp'],
+                    'absolute_expires_at' => ['sql' => 'datetime', 'type' => 'datetime',
+                                              'nullable' => false, 'format' => 'timestamp'],
+                    'last_activity_at'    => ['sql' => 'datetime', 'type' => 'datetime',
+                                              'nullable' => false, 'format' => 'timestamp'],
+                    'revoked_at'          => ['sql' => 'datetime', 'type' => 'datetime',
+                                              'nullable' => true, 'format' => 'timestamp'],
+                ],
+            ],
+            'legacy_account_map' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'tenant_id'      => ['sql' => 'char(36)', 'type' => 'char',
+                                         'nullable' => false, 'format' => 'uuid',
+                                         'ref' => 'tenants.id'],
+                    'legacy_user_id' => ['sql' => 'char(36)', 'type' => 'char',
+                                         'nullable' => false, 'format' => 'uuid',
+                                         'ref' => 'users.id'],
+                    'account_id'     => ['sql' => 'char(36)', 'type' => 'char',
+                                         'nullable' => false, 'format' => 'uuid',
+                                         'ref' => 'accounts.id'],
+                    'review_id'      => ['sql' => 'char(36)', 'type' => 'char',
+                                         'nullable' => true, 'format' => 'uuid'],
+                    'confirmed_at'   => ['sql' => 'datetime', 'type' => 'datetime',
+                                         'nullable' => true, 'format' => 'timestamp'],
+                ],
+            ],
+            'identity_state' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'id'                => ['sql' => 'tinyint(1)', 'type' => 'tinyint',
+                                            'nullable' => false, 'enum' => [1]],
+                    'first_operator_id' => ['sql' => 'char(36)', 'type' => 'char',
+                                            'nullable' => true, 'format' => 'uuid',
+                                            'ref' => 'accounts.id'],
+                    'row_version'       => ['sql' => 'int', 'type' => 'int',
+                                            'nullable' => false, 'default' => 1,
+                                            'min' => 1],
+                ],
+            ],
+            'account_security_events' => [
+                'entity' => null, 'envelope' => 'none',
+                'columns' => [
+                    'id'                 => ['sql' => 'char(36)', 'type' => 'char',
+                                             'nullable' => false, 'format' => 'uuid'],
+                    'actor_account_id'   => ['sql' => 'char(36)', 'type' => 'char',
+                                             'nullable' => true, 'format' => 'uuid',
+                                             'ref' => 'accounts.id'],
+                    'subject_account_id' => ['sql' => 'char(36)', 'type' => 'char',
+                                             'nullable' => true, 'format' => 'uuid',
+                                             'ref' => 'accounts.id'],
+                    'tenant_id'          => ['sql' => 'char(36)', 'type' => 'char',
+                                             'nullable' => true, 'format' => 'uuid',
+                                             'ref' => 'tenants.id'],
+                    'actor_kind'         => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                             'nullable' => false,
+                                             'enum' => ['private_cli', 'account', 'system']],
+                    'event_type'         => ['sql' => 'varchar(32)', 'type' => 'varchar',
+                                             'nullable' => false,
+                                             'enum' => self::SECURITY_EVENT_TYPES],
+                    'outcome'            => ['sql' => 'varchar(16)', 'type' => 'varchar',
+                                             'nullable' => false, 'default' => 'success',
+                                             'enum' => ['success']],
+                    'created_at'         => ['sql' => 'datetime', 'type' => 'datetime',
+                                             'nullable' => false, 'format' => 'timestamp'],
+                ],
+            ],
         ];
 
         // Merge the envelope in front of each table's business columns, from
@@ -647,7 +1369,7 @@ final class Schema
         if ($raw === null) {
             return null;
         }
-        return self::withRequired($raw);
+        return self::withRequired($raw, $table);
     }
 
     /**
@@ -738,6 +1460,298 @@ final class Schema
     public static function settingsAllowlist(): array
     {
         return self::businessColumns('settings');
+    }
+
+    // ------------------------------------------------------------------
+    // Phase B: grouped schema accessors and migration step metadata
+    // ------------------------------------------------------------------
+
+    /** The closed set of security lifecycle event names (see the const). */
+    public static function securityEventTypes(): array
+    {
+        return self::SECURITY_EVENT_TYPES;
+    }
+
+    /**
+     * Declared indexes of one table, in key order.
+     *
+     * @return list<array{name: string, unique: bool, columns: list<string>}>
+     */
+    public static function indexesFor(string $table): array
+    {
+        return self::INDEXES[$table] ?? [];
+    }
+
+    /**
+     * Declared foreign keys of one table, in declaration order.
+     *
+     * @return list<array{name: string, columns: list<string>, ref_table: string, ref_columns: list<string>}>
+     */
+    public static function foreignKeysFor(string $table): array
+    {
+        return self::FOREIGN_KEYS[$table] ?? [];
+    }
+
+    /** Tables a given migration file owns; [] when the version is unknown. */
+    public static function tablesForVersion(string $version): array
+    {
+        return self::TABLES_FOR_VERSION[$version] ?? [];
+    }
+
+    /**
+     * The six same-tenant composite relationships, in declaration order.
+     *
+     * @return list<array{constraint: string, table: string, columns: list<string>,
+     *   ref_table: string, ref_columns: list<string>, parent_key: string}>
+     */
+    public static function scopedRelationships(): array
+    {
+        return self::SCOPED_RELATIONSHIPS;
+    }
+
+    /** Normalised, engine-independent description of one declared column. */
+    public static function columnFact(string $table, string $column): ?array
+    {
+        $spec = self::column($table, $column);
+        if ($spec === null) {
+            return null;
+        }
+        return [
+            'sql'       => (string) $spec['sql'],
+            'charset'   => $spec['charset'],
+            'collation' => $spec['collation'],
+            'nullable'  => (bool) $spec['nullable'],
+            'default'   => $spec['default'],
+            'auto'      => (bool) $spec['auto'],
+        ];
+    }
+
+    /**
+     * Expected pre/post conditions of every step of a migration file.
+     *
+     * The migration runner never compares `SHOW CREATE TABLE` strings: those
+     * differ between MySQL and MariaDB for an identical logical schema. It
+     * compares these declared facts against engine-normalised
+     * information_schema metadata instead (host/src/MigrationPreflight.php).
+     *
+     * Facts are partial on purpose: a step states only what it changes.
+     *   tables        table => true (must exist) | null (must be absent)
+     *   columns       "table.column" => fact | null
+     *   indexes       "table.index"  => {unique, columns, type} | null
+     *   foreign_keys  "table.fk"     => {columns, ref_table, ref_columns} | null
+     *   rows          table => {mismatch, min_count, max_count} (counts only)
+     *
+     * @return list<array{step_id: string, mode: string, pre: array, post: array}>
+     */
+    public static function migrationSteps(string $version): array
+    {
+        if ($version === '001_initial') {
+            $owned = self::tablesForVersion($version);
+            $post = self::emptyFacts();
+            foreach ($owned as $table) {
+                $post = self::mergeFacts($post, self::presentFacts($table));
+            }
+            // Schema is the CENTRAL declaration and therefore describes the
+            // schema AFTER 002 as well. A file's postcondition must only cover
+            // what that file creates, so everything a later migration adds is
+            // removed here and asserted ABSENT instead. Without this, 001 could
+            // never verify on a target that has not run 002 yet.
+            foreach (self::LATER_INTRODUCTIONS as $kind => $keys) {
+                foreach ($keys as $key) {
+                    $post[$kind][$key] = null;
+                }
+            }
+            // 001 is byte-frozen and carries no step markers: it is one
+            // forward-only unit step whose postcondition is the whole declared
+            // legacy schema. A crash in the middle of it is mixed state and is
+            // reported as MIGRATION_STATE_AMBIGUOUS rather than repaired.
+            return [[
+                'step_id' => 'legacy_file',
+                'mode'    => 'file',
+                'pre'     => self::absentFacts($owned),
+                'post'    => $post,
+            ]];
+        }
+        if ($version === '003_scoped_business_keys') {
+            return self::scopedSteps();
+        }
+        if ($version !== '002_identity_foundation') {
+            return [];
+        }
+
+        $legacyDefault = static fn (array $fact, mixed $default): array => [
+            'sql' => $fact['sql'], 'charset' => $fact['charset'],
+            'collation' => $fact['collation'], 'nullable' => $fact['nullable'],
+            'default' => $default, 'auto' => $fact['auto'],
+        ];
+        // The tenants contract columns are added with the LEGACY value as the
+        // server default, so existing rows are backfilled on ALTER; only after
+        // the bounded backfill step do the defaults become the v2 values.
+        $lifecycle  = self::columnFact('tenants', 'lifecycle');
+        $contract   = self::columnFact('tenants', 'api_contract');
+        $context    = self::columnFact('tenants', 'context_version');
+        $replacement = self::columnFact('tenants', 'replacement_tenant_id');
+
+        $steps = [
+            ['step_id' => 's01_users_tenant_id_unique', 'mode' => 'statement',
+             'pre'  => self::facts(['indexes' => ['users.uq_users_tenant_id' => null]]),
+             'post' => self::facts(['indexes' => ['users.uq_users_tenant_id' => [
+                 'unique' => true, 'columns' => ['tenant_id', 'id'], 'type' => 'btree']]]),
+            ],
+            ['step_id' => 's02_tenants_add_lifecycle', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.lifecycle' => null]]),
+             'post' => self::facts(['columns' => ['tenants.lifecycle' => $legacyDefault($lifecycle, 'active')]]),
+            ],
+            ['step_id' => 's03_tenants_add_api_contract', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.api_contract' => null]]),
+             'post' => self::facts(['columns' => ['tenants.api_contract' => $legacyDefault($contract, 'legacy_v1')]]),
+            ],
+            ['step_id' => 's04_tenants_add_context_version', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.context_version' => null]]),
+             'post' => self::facts(['columns' => ['tenants.context_version' => $context]]),
+            ],
+            ['step_id' => 's05_tenants_add_replacement_tenant_id', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.replacement_tenant_id' => null]]),
+             'post' => self::facts(['columns' => ['tenants.replacement_tenant_id' => $replacement]]),
+            ],
+            // Bounded keyset backfill with a persisted cursor: no claim is made
+            // that an arbitrarily large tenant table fits one transaction.
+            ['step_id' => 's06_tenants_backfill_legacy_contract', 'mode' => 'keyset',
+             'pre'  => self::emptyFacts(),
+             'post' => self::facts(['rows' => ['tenants' => [
+                 'mismatch' => ['lifecycle' => 'active', 'api_contract' => 'legacy_v1',
+                                'context_version' => 1],
+                 'max' => 0]]]),
+            ],
+            ['step_id' => 's07_tenants_lifecycle_default', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.lifecycle' => $legacyDefault($lifecycle, 'active')]]),
+             'post' => self::facts(['columns' => ['tenants.lifecycle' => $lifecycle]]),
+            ],
+            ['step_id' => 's08_tenants_api_contract_default', 'mode' => 'statement',
+             'pre'  => self::facts(['columns' => ['tenants.api_contract' => $legacyDefault($contract, 'legacy_v1')]]),
+             'post' => self::facts(['columns' => ['tenants.api_contract' => $contract]]),
+            ],
+            ['step_id' => 's09_tenants_replacement_fk', 'mode' => 'statement',
+             'pre'  => self::facts(['foreign_keys' => ['tenants.fk_tenants_replacement' => null]]),
+             'post' => self::facts(['foreign_keys' => ['tenants.fk_tenants_replacement' => [
+                 'columns' => ['replacement_tenant_id'], 'ref_table' => 'tenants',
+                 'ref_columns' => ['id']]]]),
+            ],
+        ];
+        foreach (['s10_accounts_create' => 'accounts',
+                  's11_account_workspace_memberships_create' => 'account_workspace_memberships',
+                  's12_account_sessions_create' => 'account_sessions',
+                  's13_identity_state_create' => 'identity_state',
+                  's14_legacy_account_map_create' => 'legacy_account_map',
+                  's15_account_security_events_create' => 'account_security_events'] as $id => $table) {
+            $steps[] = ['step_id' => $id, 'mode' => 'statement',
+                        'pre'  => self::absentFacts([$table]),
+                        'post' => self::presentFacts($table)];
+        }
+        $steps[] = ['step_id' => 's16_identity_state_seed', 'mode' => 'statement',
+                    'pre'  => self::emptyFacts(),
+                    'post' => self::facts(['rows' => ['identity_state' => ['min_count' => 1]]])];
+        return $steps;
+    }
+
+    /**
+     * Step ledger for 003_scoped_business_keys.
+     *
+     * The four unique parent keys come first and the six composite foreign
+     * keys follow, each as its own step, in exactly the order the file marks
+     * them. That order is load-bearing twice over: InnoDB refuses a composite
+     * foreign key whose referenced columns carry no unique index, and a crash
+     * between two steps must leave a state the journal can describe (some
+     * parent keys installed, some constraints not) rather than an opaque
+     * half-applied block.
+     *
+     * Facts are written against the CENTRAL declaration, so the same
+     * information_schema comparison the other files use applies unchanged.
+     *
+     * @return list<array{step_id: string, mode: string, pre: array, post: array}>
+     */
+    private static function scopedSteps(): array
+    {
+        $steps = [];
+        foreach (self::SCOPED_PARENT_KEYS as $key) {
+            $fact = $key['table'] . '.' . $key['index'];
+            $steps[] = ['step_id' => $key['step_id'], 'mode' => 'statement',
+                'pre'  => self::facts(['indexes' => [$fact => null]]),
+                'post' => self::facts(['indexes' => [$fact => [
+                    'unique' => true, 'columns' => ['tenant_id', 'id'], 'type' => 'btree']]])];
+        }
+        foreach (self::SCOPED_RELATIONSHIPS as $relation) {
+            $fact = $relation['table'] . '.' . $relation['constraint'];
+            $steps[] = ['step_id' => $relation['step_id'], 'mode' => 'statement',
+                'pre'  => self::facts(['foreign_keys' => [$fact => null]]),
+                'post' => self::facts(['foreign_keys' => [$fact => [
+                    'columns' => $relation['columns'], 'ref_table' => $relation['ref_table'],
+                    'ref_columns' => $relation['ref_columns']]]])];
+        }
+        return $steps;
+    }
+
+    // ------------------------------------------------------------------
+    // Phase B fact builders (used by migrationSteps)
+    // ------------------------------------------------------------------
+
+    private static function emptyFacts(): array
+    {
+        return ['tables' => [], 'columns' => [], 'indexes' => [],
+                'foreign_keys' => [], 'rows' => []];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $partial
+     * @return array<string, array<string, mixed>>
+     */
+    private static function facts(array $partial): array
+    {
+        return self::mergeFacts(self::emptyFacts(), $partial);
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $base
+     * @param array<string, array<string, mixed>> $extra
+     * @return array<string, array<string, mixed>>
+     */
+    private static function mergeFacts(array $base, array $extra): array
+    {
+        foreach (['tables', 'columns', 'indexes', 'foreign_keys', 'rows'] as $kind) {
+            foreach ($extra[$kind] ?? [] as $key => $value) {
+                $base[$kind][$key] = $value;
+            }
+        }
+        return $base;
+    }
+
+    /** Every declared object of one table, expected to be present. */
+    private static function presentFacts(string $table): array
+    {
+        $facts = self::facts(['tables' => [$table => true]]);
+        foreach (self::columnsFor($table) as $column) {
+            $facts['columns'][$table . '.' . $column] = self::columnFact($table, $column);
+        }
+        foreach (self::indexesFor($table) as $index) {
+            $facts['indexes'][$table . '.' . $index['name']] = [
+                'unique' => $index['unique'], 'columns' => $index['columns'],
+                'type' => 'btree'];
+        }
+        foreach (self::foreignKeysFor($table) as $fk) {
+            $facts['foreign_keys'][$table . '.' . $fk['name']] = [
+                'columns' => $fk['columns'], 'ref_table' => $fk['ref_table'],
+                'ref_columns' => $fk['ref_columns']];
+        }
+        return $facts;
+    }
+
+    /**
+     * @param list<string> $tables
+     * @return array<string, array<string, mixed>>
+     */
+    private static function absentFacts(array $tables): array
+    {
+        return self::facts(['tables' => array_fill_keys($tables, null)]);
     }
 
     // ------------------------------------------------------------------
@@ -944,6 +1958,13 @@ final class Schema
                 if ($check['enum'] !== null && !in_array($value, $check['enum'], true)) {
                     return [self::failure(self::E_ENUM_MISMATCH, $table, $column)];
                 }
+                // Declared domain, independent of any SQL CHECK. MySQL 5.7
+                // parses CHECK and ignores it, so a version counter of 0 would
+                // otherwise validate clean on the documented support floor.
+                if (($check['min'] !== null && $value < $check['min'])
+                    || ($check['max'] !== null && $value > $check['max'])) {
+                    return [self::failure(self::E_OUT_OF_RANGE, $table, $column)];
+                }
                 return [];
 
             case 'datetime':
@@ -1030,14 +2051,31 @@ final class Schema
 
     /**
      * @param array<string, mixed> $raw
+     * @param string $table owning table, so the character set can be resolved
      * @return array<string, mixed>
      */
-    private static function withRequired(array $raw): array
+    private static function withRequired(array $raw, string $table = ''): array
     {
         $raw += [
             'type' => 'varchar', 'nullable' => false, 'default' => null,
             'enum' => null, 'format' => null, 'ref' => null, 'auto' => false,
+            'charset' => null, 'collation' => null, 'min' => null, 'max' => null,
         ];
+        if ($table !== '') {
+            // A character-type column inherits the table's character set unless
+            // the declaration overrides it (accounts.login is ascii_bin, and
+            // must stay ascii so a byte comparison is possible). Numeric and
+            // temporal columns carry neither, so they resolve to null rather
+            // than to a collation they cannot have.
+            $textual = self::carriesCharset((string) $raw['sql'], (string) $raw['type']);
+            if ($textual) {
+                $raw['charset'] ??= self::TABLE_CHARSET['charset'];
+                $raw['collation'] ??= self::TABLE_CHARSET['collation'];
+            } else {
+                $raw['charset'] = null;
+                $raw['collation'] = null;
+            }
+        }
         // Required <=> NOT NULL with no default and not server-generated:
         // derived so it cannot drift from the SQL it describes. An
         // AUTO_INCREMENT key (change_log.seq, login_attempts.id) is filled in
@@ -1047,6 +2085,16 @@ final class Schema
             && $raw['default'] === null
             && !$raw['auto'];
         return $raw;
+    }
+
+    /** True when the column type participates in a character set/collation. */
+    private static function carriesCharset(string $sql, string $type): bool
+    {
+        if (preg_match('/^(char|varchar|tinytext|text|mediumtext|longtext|enum|set)\b/',
+                strtolower($sql)) === 1) {
+            return true;
+        }
+        return in_array($type, ['char', 'varchar', 'text', 'mediumtext'], true);
     }
 
     /**

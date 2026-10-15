@@ -13,9 +13,10 @@
  *   php bin/create-admin.php --username=admin --reset-password
  *
  * Single use: once an administrator exists this script refuses to create a
- * second one and says so. `--reset-password` is the supported way to rotate a
- * password later — it also bumps token_version, which invalidates every token
- * that account still holds (spec §5).
+ * second one and says so. `--reset-password` rotates only the exact named
+ * administrator in the selected tenant, never renames or creates an account,
+ * and refuses missing or ambiguous targets. It also bumps token_version,
+ * invalidating every token that account still holds (spec §5).
  *
  * The role goes on memberships, never on users (spec §15 / the schema's own
  * comment): a user-tenant pair has a role, a user does not.
@@ -51,7 +52,7 @@ if (isset($options['help'])) {
         . "  --display-name=NAME   shown in audit rows (no password, no PII)\n"
         . "  --tenant-slug=SLUG    tenant to create/use (default from config)\n"
         . "  --role=admin|user     role of the membership (default: admin)\n"
-        . "  --reset-password      rotate an EXISTING account instead of failing\n"
+        . "  --reset-password      rotate the exact named admin; never create/rename\n"
         . "  --quiet               print only the outcome\n"
         . "Environment: IRICA_ADMIN_PASSWORD is used when --password is absent.\n");
     exit(0);
@@ -107,16 +108,25 @@ try {
 }
 
 $now = gmdate('Y-m-d H:i:s');
+$reset = isset($options['reset-password']);
 
 // ---- the tenant ---------------------------------------------------------
 $tenant = $db->queryOne('SELECT id, slug FROM tenants WHERE slug = ?', [$slug]);
 if ($tenant === null) {
+    if ($reset) {
+        fail('no tenant with the requested slug exists; cannot reset an account');
+    }
     $tenantId = Ids::v4();
     $db->insert('tenants', [
         'id' => $tenantId,
         'slug' => $slug,
         'name' => 'IRICA',
         'status' => 'active',
+        // 002 s07/s08 flipped the column defaults to staging/authoritative_v2,
+        // so a legacy bootstrap tenant must state its contract explicitly or
+        // every /v1 request against it is refused by the legacy tenant gate.
+        'lifecycle' => 'active',
+        'api_contract' => 'legacy_v1',
         'created_at' => $now,
         'updated_at' => $now,
     ]);
@@ -125,19 +135,20 @@ if ($tenant === null) {
     $tenantId = (string) $tenant['id'];
 }
 
-$existing = $db->queryOne(
-    'SELECT u.id AS user_id, u.username, u.status, m.role'
-    . ' FROM memberships m JOIN users u ON u.id = m.user_id'
-    . ' WHERE m.tenant_id = ? AND m.role = ? LIMIT 5',
-    [$tenantId, Roles::ADMIN]
-);
-$reset = isset($options['reset-password']);
-
-if ($existing !== null && !$reset) {
-    fail('an administrator already exists in this tenant. This script is '
-        . 'single-use (spec §8.1: no seeded account, no second seed). '
-        . 'To rotate a password use: php bin/create-admin.php --username='
-        . $existing['username'] . ' --reset-password');
+// Bootstrap checks for ANY administrator, regardless of the requested name.
+// Reset resolves and locks its exact target separately inside the transaction.
+if (!$reset) {
+    $existing = $db->queryOne(
+        'SELECT u.username FROM memberships m JOIN users u ON u.id = m.user_id'
+        . ' WHERE m.tenant_id = ? AND m.role = ? LIMIT 1',
+        [$tenantId, Roles::ADMIN]
+    );
+    if ($existing !== null) {
+        fail('an administrator already exists in this tenant. This script is '
+            . 'single-use (spec §8.1: no seeded account, no second seed). '
+            . 'To rotate a password use: php bin/create-admin.php --username='
+            . $existing['username'] . ' --reset-password');
+    }
 }
 
 // ---- the password -------------------------------------------------------
@@ -172,22 +183,31 @@ try {
 }
 
 try {
-    if ($existing !== null) {
-        $userId = (string) $existing['user_id'];
+    if ($reset) {
         $db->transaction(function (Database $tx) use (
-            $userId, $hash, $now, $role, $tenantId, $username
+            $hash, $now, $role, $tenantId, $username
         ): void {
+            $matches = $tx->query(
+                'SELECT u.id AS user_id, u.username, u.token_version'
+                . ' FROM memberships m JOIN users u ON u.id = m.user_id'
+                . ' WHERE m.tenant_id = ? AND m.role = ?'
+                . ' AND u.tenant_id = ? AND u.username = ? LIMIT 2 FOR UPDATE',
+                [$tenantId, Roles::ADMIN, $tenantId, $username]
+            );
+            // The database collation may equate distinct spellings. Never
+            // rotate an alias or choose one row from an ambiguous result.
+            if (count($matches) !== 1 || $matches[0]['username'] !== $username) {
+                throw new RuntimeException('reset requires exactly one '
+                    . 'administrator with the exact username in this tenant');
+            }
+            $userId = (string) $matches[0]['user_id'];
             $tx->update('users', [
-                'username' => $username,
                 'password_hash' => $hash,
                 'must_change_password' => 1,
                 'status' => 'active',
                 // Every outstanding token of this account dies with the bump
                 // (spec §5).
-                'token_version' => (int) $tx->queryValue(
-                    'SELECT token_version FROM users WHERE id = ? FOR UPDATE',
-                    [$userId]
-                ) + 1,
+                'token_version' => (int) $matches[0]['token_version'] + 1,
                 'updated_at' => $now,
             ], 'id = ?', [$userId]);
             $tx->execute(
@@ -195,21 +215,10 @@ try {
                 . ' revoked_reason = ? WHERE user_id = ? AND revoked_at IS NULL',
                 [$now, 'password_rotated', $userId]
             );
-            // The membership is normally already there (it is how this user
-            // was found); make the requested role stick either way.
-            $updated = $tx->update('memberships', [
+            // The matching membership is locked above; reset never seeds one.
+            $tx->update('memberships', [
                 'role' => $role, 'updated_at' => $now,
             ], 'tenant_id = ? AND user_id = ?', [$tenantId, $userId]);
-            if ($updated === 0) {
-                $tx->insert('memberships', [
-                    'id' => Ids::v4(),
-                    'tenant_id' => $tenantId,
-                    'user_id' => $userId,
-                    'role' => $role,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
-            }
         });
         done('OK    rotated the password of an existing administrator and '
             . 'revoked every token it still held. Username: ' . $username
@@ -252,7 +261,9 @@ try {
     if ($errno === 1062) {
         fail('that username already exists in this tenant');
     }
-    fail('database error while creating the account (errno ' . $errno . ')');
+    fail('database error while creating or resetting the account (errno ' . $errno . ')');
+} catch (RuntimeException $error) {
+    fail($error->getMessage());
 }
 
 fwrite(STDOUT, 'OK    administrator created' . PHP_EOL);

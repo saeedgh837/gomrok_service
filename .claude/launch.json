@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "irica-panel",
+      "runtimeExecutable": "pythonw",
+      "runtimeArgs": ["panel_gui.pyw"],
+      "port": 8750
+    },
+    {
+      "name": "mock-crm-panel",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["lab/scripts/run_crm_panel.py"],
+      "port": 8791
+    },
+    {
+      "name": "host-v2-fixture",
+      "runtimeExecutable": "php",
+      "runtimeArgs": ["-S", "127.0.0.1:8766", "lab/fixtures/host_v2_front.php"],
+      "port": 8766
+    }
+  ]
+}

@@ -9,6 +9,14 @@ The contract for everything below is `lab/docs/CLOUD_SYNC_SPEC.md` —
 rationale lives in [`SECURITY.md`](SECURITY.md); read it before you change any
 code in this package.
 
+The Phase B identity foundation (migrations 002/003, central accounts,
+`/v2` routes, `bin/create-account.php`) was proved on MariaDB 10.3.39 only;
+MySQL 5.7 remains unverified. The counts-only acceptance, engine matrix and
+handoff live in `lab/docs/HOST_IDENTITY_PHASE_B.md` — that file also lists
+what is still separately authorized (host installation, migration rehearsal,
+data activation, release). Nothing here approves a cutover: `/v1` stays the
+served API.
+
 ---
 
 ## 0. What you need before starting
@@ -140,7 +148,7 @@ If your cPanel plan does not provide SSH or Terminal access, you have two safe o
    https://api.<domain>/setup.php?key=YOUR_RANDOM_LONG_SECRET_KEY
    ```
 3. Use the web interface to:
-   - Run database migrations (creates all 18 tables).
+   - Run database migrations (creates 24 tables plus the migration journal).
    - Create the initial admin user.
    - Run the smoke test to verify extensions and database connectivity.
    - Click **"حذف خودکار فایل setup.php"** to permanently delete the setup script from the server once finished.
@@ -177,13 +185,54 @@ Behaviour you can rely on:
 
 * a migration already recorded with the same checksum is **skipped**;
 * a recorded checksum that does not match the file is a **hard refusal**
-  (exit 2) — migrations are forward-only, there is no `down.sql`;
-* a database that already has tables but no `schema_migrations` row is
-  **refused** rather than written into (exit 2). If you are adopting an
-  existing schema, that is a manual decision — record what you did.
+  (exit 1) — migrations are forward-only, there is no `down.sql`;
+* a recorded version whose file has been deleted is a **hard refusal**;
+* a database that has never been written to by this runner must be **empty**.
+  Once `schema_migrations` holds a row, a populated database is a legitimate
+  target and is never refused just for holding rows.
 
 `migrate.php` reads `db_migrate` when it is set, otherwise `db`. It must be
-the account that holds `CREATE`.
+the account that holds `CREATE`. The application account holds no DDL and the
+runner refuses to proceed with it.
+
+### Migration recovery
+
+Each migration file is applied **step by step**, and every step is recorded in
+the `migration_steps` journal with its own SHA-256 and one of the states
+`started`, `applied`, `verified` or `failed`. A named advisory lock
+(`GET_LOCK`, non-blocking) makes sure only one runner works on a schema at a
+time; it is always released, and the server releases it too if a process is
+killed.
+
+MySQL and MariaDB **cannot roll back DDL**. There is no `down.sql` and this
+runner never offers a wrapped rollback, so recovery is never "undo the last
+step":
+
+* `php bin/migrate.php --status` first. It only reads: it reports the state,
+  the counts, and any blocker as a `code table count` line — never a row
+  value, a name or a national id.
+* A step left at `started` or `applied` after a crash is **reconciled
+  automatically**: the runner compares the live schema against the declared
+  postcondition and either finishes the step or re-executes it. Re-run
+  `php bin/migrate.php` and let it finish.
+* A step reported as `MIGRATION_STATE_AMBIGUOUS` means the live schema matches
+  neither the pre- nor the post-state of that step (typically a half-created
+  table). The runner stops **without repairing anything**. Do not improvise:
+  restore the most recent backup, then run `php bin/migrate.php` again.
+* `MIGRATION_UNTRACKED_OBJECTS` means the database holds tables no migration
+  owns. The runner will not write into them. Either adopt them deliberately or
+  restore from backup.
+* `MIGRATION_CHECKSUM_DRIFT` means an applied file changed on disk. Never edit
+  an applied migration: add a new file instead.
+* `MIGRATION_LOCK_HELD` means another runner is working on this database right
+  now. Wait for it; do not start a second one in parallel.
+
+**Never drop or truncate a populated database to "fix" a migration.** Dropping
+is only ever appropriate for a brand-new scratch database that holds nothing
+you need, before the first successful run.
+
+`php bin/migrate.php --status` prints only counts and stable codes, so it is
+safe to paste into a ticket.
 
 ---
 
@@ -349,6 +398,96 @@ rollback is just putting the old folder and the old dump in place.
 
 ---
 
+## 12. The `/v2` surface and the Phase B identity CLI
+
+`/v2` is additive. **`/v1` stays the served API for every existing tenant**,
+and nothing in this package performs a cutover: point a client at `/v2` only
+when you mean the five routes below, and nothing else is there.
+
+| Route | Method | Needs | Returns |
+|---|---|---|---|
+| `/v2/auth/login` | POST | `{"login","password"}` only | desktop `token`, `expires_at`, `idle_expires_at`, minimal `account` |
+| `/v2/auth/me` | GET | desktop token | live `account`; passive — never renews the idle window |
+| `/v2/auth/logout` | POST | desktop token | `{revoked, already_revoked}`; never echoes the token |
+| `/v2/auth/change-password` | POST | `{"old_password","new_password"}` | `reauthentication_required: true`; revokes **every** session |
+| `/v2/workspaces` | GET | desktop token, no forced change | one page of active memberships (`limit` 1–100, opaque `cursor`) |
+
+Rules that hold on all five:
+
+* **Any other path under `/v2` is `404`, and any other method on these five is
+  `405`.** `/v2/../v1`, encoded separators, repeated separators and a re-cased
+  `/V2/...` are refused rather than normalised; an apparent `/v2` path never
+  falls through to a `/v1` handler.
+* **A body is refused at 16 KiB**, not at the 16 MiB import limit, and it is
+  refused from `Content-Length` alone.
+* **Unknown body fields are refused**, not ignored: `purpose`, `role`,
+  `workspace` and `platform_role` have no meaning on `/v2/auth/login`.
+* **Every response is `Cache-Control: no-store`, with no `Set-Cookie` and no
+  CORS header**, and every failure is the usual `{ok:false,error:{code,
+  message, request_id}}` envelope.
+* A session issued for the other purpose answers
+  `SESSION_PURPOSE_MISMATCH`; an unknown, malformed or legacy credential still
+  answers `AUTH_REQUIRED`.
+
+### 12.1 Transport
+
+`/v2` requires the **server's own TLS indication**. It does not read
+`X-Forwarded-Proto` at all — `V2Api::assertTransport()` has no such parameter —
+so a proxy that rewrites that header cannot move this gate. If PHP is reached
+without TLS, `/v1` may still answer while `/v2` returns
+`403 HTTPS_REQUIRED`; terminate TLS in front of PHP, or do not expose `/v2`.
+See `SECURITY.md` §10.11.
+
+### 12.2 `bin/create-account.php` — the private Phase B CLI
+
+`create-admin.php` (§5) and `create-user.php` (§6) are the `/v1` paths.
+`create-account.php` is the Phase B identity CLI: it writes the `accounts`
+table and gives each account its own private workspace. It has **no HTTP
+endpoint**, takes **no password on the command line** and reads no environment
+variable for one:
+
+```sh
+cd /home/youruser/irica-host
+printf '%s' '{"kind":"member","login":"amir","password":"…"}' \
+    | php bin/create-account.php
+# {"account_id":"…","workspace_id":"…","must_change_password":true}
+```
+
+* `kind` is `member`, `operator` or `first_operator`. Only `first_operator`
+  uses the locked `identity_state` bootstrap, and it refuses to run twice.
+* Exactly one JSON object on **stdin**, bounded at 16 KiB. Any command-line
+  argument at all is a usage error (exit 2), which is why no credential can
+  end up in shell history or a process listing.
+* Unknown fields are refused (exit 1) rather than dropped.
+* The receipt carries the two identifiers and the forced-change flag — no
+  login, no password, no hash, no role, no token.
+* **Exit codes:** `0` success · `1` refusal or failure · `2` usage error.
+* If it prints `the identity state row is missing`, the installation has lost
+  the singleton row that `002` seeds — that is data loss after install, not a
+  mistake in your command: restore the database from a backup taken after
+  setup, then run it again. Do not re-run `setup.php` and do not seed an
+  operator by hand.
+
+### 12.3 The fixture adapter is not a deployment artefact
+
+`lab/fixtures/host_v2_front.php` exists only so the HTTP contract can be
+proved against a disposable database:
+
+```sh
+IRICA_B_FIXTURE_CONFIG=/tmp/…/fixture.json \
+    php -S 127.0.0.1:8766 lab/fixtures/host_v2_front.php
+IRICA_V2_ORIGIN=http://127.0.0.1:8766 \
+    python -I -B lab/scripts/run_host_v2_tests.py --suite api \
+        --fixture-config /tmp/…/fixture.json
+```
+
+It refuses any SAPI other than `cli-server`, any peer other than exactly
+`127.0.0.1`/`::1`, and any path that is not `/v2`; it never calls
+`Config::load()` and never touches `setup.php`, the Telegram relay, the
+installed panel or a live host config. Nothing under `lab/` ships to a server.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Meaning | Fix |
@@ -361,7 +500,10 @@ rollback is just putting the old folder and the old dump in place.
 | `401 AUTH_REQUIRED` on `/sync/*` | no device token, or a device token where a user token is required | the client must enroll first (`POST /sync-devices/enroll`) |
 | `409 DATASET_NOT_EMPTY` on import | the tenant already holds rows (spec §8) | this is correct after the first import; do not empty the tables to retry |
 | `smoke-test` says the account can `CREATE` | the cPanel grant screen gave it all privileges | revoke DDL in MySQL, then re-run |
-| `migrate.php` exits 2 on checksum | the migration file changed after it was applied | never edit an applied migration; add a new one |
+| `migrate.php` fails on checksum | the migration file changed after it was applied | never edit an applied migration; add a new one |
+| `migrate.php` says `MIGRATION_LOCK_HELD` | another runner is working on this database | wait for it; never run two runners in parallel |
+| `migrate.php` says `MIGRATION_STATE_AMBIGUOUS` | the live schema matches neither the pre- nor the post-state of a step | restore the backup, then run `migrate.php` again; never improvise a repair |
+| `migrate.php` says `MIGRATION_UNTRACKED_OBJECTS` | the database holds tables no migration owns | decide deliberately whether to adopt them; the runner will not |
 
 Every failure envelope looks the same and is safe to log or paste:
 

@@ -19,7 +19,7 @@ define('HOST_ROOT', dirname(__DIR__));
 
 foreach ([
     'Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
-    'RateLimit', 'Auth', 'Sync', 'Import',
+    'RateLimit', 'Auth', 'Sync', 'Import', 'MigrationPreflight', 'Migrations',
 ] as $classFile) {
     require_once HOST_ROOT . '/src/' . $classFile . '.php';
 }
@@ -164,6 +164,7 @@ if ($configError !== '') {
     // Key is valid - handle actions
     $action = (string) ($_POST['action'] ?? '');
     if ($action === 'migrate') {
+        $log = [];
         try {
             $dbConfig = $cfg['db_migrate'] ?? $cfg['db'];
             $db = Database::fromConfig($dbConfig);
@@ -186,7 +187,6 @@ if ($configError !== '') {
             $files = glob($migDir . '/*.sql');
             sort($files);
 
-            $log = [];
             foreach ($files as $file) {
                 $version = basename($file, '.sql');
                 $checksum = hash_file('sha256', $file);
@@ -196,6 +196,29 @@ if ($configError !== '') {
                     }
                     $log[] = "SKIP {$version} (already applied)";
                     continue;
+                }
+
+                // The one file that can die half-way on a populated database
+                // is gated here, PER FILE: after the earlier files of this same
+                // loop have installed the tables its relationships need (001
+                // and 002 sort first) and before a single statement of this
+                // file runs. On a fresh install the gate is trivially safe —
+                // no business rows — so nothing changes for a normal setup.
+                // Refusal is fail-closed with the same counts-only
+                // code/table/constraint/count report the CLI path produces,
+                // and it repairs, deletes and truncates nothing.
+                if ($version === Migrations::SCOPED_VERSION) {
+                    $gate = (new Migrations($db, $migDir))->scopedGate();
+                    if (!$gate['safe']) {
+                        foreach ($gate['blockers'] as $blocker) {
+                            $log[] = '  ' . $blocker['code']
+                                . ' table=' . $blocker['table']
+                                . ' constraint=' . $blocker['constraint']
+                                . ' count=' . $blocker['count'];
+                        }
+                        throw new MigrationBlockedReference(
+                            Migrations::E_BLOCKED_REFERENCE . ' ' . $version, $gate['blockers']);
+                    }
                 }
 
                 $stmts = setupSplitStatements((string) file_get_contents($file));
@@ -216,6 +239,9 @@ if ($configError !== '') {
         } catch (Throwable $e) {
             $notice = 'خطا در اجرای مایگریشن: ' . $e->getMessage();
             $noticeType = 'error';
+            // The counts-only blocker report built above still reaches the
+            // operator even though the run was refused.
+            $output = implode("\n", $log);
         }
     } elseif ($action === 'create_admin') {
         try {
@@ -241,6 +267,10 @@ if ($configError !== '') {
                 $db->insert('tenants', [
                     'id' => $tenantId, 'slug' => $tenantSlug, 'name' => 'IRICA',
                     'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
+                    // 002 s07/s08 flipped these column defaults to
+                    // staging/authoritative_v2; a bootstrap tenant must state
+                    // its contract explicitly or the legacy gate refuses it.
+                    'lifecycle' => 'active', 'api_contract' => 'legacy_v1',
                 ]);
             } else {
                 $tenantId = (string) $tenant['id'];

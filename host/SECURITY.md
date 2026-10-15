@@ -212,6 +212,27 @@ break silently.
 
 See §6 below.
 
+### 10.11 `/v2`: the server's own TLS flag, and nothing else
+
+`V2Api::assertTransport(string $remoteAddr, bool $serverTls, bool $fixture)`
+is deliberately narrower than the legacy gate in §2:
+
+* it takes **three** arguments and **none of them is a header**, so
+  `X-Forwarded-Proto` cannot reach it — structurally, not by convention. A
+  forged `X-Forwarded-Proto: https` from a non-loopback peer is refused with
+  `403 HTTPS_REQUIRED`;
+* in production `$fixture` is always `false` (only `public/index.php` calls it,
+  and it hard-codes `false`), so a non-loopback peer **must** have arrived over
+  TLS as far as the server itself can tell. Loopback is no longer an
+  exemption on this surface;
+* `$fixture = true` exists for exactly one caller, the disposable loopback
+  CLI-server adapter, and it additionally requires the peer to be literally
+  `127.0.0.1` or `::1` — not `127/8`, and never a routable address.
+
+Because this is stricter than the v1 gate, an installation that reaches PHP
+without TLS and relies on loopback will serve `/v1` and refuse `/v2`. That is
+intended: see §7.7 for what `/v2` is and is not approved to be.
+
 ---
 
 ## 3. Token design, and why
@@ -476,6 +497,24 @@ machines — enrol a device instead.
 6. **Backups are not verified automatically.** The restore procedure is
    written and the migration half of it is tested; actually loading a dump
    on a spare database is an operator duty (see `INSTALL.md` §10).
+7. **`/v1` is not retired and `/v2` is not a cutover.** `/v2` ships five
+   routes (login, me, logout, change-password, workspaces) and nothing else:
+   no admin UI, no import, no business mutation and no operator service, so
+   an installation that points a client at `/v2` can authenticate and list
+   workspaces and nothing more. Legacy tenants keep being served by `/v1`
+   until a later phase retires it deliberately. Turning `/v2` on is therefore
+   additive, never a migration — and the fixture adapter that proves the
+   contract over loopback is not part of any deployment: it refuses every
+   SAPI except `cli-server`, every peer except an exact loopback address, and
+   never loads `Config::load()`, `setup.php`, the Telegram relay, the panel
+   or a live host config.
+8. **Phase B residual risks are carried, not closed.** The acceptance handoff
+   (`lab/docs/HOST_IDENTITY_PHASE_B.md` §4) records twelve written gaps for
+   the final whole-branch review — among them the untested `index.php` v2
+   branch binding, the untested loopback-front guards, and the missing
+   `accounts.status` check in workspace `assign`/`remove`/`freeze`. None of
+   them is an open hole on the documented deployment, and none of them may
+   be silently dropped.
 
 ---
 
