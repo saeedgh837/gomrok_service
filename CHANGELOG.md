@@ -3,6 +3,75 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.15.1] - 2026-10-17
+
+### Fixed
+
+- **Desktop ledger writes now reach the server-authoritative finance path.**
+  - The `action == "tx"` and `action == "void_tx"` branches in `panel.py` read
+    the ledger entry `crm.add_transaction` returns as if it were the customer,
+    so `record.get("transactions")` was always empty and both the
+    `finance_append` and `finance_void` transports were dead. No desktop
+    receipt, debt, or void ever reached `Finance.php`, which meant the server
+    serialization point, the idempotency claim, and the per-customer
+    `SELECT ... FOR UPDATE` sequence allocation were never exercised. The
+    branches now take the customer id and the row's sequence number from the
+    call itself.
+  - `crm.add_transaction_seq` returns that sequence number from inside the
+    same `STORE_LOCK` as the append, because the position inside
+    `customer["transactions"]` is the row's identity on the wire and a
+    re-read outside the lock could observe a shifted index.
+- **Voids carry the operator's reason and address the original row.**
+  - `_push_finance_void` refuses an operation without `void_reason`, and the
+    host voids the row its operation id names while appending the reversal
+    itself. The enqueued record now names the ORIGINAL row's sequence and
+    includes the reason, so a reachable void is no longer parked after
+    exhausting its retry budget.
+- **The one-shot import merge numbers ledger rows from zero.**
+  - `cloud_run_import` used `enumerate(..., start=1)` while the local store,
+    the host, and `mapper.lift_transactions` all count from 0. The same
+    logical row therefore minted two different `uuid5` identities, and a
+    second client's pull stalled on `UNRESOLVED_REFERENCE`.
+- **`backup-to-telegram.php` no longer reports success when Telegram refused.**
+  - The cron CLI exited 0 whenever the dump was written to disk, so a host
+    that received nothing still logged a clean run every four hours. It now
+    prints `NOT DELIVERED to Telegram: ...` and exits 1. The exit status is
+    carried out of the `try` block because PHP does not run a `finally` block
+    when the body calls `exit()` — exiting in place would have skipped the
+    `flock` release.
+
+### Security
+
+- **A desktop from a replaced dataset can no longer write into the new one.**
+  - Spec §8 requires that local data of an unknown or foreign epoch is
+    quarantined and never auto-pushed. The v1.15.0 guard only ran on the
+    read path (`bootstrap`), and only when `dataset_epoch` was `None` —
+    never when it was merely stale — so a machine that had bootstrapped
+    before a re-import kept pushing its old-dataset edits, and an insert at
+    `base_version == 0` created a row instead of conflicting.
+  - The client now sends the epoch it bootstrapped from with every write, and
+    the host compares it against `tenant_state` inside the same write
+    transaction, holding the row `FOR UPDATE`, before any row is touched.
+    Covered on `POST /sync/mutations` and on both finance routes.
+  - The field is additive: a client that sends no epoch keeps its previous
+    behaviour. Absence is allowed; a different value never is.
+  - `DATASET_EPOCH_MISMATCH` is mapped to the existing typed
+    `DatasetEpochMismatchError`, so the refusal surfaces as the quarantine
+    state the panel already has a message for instead of a generic HTTP
+    error that the outbox would park with only a code note.
+
+### Tests
+
+- Added `test_server_crm_v2_finance_route`, which drives the real
+  `POST /crm-customer` route and asserts what landed in the outbox. The
+  v1.15.0 transport tests built their operations by hand and string-matched
+  the marker in `panel.py`, so a producer that never stamped it passed.
+- Added epoch coverage to `test_server_crm_v2_authority`: the batch carries
+  its epoch, a foreign dataset raises the typed error and is not retryable,
+  and the finance routes send it too.
+- Added `test_every_write_route_refuses_a_foreign_dataset` to the finance
+  module, pinning the check's position before the idempotency claim.
+
 ## [1.15.0] - 2026-10-15
 
 ### Added
