@@ -42,6 +42,7 @@ jobs:
           test_server_crm_v2_client_devices
           test_server_crm_v2_authority
           test_server_crm_v2_finance_outbox
+          test_server_crm_v2_finance_route
           test_server_crm_v2_finance_transport
           test_server_crm_v2_presence_client
 

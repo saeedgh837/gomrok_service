@@ -43,6 +43,7 @@ final class Finance
         $kind = $body['kind'] ?? '';
         $image = $body['image'] ?? '';
         $deviceId = $body['device_id'] ?? null;
+        $datasetEpoch = $body['dataset_epoch'] ?? null;
 
         if (!is_string($operationId) || !Ids::isUuid($operationId)) {
             throw new ApiException(400, Codes::BAD_PAYLOAD,
@@ -85,8 +86,14 @@ final class Finance
         ) ?: '');
 
         $result = $this->db->transaction(function (\Database $tx) use (
-            $tenantId, $operationId, $requestHash, $normalized, $context
+            $tenantId, $operationId, $requestHash, $normalized, $context,
+            $datasetEpoch
         ): array {
+            // Before the claim, before the money: a caller from a replaced
+            // dataset must never be told its operation succeeded, and must
+            // never receive a stored result that names rows of the old
+            // dataset (spec §8).
+            Sync::requireEpoch($tx, $tenantId, $datasetEpoch);
             $now = gmdate('Y-m-d H:i:s');
             $days = (int) ($this->cfg['idempotency_retention_days'] ?? 30);
             if ($days < 1) {
@@ -280,6 +287,7 @@ final class Finance
         $operationId = $body['operation_id'] ?? null;
         $transactionId = $body['transaction_id'] ?? null;
         $reason = $body['reason'] ?? '';
+        $datasetEpoch = $body['dataset_epoch'] ?? null;
         if (!is_string($operationId) || !Ids::isUuid($operationId)) {
             throw new ApiException(400, Codes::BAD_PAYLOAD,
                 'operation_id must be a UUID');
@@ -308,8 +316,14 @@ final class Finance
         ) ?: '');
 
         $result = $this->db->transaction(function (\Database $tx) use (
-            $tenantId, $operationId, $requestHash, $normalized, $context
+            $tenantId, $operationId, $requestHash, $normalized, $context,
+            $datasetEpoch
         ): array {
+            // Before the claim, before the reversal: a caller from a replaced
+            // dataset must never be told its operation succeeded, and must
+            // never receive a stored result that names rows of the old
+            // dataset (spec §8).
+            Sync::requireEpoch($tx, $tenantId, $datasetEpoch);
             $now = gmdate('Y-m-d H:i:s');
             $days = (int) ($this->cfg['idempotency_retention_days'] ?? 30);
             if ($days < 1) {

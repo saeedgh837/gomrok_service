@@ -62,6 +62,7 @@ final class Codes
     public const DB_UNAVAILABLE = 'DB_UNAVAILABLE';
     public const SERVER_ERROR = 'SERVER_ERROR';
     public const IDEMPOTENCY_MISMATCH = 'IDEMPOTENCY_MISMATCH';
+    public const DATASET_EPOCH_MISMATCH = 'DATASET_EPOCH_MISMATCH';
 
     /** Every code this package may emit — one list, one grammar check. */
     public const ALL = [
@@ -74,6 +75,7 @@ final class Codes
         self::IMPORT_CONFLICT, self::VALIDATION_FAILED, self::DEVICE_REVOKED,
         self::HTTPS_REQUIRED, self::CONFIG_INVALID, self::DB_UNAVAILABLE,
         self::SERVER_ERROR, self::IDEMPOTENCY_MISMATCH,
+        self::DATASET_EPOCH_MISMATCH,
     ];
 
     public static function isValid(string $code): bool

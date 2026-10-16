@@ -46,6 +46,7 @@ from cloud_sync.errors import (
     BootstrapRequiredError, DatasetEpochMismatchError,
     code_for_status, envelope_code, parse_retry_after, safe_code,
     safe_request_id, AUTH_REQUIRED, AUTH_REVOKED, ENROL_REQUIRED,
+    DATASET_EPOCH_MISMATCH,
 )
 from cloud_sync.auth import ACCESS_TTL_SECONDS, TokenVault
 from cloud_sync.mapper import (  # read-only: B owns this module
@@ -305,6 +306,12 @@ class SyncClient(object):
         if exchange["malformed"] and not exchange["code"]:
             return BadResponseError(route=route, status=status,
                                     request_id=exchange["request_id"])
+        if code == DATASET_EPOCH_MISMATCH:
+            # The host refused a write because this desktop was materialized
+            # from another dataset generation (spec §8). That is a state, not
+            # a failed request: the panel has a message for this code, and a
+            # generic HttpError would park the batch with only a code note.
+            return DatasetEpochMismatchError(**common)
         return HttpError(code=code, code_source=(
             "envelope" if exchange["code"] else "status"), **common)
 
@@ -703,6 +710,11 @@ class SyncClient(object):
             "kind": kind,
             "image": image,
             "device_id": device_id,
+            # Sent as stored (a string) rather than coerced here: config
+            # accepts a short identifier as well as an integer, and int() on a
+            # hand-edited non-numeric epoch would raise where the host is the
+            # party that owns deciding what is a usable epoch.
+            "dataset_epoch": self.config.dataset_epoch,
         }
         return self._request("POST", route, body=body)
 
@@ -725,6 +737,7 @@ class SyncClient(object):
             "operation_id": operation_id,
             "transaction_id": transaction_id,
             "reason": reason.strip(),
+            "dataset_epoch": self.config.dataset_epoch,
         })
 
     def push(self, operations):
@@ -757,8 +770,16 @@ class SyncClient(object):
         prepared = push_order(prepared)
         # No in-client retry here: spec §9 gives the backoff to the outbox,
         # and re-sending a batch is the outbox's decision to make.
-        payload = self._request("POST", "/sync/mutations",
-                                body={"operations": prepared})
+        #
+        # The epoch travels with the batch so the host can refuse a desktop
+        # whose dataset was replaced while it was offline. Without it the
+        # host has nothing to compare against and the batch lands in the new
+        # dataset — inserts at `base_version == 0` create rows rather than
+        # conflicting, so the guard cannot be left to CAS (spec §8).
+        payload = self._request("POST", "/sync/mutations", body={
+            "operations": prepared,
+            "dataset_epoch": self.config.dataset_epoch,
+        })
         return self._parse_push(payload)
 
     def _parse_push(self, payload):

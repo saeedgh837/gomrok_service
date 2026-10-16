@@ -122,6 +122,63 @@ class OnlineModeAndBackupTests(unittest.TestCase):
             mock_pull.assert_called_once()
             mock_beat.assert_called_once()
 
+    def test_smart_import_merge_numbers_ledger_rows_from_zero(self):
+        """The merge must address ledger rows with the canonical seq.
+
+        A transaction's wire identity is uuid5(installation,
+        "customer_transactions", "<customer id>/<seq>") and the store, the host
+        and mapper.lift_transactions all count from 0. Numbering from 1 in this
+        one path minted ids the host had never seen, so a second client's pull
+        could not resolve the row and failed with UNRESOLVED_REFERENCE.
+        """
+        panel._CLOUD_ACTOR = "admin-user"
+        panel._CLOUD_ROLE = "admin"
+
+        mock_config = MagicMock()
+        mock_config.sync_device_id = "device-123"
+        mock_config.source_installation_id = "inst-456"
+
+        mock_client = MagicMock()
+        mock_client.vault.user_access_token = "token-789"
+        mock_client.import_document = MagicMock()
+
+        runtime = {"config": mock_config, "client": mock_client,
+                   "lease": None, "outbox": MagicMock()}
+
+        fake_store = {
+            "customers": [{"id": "cust1", "name": "Ali",
+                           "transactions": [{"amount": 1000}, {"amount": 2000}]}],
+            "settings": {},
+        }
+        mock_import_res = importer.ImportResult(
+            ok=False, code="DATASET_NOT_EMPTY",
+            import_id="11111111-1111-4111-8111-111111111111",
+            backup_path="C:/fake/backup.json", attempts=1, payload=None,
+            dropped_settings=(), terminal=True)
+
+        seen = []
+
+        def mock_enqueue(entity, legacy_id, record=None, kind="upsert"):
+            seen.append((entity, legacy_id, dict(record or {})))
+
+        with patch.object(panel, "_cloud_runtime", return_value=runtime), \
+             patch("cloud_sync.importer.run_import", return_value=mock_import_res), \
+             patch("crm._store_read", return_value=fake_store), \
+             patch.object(panel, "_cloud_enqueue_mutation", side_effect=mock_enqueue), \
+             patch.object(panel, "cloud_worker_kick"), \
+             patch.object(panel, "cloud_pull_step"), \
+             patch.object(panel, "cloud_worker_beat"):
+            resp, status = panel.cloud_run_import()
+
+        self.assertEqual(status, 200)
+        ledger = [(legacy_id, record["seq"], record["amount"])
+                  for entity, legacy_id, record in seen
+                  if entity == "customer_transactions"]
+        self.assertEqual(ledger, [
+            ("cust1/0", 0, 1000),
+            ("cust1/1", 1, 2000),
+        ])
+
     def test_cloud_run_backup_now_endpoint(self):
         """POST /cloud-backup-now calls trigger_backup on client and returns 200."""
         panel._CLOUD_ACTOR = "admin-user"

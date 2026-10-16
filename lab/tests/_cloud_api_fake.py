@@ -476,6 +476,11 @@ class _Handler(BaseHTTPRequestHandler):
         if self._raw_body is None and method == "POST":
             # Too large to read: nothing sane can follow on this connection.
             self.close_connection = True
+        # Kept so a test can assert the *request* the client built, not just
+        # that a call happened. Financial and epoch fields are only meaningful
+        # on the wire, and the host is not the party under test here.
+        with api._lock:
+            record["body"] = self._raw_body
         try:
             status = self._dispatch(method, route, query)
         except _Stop as stopped:                   # the route already answered
@@ -721,6 +726,16 @@ class _Handler(BaseHTTPRequestHandler):
         operations = body.get("operations")
         if not isinstance(operations, list) or not operations:
             status, payload = self._envelope(400, "BAD_PAYLOAD")
+            self._send(status, payload)
+            return status
+
+        # Spec §8: a caller materialized from another dataset generation must
+        # not write here. The real host performs this inside its write
+        # transaction; the fake mirrors the answer so a client test can prove
+        # the refusal is surfaced rather than retried.
+        claimed = body.get("dataset_epoch")
+        if claimed is not None and str(claimed) != str(api.dataset_epoch):
+            status, payload = self._envelope(409, "DATASET_EPOCH_MISMATCH")
             self._send(status, payload)
             return status
 

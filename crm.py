@@ -697,23 +697,44 @@ def customer_balance(customer):
 
 def add_transaction(customer_id, amount, note="", kind="", image="",
                     device_id=""):
+    entry, _seq, errors = add_transaction_seq(
+        customer_id, amount, note=note, kind=kind, image=image,
+        device_id=device_id)
+    return entry, errors
+
+
+def add_transaction_seq(customer_id, amount, note="", kind="", image="",
+                        device_id=""):
+    """``add_transaction`` plus the sequence number the row landed on.
+
+    The ledger row's position inside ``customer["transactions"]`` *is* its
+    identity on the host wire (``<customer legacy id>/<seq>``, spec §15.2), so
+    a producer that wants to address the row it just wrote needs the index.
+    Resolving it here keeps the length read inside the same ``STORE_LOCK`` as
+    the append: this process serves requests from a thread pool, so a second
+    append between the write and a later re-read would shift the index.
+
+    Returns ``(entry, seq, errors)``; ``seq`` is ``None`` when ``entry`` is.
+    """
     with STORE_LOCK:
         data = _store_read()
         record = next((c for c in data.get("customers", [])
                        if c.get("id") == customer_id), None)
         if not record:
-            return None, ["مشتری پیدا نشد"]
+            return None, None, ["مشتری پیدا نشد"]
         try:
             amount = int(normalize_digits(amount))
         except (TypeError, ValueError):
-            return None, ["مبلغ باید عدد باشد"]
+            return None, None, ["مبلغ باید عدد باشد"]
         entry = {"at": _now(), "amount": amount, "note": str(note or "").strip(),
                  "kind": str(kind or "").strip(), "image": str(image or "").strip(),
                  "device_id": str(device_id or "").strip()}
-        record.setdefault("transactions", []).append(entry)
+        transactions = record.setdefault("transactions", [])
+        seq = len(transactions)
+        transactions.append(entry)
         record["updated"] = _now()
         _store_write(data)
-        return entry, []
+        return entry, seq, []
 
 
 def void_transaction(customer_id, tx_index, reason):

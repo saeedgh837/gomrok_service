@@ -372,6 +372,10 @@ if (php_sapi_name() === 'cli' && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') ===
         }
     }
 
+    // The status is carried out of the block and exited on below: PHP does not
+    // run a finally block when the try body calls exit(), so exiting in place
+    // would skip the lock release.
+    $exitCode = 0;
     try {
         echo "[" . gmdate('Y-m-d H:i:s') . "] Starting 4-hour IRICA database backup...\n";
         $res = run_database_backup(null, null, $options);
@@ -381,12 +385,21 @@ if (php_sapi_name() === 'cli' && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') ===
             . round($res['compressed_bytes'] / 1024, 1) . " KB.\n";
         if (!empty($res['telegram']['ok'])) {
             echo "[" . gmdate('Y-m-d H:i:s') . "] Delivered to Telegram message_id: " . $res['telegram']['message_id'] . "\n";
+        } else {
+            // The dump was written to disk, but a scheduled backup whose whole
+            // purpose is delivery must not report a clean run when Telegram
+            // refused it: the cron log would show four-hourly successes for a
+            // host that has received nothing.
+            echo "[" . gmdate('Y-m-d H:i:s') . "] NOT DELIVERED to Telegram: "
+                . json_encode($res['telegram']) . "\n";
+            $exitCode = 1;
         }
     } catch (\Throwable $e) {
         echo "[" . gmdate('Y-m-d H:i:s') . "] Backup FAILED: " . $e->getMessage() . "\n";
-        exit(1);
+        $exitCode = 1;
     } finally {
         flock($lockHandle, LOCK_UN);
         fclose($lockHandle);
     }
+    exit($exitCode);
 }

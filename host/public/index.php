@@ -281,7 +281,8 @@ try {
                     'operations must be a JSON array');
             }
             /** @var list<array<string, mixed>> $operations */
-            $payload = $sync->mutations($operations, $context, $requestId);
+            $payload = $sync->mutations($operations, $context, $requestId,
+                $body['dataset_epoch'] ?? null);
             $statusCode = 200;
             $errorCode = '';
             Response::ok($payload);

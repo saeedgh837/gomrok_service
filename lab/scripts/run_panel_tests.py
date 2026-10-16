@@ -164,6 +164,11 @@ DEFAULT = [
     "test_cloud_ui",
     "test_cloud_conflicts",
     "test_cloud_integration",
+    # v1.15.1: the panel's own finance transport producers. The v1.15.0
+    # outbox tests built their operations by hand, so nothing noticed that the
+    # route could never stamp the marker (both branches read the ledger entry
+    # instead of the customer). This module drives the real POST /crm-customer.
+    "test_server_crm_v2_finance_route",
     "test_host_schema",
     "test_host_api",
 ]

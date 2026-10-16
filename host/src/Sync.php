@@ -432,6 +432,59 @@ final class Sync
     // ==================================================================
 
     /**
+     * Refuse a write whose caller was materialized from another dataset
+     * generation (spec §8: "local data of an unknown or foreign epoch is
+     * quarantined and never auto-pushed").
+     *
+     * The check has to run *inside* the write transaction and take the same
+     * row the import path holds FOR UPDATE, or an import committing between
+     * this read and the write would still land the batch in the new dataset.
+     *
+     * A caller that sends no epoch is an older desktop that has not been
+     * updated yet; it keeps its previous behaviour, because inventing a
+     * refusal for a field it never knew about would strand it. The field is
+     * therefore opt-in: absence is allowed, a *different* value never is.
+     *
+     * @param mixed $claimed the caller's `dataset_epoch`, or null when absent
+     * @throws ApiException 400 BAD_PAYLOAD, 409 DATASET_EPOCH_MISMATCH
+     */
+    public static function requireEpoch(\Database $tx, string $tenantId,
+                                        mixed $claimed): void
+    {
+        if ($claimed === null) {
+            return;
+        }
+        if (is_bool($claimed)) {
+            throw new ApiException(400, Codes::BAD_PAYLOAD,
+                'dataset_epoch must be an integer or a numeric string');
+        }
+        if (is_string($claimed)) {
+            if (!ctype_digit($claimed)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD,
+                    'dataset_epoch must be an integer or a numeric string');
+            }
+        } elseif (!is_int($claimed)) {
+            throw new ApiException(400, Codes::BAD_PAYLOAD,
+                'dataset_epoch must be an integer or a numeric string');
+        }
+        $current = $tx->queryValue(
+            'SELECT dataset_epoch FROM tenant_state WHERE tenant_id = ? '
+            . 'FOR UPDATE',
+            [$tenantId]
+        );
+        // No state row yet means no dataset was ever imported: the host is
+        // empty, not a different generation, so the caller is not foreign.
+        if ($current === null) {
+            return;
+        }
+        if ((int) $current !== (int) $claimed) {
+            throw new ApiException(409, Codes::DATASET_EPOCH_MISMATCH,
+                'this desktop was materialized from another dataset '
+                . 'generation; re-bootstrap before pushing');
+        }
+    }
+
+    /**
      * Apply one batch: one transaction, idempotent per operation_id,
      * compare-and-swap per row, conflicts reported as data (spec §6.1).
      *
@@ -441,7 +494,8 @@ final class Sync
      * @throws ApiException
      */
     public function mutations(array $operations, array $context,
-                              string $requestId): array
+                              string $requestId,
+                              mixed $datasetEpoch = null): array
     {
         $device = $context['device'] ?? null;
         $user = $context['user'] ?? null;
@@ -471,8 +525,11 @@ final class Sync
         }
 
         $result = $this->db->transaction(function (\Database $tx) use (
-            $prepared, $tenantId, $context, $requestId
+            $prepared, $tenantId, $context, $requestId, $datasetEpoch
         ): array {
+            // Before anything is written: a caller from a replaced dataset
+            // must not land a row here (spec §8).
+            self::requireEpoch($tx, $tenantId, $datasetEpoch);
             $replayed = $this->loadReplays($tx, $tenantId, $prepared);
             // Apply in FK-safe entity order (crm_devices needs its customer,
             // a ledger row needs its device, settings needs its period), but

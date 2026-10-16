@@ -30,6 +30,7 @@ class FinanceStaticTests(unittest.TestCase):
         cls.source = read(os.path.join(HOST, "src", "Finance.php"))
         cls.index = read(os.path.join(HOST, "public", "index.php"))
         cls.client = read(os.path.join(ROOT, "cloud_sync", "client.py"))
+        cls.sync_source = read(os.path.join(HOST, "src", "Sync.php"))
 
     def test_append_contract_is_transactional_and_integer_only(self):
         self.assertIn("$this->db->transaction", self.source)
@@ -42,6 +43,29 @@ class FinanceStaticTests(unittest.TestCase):
         self.assertIn("source_installation_id FROM tenant_state", self.source)
         self.assertNotIn("floatval", self.source)
         self.assertNotIn("(float)", self.source)
+
+    def test_every_write_route_refuses_a_foreign_dataset(self):
+        """Spec §8: a foreign epoch is never auto-pushed.
+
+        The check has to sit inside the transaction and before the mutation,
+        on the money routes as well as the generic batch: an insert at
+        ``base_version == 0`` creates a row instead of conflicting, so CAS
+        alone cannot stop a desktop whose dataset was replaced.
+        """
+        # Both money routes take the epoch off the body and check it before
+        # claiming the operation or allocating a sequence.
+        self.assertEqual(self.source.count("Sync::requireEpoch($tx, $tenantId"), 2)
+        for body in ("$datasetEpoch = $body['dataset_epoch'] ?? null;",):
+            self.assertEqual(self.source.count(body), 2)
+        self.assertLess(self.source.index("Sync::requireEpoch($tx, $tenantId"),
+                        self.source.index("'INSERT INTO idempotency_keys '"))
+        # The generic batch takes it as an argument from the front controller.
+        self.assertIn("mixed $datasetEpoch = null", self.sync_source)
+        self.assertIn("self::requireEpoch($tx, $tenantId, $datasetEpoch)",
+                      self.sync_source)
+        self.assertIn("$body['dataset_epoch'] ?? null", self.index)
+        # The client owes the host the value it bootstrapped from.
+        self.assertEqual(self.client.count('"dataset_epoch": self.config.dataset_epoch'), 3)
 
     def test_route_and_client_use_the_finance_append_boundary(self):
         self.assertIn("'Finance'", self.index)
@@ -127,7 +151,7 @@ class FinanceMariaDbTests(unittest.TestCase):
 
     @classmethod
     def _write_script(cls):
-        required = ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Auth", "Finance")
+        required = ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Auth", "Sync", "Finance")
         lines = ["<?php", "declare(strict_types=1);"]
         for name in required:
             lines.append("require_once %s;" % json.dumps(os.path.join(HOST, "src", name + ".php").replace("\\", "/")))

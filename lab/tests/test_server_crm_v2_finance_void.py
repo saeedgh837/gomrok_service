@@ -108,7 +108,7 @@ class FinanceVoidMariaDbTests(unittest.TestCase):
 
     @classmethod
     def _write_script(cls):
-        names = ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Auth", "Finance")
+        names = ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Auth", "Sync", "Finance")
         lines = ["<?php", "declare(strict_types=1);"]
         for name in names:
             lines.append("require_once %s;" % json.dumps(os.path.join(HOST, "src", name + ".php").replace("\\", "/")))

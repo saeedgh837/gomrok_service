@@ -2511,7 +2511,14 @@ def cloud_run_import():
             for cust in local_data.get("customers") or []:
                 if isinstance(cust, dict):
                     cid = cust.get("id")
-                    for seq, tx in enumerate(cust.get("transactions") or [], start=1):
+                    # seq is the row's index inside the nested list — the
+                    # store, the host and mapper.lift_transactions all count
+                    # from 0, and the wire identity uuid5(<installation>,
+                    # "customer_transactions", "<customer id>/<seq>") is only
+                    # the same row when the base agrees. Starting at 1 minted
+                    # ids the host had never seen and made a second client
+                    # fail the pull with UNRESOLVED_REFERENCE.
+                    for seq, tx in enumerate(cust.get("transactions") or []):
                         tx_rec = dict(tx)
                         tx_rec["customer_id"] = cid
                         tx_rec["seq"] = seq
@@ -12858,6 +12865,9 @@ class Handler(BaseHTTPRequestHandler):
         entity = route.rsplit("-", 1)[1]          # customer|owner|identity|device
         record, errors, extra = None, [], {}
         if entity == "customer":
+            tx_seq = None                 # ledger index the row landed on
+            tx_void_index = None          # ledger row a void named
+            tx_void_reason = ""           # the void's operator reason
             if action == "add":
                 record, errors = crm_mod.add_customer(data)
             elif action == "update":
@@ -12883,7 +12893,7 @@ class Handler(BaseHTTPRequestHandler):
                         tx_amount = -tx_amount
                     elif kind == "receipt" and tx_amount < 0:
                         tx_amount = -tx_amount
-                    record, errors = crm_mod.add_transaction(
+                    record, tx_seq, errors = crm_mod.add_transaction_seq(
                         record_id, tx_amount, data.get("note") or "",
                         kind=kind, image=image_name)
             elif action == "void_tx":
@@ -12904,6 +12914,13 @@ class Handler(BaseHTTPRequestHandler):
                     tx_index = -1        # resolves to «تراکنش پیدا نشد»
                 record, errors = crm_mod.void_transaction(
                     record_id, tx_index, reason)
+                if record is not None:
+                    # The host's void route reads the row to void from the
+                    # operation id and appends the reversal itself, so this
+                    # operation addresses the ORIGINAL — the index the caller
+                    # named — and carries the reason for the server to record.
+                    tx_void_index = tx_index
+                    tx_void_reason = reason
             elif action == "delete":
                 ok, errors = crm_mod.delete_customer(record_id, force=bool(data.get("force")))
                 record = {"ok": ok} if ok else None
@@ -12963,23 +12980,29 @@ class Handler(BaseHTTPRequestHandler):
                     _cloud_enqueue_mutation("customers", record.get("id"), record)
                 elif action == "delete":
                     _cloud_enqueue_mutation("customers", record_id, kind="delete")
-                elif action == "tx" and isinstance(record, dict):
-                    txs = record.get("transactions", [])
-                    if txs:
-                        seq = len(txs) - 1
-                        tx_rec = {**txs[-1], "seq": seq, "customer_id": record.get("id")}
-                        _cloud_enqueue_mutation(
-                            "customer_transactions",
-                            f"{record.get('id')}/{seq}", tx_rec,
-                            transport="finance_append")
-                elif action == "void_tx" and isinstance(record, dict):
-                    txs = record.get("transactions", [])
-                    if 0 <= tx_index < len(txs):
-                        tx_rec = {**txs[tx_index], "seq": tx_index, "customer_id": record.get("id")}
-                        _cloud_enqueue_mutation(
-                            "customer_transactions",
-                            f"{record.get('id')}/{tx_index}", tx_rec,
-                            transport="finance_void")
+                elif action == "tx" and isinstance(record, dict) and tx_seq is not None:
+                    # `record` is the ledger ENTRY add_transaction_seq just
+                    # wrote, not the customer — the customer id and the row's
+                    # sequence number come from the call itself, because the
+                    # position inside customer["transactions"] is the row's
+                    # identity on the wire (spec §15.2).
+                    tx_rec = {**record, "seq": tx_seq, "customer_id": record_id}
+                    _cloud_enqueue_mutation(
+                        "customer_transactions",
+                        f"{record_id}/{tx_seq}", tx_rec,
+                        transport="finance_append")
+                elif action == "void_tx" and isinstance(record, dict) and tx_void_index is not None:
+                    # The host's void route voids the row its operation id
+                    # names and appends the reversal itself, so this operation
+                    # addresses the ORIGINAL row: customer_id + seq are what
+                    # mint that row's wire id, and void_reason is the payload
+                    # the host refuses to proceed without.
+                    tx_rec = {"customer_id": record_id, "seq": tx_void_index,
+                              "void_reason": tx_void_reason}
+                    _cloud_enqueue_mutation(
+                        "customer_transactions",
+                        f"{record_id}/{tx_void_index}", tx_rec,
+                        transport="finance_void")
             elif entity == "owner":
                 if action in ("add", "update") and isinstance(record, dict):
                     _cloud_enqueue_mutation("owners", record.get("id"), record)
