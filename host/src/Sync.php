@@ -436,9 +436,14 @@ final class Sync
      * generation (spec §8: "local data of an unknown or foreign epoch is
      * quarantined and never auto-pushed").
      *
-     * The check has to run *inside* the write transaction and take the same
-     * row the import path holds FOR UPDATE, or an import committing between
-     * this read and the write would still land the batch in the new dataset.
+     * The check has to take the same row the import path locks exclusively,
+     * or an import committing between this read and the write would still land
+     * the batch in the new dataset. It takes a SHARED lock rather than FOR
+     * UPDATE: several desktops write concurrently by design (v1.14.0), and an
+     * exclusive lock on this single row would serialise every mutation in a
+     * tenant against every other. A shared lock still blocks against the
+     * import's `FOR UPDATE` and cannot be upgraded to write, which is exactly
+     * the mutual exclusion the epoch contract needs.
      *
      * A caller that sends no epoch is an older desktop that has not been
      * updated yet; it keeps its previous behaviour, because inventing a
@@ -469,7 +474,7 @@ final class Sync
         }
         $current = $tx->queryValue(
             'SELECT dataset_epoch FROM tenant_state WHERE tenant_id = ? '
-            . 'FOR UPDATE',
+            . 'LOCK IN SHARE MODE',
             [$tenantId]
         );
         // No state row yet means no dataset was ever imported: the host is
