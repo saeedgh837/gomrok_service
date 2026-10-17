@@ -12,8 +12,8 @@ def text(path):
 
 class ReleaseGateTests(unittest.TestCase):
     def test_release_identity_and_forward_migrations(self):
-        self.assertEqual(text("VERSION").strip(), "1.15.0")
-        self.assertTrue((ROOT / "RELEASE_NOTES_v1.15.0.md").is_file())
+        self.assertEqual(text("VERSION").strip(), "1.15.1")
+        self.assertTrue((ROOT / "RELEASE_NOTES_v1.15.1.md").is_file())
         expected = [
             "001_initial.sql",
             "002_server_crm_v2_foundation.sql",
