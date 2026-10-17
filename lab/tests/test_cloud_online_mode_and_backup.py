@@ -7,8 +7,10 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -210,6 +212,51 @@ class OnlineModeAndBackupTests(unittest.TestCase):
         res = subprocess.run(["php", "-l", script_path], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"PHP lint failed: {res.stderr}")
         self.assertIn("No syntax errors detected", res.stdout)
+
+
+class BackupCliExitTests(unittest.TestCase):
+    def _run_cli(self, *, delivered, dry_run=False):
+        php = shutil.which("php")
+        if not php:
+            self.skipTest("PHP CLI is unavailable")
+        source_path = os.path.join(os.path.dirname(__file__), "..", "..",
+                                   "host", "bin", "backup-to-telegram.php")
+        with open(source_path, encoding="utf-8") as handle:
+            source = handle.read()
+        cli = source[source.index("if (php_sapi_name() === 'cli'"):]
+        stub = """<?php
+function run_database_backup($db, $config, $options) {
+    $dry = !empty($options['dry_run']);
+    return ['tables_dumped' => 1, 'total_rows' => 2, 'compressed_bytes' => 32,
+            'dry_run' => $dry, 'telegram' => $dry ? null :
+            ['ok' => getenv('BACKUP_TEST_DELIVERED') === '1', 'message_id' => 1]];
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="irica_backup_cli_") as root:
+            bin_dir = os.path.join(root, "bin")
+            os.mkdir(bin_dir)
+            script = os.path.join(bin_dir, "backup-to-telegram.php")
+            with open(script, "w", encoding="utf-8") as handle:
+                handle.write(stub + cli)
+            env = dict(os.environ, BACKUP_TEST_DELIVERED="1" if delivered else "0")
+            command = [php, "-n", script] + (["--dry-run"] if dry_run else [])
+            return subprocess.run(command, env=env, capture_output=True,
+                                  text=True, encoding="utf-8", timeout=10)
+
+    def test_delivered_backup_exits_successfully(self):
+        result = self._run_cli(delivered=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Delivered to Telegram", result.stdout)
+
+    def test_failed_delivery_exits_with_failure(self):
+        result = self._run_cli(delivered=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("NOT DELIVERED to Telegram", result.stdout)
+
+    def test_dry_run_does_not_report_delivery_failure(self):
+        result = self._run_cli(delivered=False, dry_run=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("NOT DELIVERED", result.stdout)
 
 
 if __name__ == "__main__":

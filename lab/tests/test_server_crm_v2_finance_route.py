@@ -101,6 +101,7 @@ class FinanceTransportRouteTests(unittest.TestCase):
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
 
         customer, errors = crm.add_customer(
             {"full_name": "Sample Ledger Customer"})

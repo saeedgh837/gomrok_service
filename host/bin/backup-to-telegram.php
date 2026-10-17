@@ -383,7 +383,9 @@ if (php_sapi_name() === 'cli' && realpath($_SERVER['SCRIPT_FILENAME'] ?? '') ===
             . $res['tables_dumped'] . " tables, "
             . $res['total_rows'] . " rows, "
             . round($res['compressed_bytes'] / 1024, 1) . " KB.\n";
-        if (!empty($res['telegram']['ok'])) {
+        if (!empty($res['dry_run'])) {
+            echo "[" . gmdate('Y-m-d H:i:s') . "] Dry run completed; Telegram delivery skipped.\n";
+        } elseif (!empty($res['telegram']['ok'])) {
             echo "[" . gmdate('Y-m-d H:i:s') . "] Delivered to Telegram message_id: " . $res['telegram']['message_id'] . "\n";
         } else {
             // The dump was written to disk, but a scheduled backup whose whole

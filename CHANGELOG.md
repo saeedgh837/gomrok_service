@@ -38,7 +38,7 @@ This project uses [Semantic Versioning](https://semver.org/).
     prints `NOT DELIVERED to Telegram: ...` and exits 1. The exit status is
     carried out of the `try` block because PHP does not run a `finally` block
     when the body calls `exit()` — exiting in place would have skipped the
-    `flock` release.
+    `flock` release. An intentional `--dry-run` remains a successful run.
 
 ### Security
 
@@ -51,7 +51,8 @@ This project uses [Semantic Versioning](https://semver.org/).
     `base_version == 0` created a row instead of conflicting.
   - The client now sends the epoch it bootstrapped from with every write, and
     the host compares it against `tenant_state` inside the same write
-    transaction, holding the row `FOR UPDATE`, before any row is touched.
+    transaction, holding the row with `LOCK IN SHARE MODE`, before any row is
+    touched. The shared lock blocks imports without serializing peer writes.
     Covered on `POST /sync/mutations` and on both finance routes.
   - The field is additive: a client that sends no epoch keeps its previous
     behaviour. Absence is allowed; a different value never is.
