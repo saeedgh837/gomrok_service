@@ -588,6 +588,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
     ap.add_argument("--clean", action="store_true", help="wipe dist/ first")
+    ap.add_argument("--reuse-runtime", action="store_true",
+                    help="reuse existing python runtime in stage if present")
     ap.add_argument("--no-zip", action="store_true",
                     help="stage and smoke-test only, do not package")
     args = ap.parse_args()
@@ -597,13 +599,17 @@ def main() -> int:
     stage = dist / f"irica-v{args.version}-win64"
     if args.clean and dist.exists():
         shutil.rmtree(dist, ignore_errors=True)
-    if stage.exists():
+    has_runtime = (stage / "python" / "python.exe").is_file() and args.reuse_runtime
+    if stage.exists() and not has_runtime:
         shutil.rmtree(stage)
     stage.mkdir(parents=True, exist_ok=True)
 
     log(f"building irica v{args.version} (win64) -> {stage}")
-    log("runtime:")
-    build_runtime(stage, cache)
+    if not has_runtime:
+        log("runtime:")
+        build_runtime(stage, cache)
+    else:
+        log("runtime: reused existing staged python runtime")
     log("application:")
     copy_app(stage)
     log("prune:")

@@ -466,10 +466,14 @@ machines — enrol a device instead.
 3. **One shared tenant.** The SQL is tenant-scoped, and the cross-tenant
    test proves a foreign id answers 404, but there is no UI to onboard a
    second tenant.
-4. **`X-Forwarded-Proto` is trusted** when the peer is not loopback. If an
-   attacker could reach PHP directly with an arbitrary remote address they
-   could claim `https`. On cPanel the remote address is Apache/PHP-FPM on
-   loopback and TLS terminates in front; do not expose PHP directly.
+4. **Proxy trust is explicit.** Only exact validated IPv4/IPv6 peers in
+   `trusted_proxies` may assert a single `X-Forwarded-Proto: https`. Configure
+   proxies to overwrite incoming scheme headers. Native `HTTPS=on` is accepted.
+   `allow_loopback_http` defaults false and is for direct local development
+   only; a configured loopback proxy reporting HTTP or no scheme never bypasses
+   TLS. Apply these settings to the API, migration page and setup page.
+   Setup additionally requires an explicit default-off maintenance flag,
+   POST-only secret, isolated CSRF session and durable one-shot creation gate.
 5. **Rate limiting is per-install.** It defeats credential stuffing against
    this host; it does not defeat a distributed attack from many IPs. Add an
    upstream (Apache `mod_evasive`, a WAF, or fail2ban) if that becomes real.

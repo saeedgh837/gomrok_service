@@ -15,6 +15,8 @@ MIGRATION_FILES = (
     "001_initial.sql",
     "002_server_crm_v2_foundation.sql",
     "003_server_crm_v2_device_auth.sql",
+    "004_legacy_import_verification.sql",
+    "005_private_accounts.sql",
 )
 
 
@@ -26,7 +28,7 @@ def read(path):
 class DeviceAuthStaticTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.sql = read(os.path.join(MIGRATIONS, MIGRATION_FILES[-1]))
+        cls.sql = read(os.path.join(MIGRATIONS, "003_server_crm_v2_device_auth.sql"))
         cls.roles = read(os.path.join(HOST, "src", "Roles.php"))
         cls.index = read(os.path.join(HOST, "public", "index.php"))
         cls.devices = read(os.path.join(HOST, "src", "Devices.php"))
@@ -68,8 +70,9 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
 
         cls.db = "irica_device_%s" % uuid.uuid4().hex[:12]
         cls.tenant = str(uuid.uuid4())
-        cls.admin = str(uuid.uuid4())
+        cls.tenant_b = str(uuid.uuid4())
         cls.user_a = str(uuid.uuid4())
+        cls.admin = cls.user_a  # Same owner, different role, never a second login.
         cls.user_b = str(uuid.uuid4())
         cls._sql("CREATE DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" % cls.db, select_db=False)
         try:
@@ -109,23 +112,31 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
     @classmethod
     def _seed(cls):
         now = "2026-10-15 16:00:00"
-        sql = [
-            "INSERT INTO tenants (id, slug, name, status, created_at, updated_at) VALUES ('%s','device-auth-v2','Device Auth Test','active','%s','%s');"
-            % (cls.tenant, now, now)
-        ]
-        for user_id, username, role in (
-            (cls.admin, "admin-v2", "admin"),
-            (cls.user_a, "user-a-v2", "user"),
-            (cls.user_b, "user-b-v2", "user"),
+        sql = []
+        for user_id, tenant, username in (
+            (cls.user_a, cls.tenant, "user-a-v2"),
+            (cls.user_b, cls.tenant_b, "user-b-v2"),
         ):
+            sql.append(
+                "INSERT INTO tenants (id,slug,name,status,created_at,updated_at) VALUES ('%s','%s','Device Auth Test','active','%s','%s');"
+                % (tenant, tenant, now, now)
+            )
             sql.append(
                 "INSERT INTO users (id,tenant_id,username,password_hash,display_name,must_change_password,status,token_version,row_version,created_at,updated_at) "
                 "VALUES ('%s','%s','%s','test-hash-not-a-credential','',0,'active',1,1,'%s','%s');"
-                % (user_id, cls.tenant, username, now, now)
+                % (user_id, tenant, username, now, now)
             )
             sql.append(
-                "INSERT INTO memberships (id,tenant_id,user_id,role,created_at,updated_at) VALUES ('%s','%s','%s','%s','%s','%s');"
-                % (str(uuid.uuid4()), cls.tenant, user_id, role, now, now)
+                "INSERT INTO memberships (id,tenant_id,user_id,role,created_at,updated_at) VALUES ('%s','%s','%s','user','%s','%s');"
+                % (str(uuid.uuid4()), tenant, user_id, now, now)
+            )
+            sql.append(
+                "INSERT INTO login_names (canonical,user_id,state,created_at,updated_at) VALUES ('%s','%s','active','%s','%s');"
+                % (username, user_id, now, now)
+            )
+            sql.append(
+                "INSERT INTO account_workspaces (tenant_id,owner_user_id,state,created_at,updated_at) VALUES ('%s','%s','active','%s','%s');"
+                % (tenant, user_id, now, now)
             )
         cls._sql("\n".join(sql))
 
@@ -134,7 +145,7 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, directory, True)
         path = os.path.join(directory, "probe.php")
         source = ["<?php", "declare(strict_types=1);"]
-        for name in ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Auth", "Devices"):
+        for name in ("Schema", "Database", "Http", "Ids", "Log", "Tokens", "Roles", "RateLimit", "Workspace", "Auth", "Devices"):
             source.append("require_once %s;" % json.dumps(os.path.join(HOST, "src", name + ".php").replace("\\", "/")))
         source.extend([
             "$db=Database::fromConfig(['host'=>getenv('IRICA_DB_HOST'),'port'=>(int)getenv('IRICA_DB_PORT'),'dbname'=>getenv('IRICA_DEVICE_TEST_DB'),'user'=>'root','password'=>getenv('IRICA_DB_ROOT_PASSWORD')]);",
@@ -142,14 +153,14 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
             "$t=getenv('IRICA_DEVICE_TEST_TENANT'); $aid=getenv('IRICA_DEVICE_TEST_ADMIN'); $ua=getenv('IRICA_DEVICE_TEST_USER_A'); $ub=getenv('IRICA_DEVICE_TEST_USER_B');",
             "$admin=new Principal(Tokens::KIND_USER,$aid,$t,Roles::ADMIN,$aid,'',Ids::v4(),1);",
             "$a=new Principal(Tokens::KIND_USER,$ua,$t,Roles::USER,$ua,'',Ids::v4(),1);",
-            "$b=new Principal(Tokens::KIND_USER,$ub,$t,Roles::USER,$ub,'',Ids::v4(),1);",
+            "$b=new Principal(Tokens::KIND_USER,$ub,getenv('IRICA_DEVICE_TEST_TENANT_B'),Roles::USER,$ub,'',Ids::v4(),1);",
             "$d1=$svc->selfEnroll($a,['name'=>'a1'],Ids::v4(),'127.0.0.1'); $d2=$svc->selfEnroll($a,['name'=>'a2'],Ids::v4(),'127.0.0.1'); $dx=$svc->selfEnroll($b,['name'=>'b1'],Ids::v4(),'127.0.0.1');",
             "$owner1=$db->queryValue('SELECT owner_user_id FROM sync_devices WHERE id = ?',[$d1['sync_device_id']]); $owner2=$db->queryValue('SELECT owner_user_id FROM sync_devices WHERE id = ?',[$d2['sync_device_id']]);",
             "$s1b=(int)$db->queryValue('SELECT COUNT(*) FROM auth_sessions WHERE sync_device_id = ? AND revoked_at IS NULL',[$d1['sync_device_id']]);",
             "$one=$svc->revoke($a,$d1['sync_device_id'],Ids::v4(),'127.0.0.1'); $r1=$db->queryOne('SELECT status,token_version FROM sync_devices WHERE id = ?',[$d1['sync_device_id']]); $r2b=$db->queryOne('SELECT status,token_version FROM sync_devices WHERE id = ?',[$d2['sync_device_id']]); $s1a=(int)$db->queryValue('SELECT COUNT(*) FROM auth_sessions WHERE sync_device_id = ? AND revoked_at IS NULL',[$d1['sync_device_id']]);",
             "$fs=null; $fc=null; try{$svc->revoke($a,$dx['sync_device_id'],Ids::v4(),'127.0.0.1');}catch(ApiException $e){$fs=$e->status;$fc=$e->errorCode;}",
-            "$adminOther=$svc->revoke($admin,$dx['sync_device_id'],Ids::v4(),'127.0.0.1'); $all=$svc->revokeAll($a,null,Ids::v4(),'127.0.0.1'); $r2a=$db->queryOne('SELECT status,token_version FROM sync_devices WHERE id = ?',[$d2['sync_device_id']]); $s2a=(int)$db->queryValue('SELECT COUNT(*) FROM auth_sessions WHERE sync_device_id = ? AND revoked_at IS NULL',[$d2['sync_device_id']]);",
-            "echo json_encode(['different_ids'=>$d1['sync_device_id']!==$d2['sync_device_id'],'owner1'=>$owner1,'owner2'=>$owner2,'s1b'=>$s1b,'one'=>$one,'r1'=>$r1,'r2b'=>$r2b,'s1a'=>$s1a,'fs'=>$fs,'fc'=>$fc,'adminOther'=>$adminOther,'all'=>$all,'r2a'=>$r2a,'s2a'=>$s2a]);",
+            "$afs=null; try{$svc->revoke($admin,$dx['sync_device_id'],Ids::v4(),'127.0.0.1');}catch(ApiException $e){$afs=$e->status;} $adminOwn=$svc->revoke($admin,$d1['sync_device_id'],Ids::v4(),'127.0.0.1'); $all=$svc->revokeAll($a,null,Ids::v4(),'127.0.0.1'); $r2a=$db->queryOne('SELECT status,token_version FROM sync_devices WHERE id = ?',[$d2['sync_device_id']]); $s2a=(int)$db->queryValue('SELECT COUNT(*) FROM auth_sessions WHERE sync_device_id = ? AND revoked_at IS NULL',[$d2['sync_device_id']]);",
+            "echo json_encode(['different_ids'=>$d1['sync_device_id']!==$d2['sync_device_id'],'owner1'=>$owner1,'owner2'=>$owner2,'s1b'=>$s1b,'one'=>$one,'r1'=>$r1,'r2b'=>$r2b,'s1a'=>$s1a,'fs'=>$fs,'fc'=>$fc,'afs'=>$afs,'adminOwn'=>$adminOwn,'all'=>$all,'r2a'=>$r2a,'s2a'=>$s2a]);",
         ])
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(source) + "\n")
@@ -160,6 +171,7 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
             "IRICA_DB_PORT": str(self.port),
             "IRICA_DEVICE_TEST_DB": self.db,
             "IRICA_DEVICE_TEST_TENANT": self.tenant,
+            "IRICA_DEVICE_TEST_TENANT_B": self.tenant_b,
             "IRICA_DEVICE_TEST_ADMIN": self.admin,
             "IRICA_DEVICE_TEST_USER_A": self.user_a,
             "IRICA_DEVICE_TEST_USER_B": self.user_b,
@@ -178,7 +190,8 @@ class DeviceAuthMariaDbTests(unittest.TestCase):
         self.assertEqual((r["r1"]["status"], int(r["r1"]["token_version"]), r["s1a"]), ("revoked", 2, 0))
         self.assertEqual((r["r2b"]["status"], int(r["r2b"]["token_version"])), ("active", 1))
         self.assertEqual((r["fs"], r["fc"]), (404, "NOT_FOUND"))
-        self.assertTrue(r["adminOther"]["changed"])
+        self.assertEqual(r["afs"], 404)
+        self.assertFalse(r["adminOwn"]["changed"])
         self.assertEqual((r["all"]["matched_devices"], r["all"]["revoked_devices"]), (2, 1))
         self.assertEqual((r["r2a"]["status"], int(r["r2a"]["token_version"]), r["s2a"]), ("revoked", 2, 0))
 

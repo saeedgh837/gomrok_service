@@ -41,6 +41,19 @@ final class LegacyApply
     public function decide(Principal $user, array $body, string $requestId,
                            string $ip): array
     {
+        return $this->decideUsing($user, $body, $requestId, $ip);
+    }
+
+    public function decideInTransaction(ProvisionImportContext $user, array $body,
+                                         string $requestId, string $ip): array
+    {
+        $user->requireBound($this->db, $body['job_id'] ?? null, true);
+        return $this->decideUsing($user, $body, $requestId, $ip);
+    }
+
+    private function decideUsing(Principal|ProvisionImportContext $user, array $body,
+                                  string $requestId, string $ip): array
+    {
         $this->requireAdmin($user);
         $jobId = $body['job_id'] ?? null;
         $recordId = $body['record_id'] ?? null;
@@ -101,19 +114,20 @@ final class LegacyApply
         }
 
         $now = gmdate('Y-m-d H:i:s');
-        $this->db->transaction(function (Database $tx) use (
+        $persist = function (Database $tx) use (
             $user, $jobId, $recordId, $resolution, $targetId, $now
         ): void {
             $tx->execute(
                 'INSERT INTO legacy_import_decisions '
                 . '(id,tenant_id,job_id,record_id,resolution,target_id,'
-                . 'decided_by,decided_at) VALUES (?,?,?,?,?,?,?,?) '
+                . 'decided_by,decided_by_operator,decided_at) VALUES (?,?,?,?,?,?,?,?,?) '
                 . 'ON DUPLICATE KEY UPDATE resolution=VALUES(resolution), '
                 . 'target_id=VALUES(target_id), decided_by=VALUES(decided_by), '
-                . 'decided_at=VALUES(decided_at)',
+                . 'decided_by_operator=VALUES(decided_by_operator), decided_at=VALUES(decided_at)',
                 [
                     Ids::v4(), $user->tenantId, $jobId, $recordId,
-                    $resolution, $targetId, $user->userId, $now,
+                    $resolution, $targetId, $user instanceof ProvisionImportContext ? null : $user->userId,
+                    $user instanceof ProvisionImportContext ? $user->operatorId() : null, $now,
                 ]
             );
             $unresolved = (int) ($tx->queryValue(
@@ -131,13 +145,19 @@ final class LegacyApply
                 [$unresolved === 0 ? 'ready' : 'review', $now,
                  $jobId, $user->tenantId]
             );
-        });
+        };
+        if ($user instanceof ProvisionImportContext) {
+            $persist($this->db);
+        } else {
+            $this->db->transaction($persist);
+        }
 
         $this->log->audit($this->db, [
             'tenant_id' => $user->tenantId,
             'action' => 'legacy_import.decision',
-            'actor_type' => 'user',
-            'actor_user_id' => $user->userId,
+            'actor_type' => $user instanceof ProvisionImportContext ? 'operator' : 'user',
+            'actor_user_id' => $user instanceof ProvisionImportContext ? null : $user->userId,
+            ...($user instanceof ProvisionImportContext ? ['actor_operator_id' => $user->operatorId()] : []),
             'entity' => 'tenant_state',
             'entity_id' => $user->tenantId,
             'request_id' => $requestId,
@@ -158,9 +178,12 @@ final class LegacyApply
      *
      * @return array<string, mixed>
      */
-    public function review(Principal $user, string $jobId): array
+    public function review(Principal|ProvisionImportContext $user, string $jobId): array
     {
         $this->requireAdmin($user);
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db, $jobId);
+        }
         if (!Ids::isUuid($jobId)) {
             throw new ApiException(400, Codes::BAD_PAYLOAD, 'job_id must be a UUID');
         }
@@ -241,10 +264,25 @@ final class LegacyApply
             throw new ApiException(400, Codes::BAD_PAYLOAD, 'job_id must be a UUID');
         }
         $this->ensureTenantState($user->tenantId);
+        $result = $this->db->transaction(fn(Database $tx): array =>
+            $this->applyRows($tx, $user, $jobId, $requestId));
+        $this->auditApplied($user, $jobId, $requestId, $ip, $result);
+        return $result;
+    }
 
-        $result = $this->db->transaction(function (Database $tx) use (
-            $user, $jobId, $requestId
-        ): array {
+    public function applyInTransaction(ProvisionImportContext $user, string $jobId,
+                                        string $requestId, string $ip): array
+    {
+        $user->requireBound($this->db, $jobId, true);
+        $this->ensureTenantState($user->tenantId);
+        $result = $this->applyRows($this->db, $user, $jobId, $requestId);
+        $this->auditApplied($user, $jobId, $requestId, $ip, $result);
+        return $result;
+    }
+
+    private function applyRows(Database $tx, Principal|ProvisionImportContext $user,
+                                 string $jobId, string $requestId): array
+    {
             $job = $tx->queryOne(
                 'SELECT * FROM legacy_import_jobs WHERE id=? AND tenant_id=? FOR UPDATE',
                 [$jobId, $user->tenantId]
@@ -481,8 +519,11 @@ final class LegacyApply
                 'counts' => $counts,
                 'replayed' => false,
             ];
-        });
+    }
 
+    private function auditApplied(Principal|ProvisionImportContext $user, string $jobId,
+                                    string $requestId, string $ip, array $result): void
+    {
         $this->log->line([
             'request_id' => $requestId,
             'action' => 'legacy_import.apply',
@@ -492,8 +533,9 @@ final class LegacyApply
         $this->log->audit($this->db, [
             'tenant_id' => $user->tenantId,
             'action' => 'legacy_import.apply',
-            'actor_type' => 'user',
-            'actor_user_id' => $user->userId,
+            'actor_type' => $user instanceof ProvisionImportContext ? 'operator' : 'user',
+            'actor_user_id' => $user instanceof ProvisionImportContext ? null : $user->userId,
+            ...($user instanceof ProvisionImportContext ? ['actor_operator_id' => $user->operatorId()] : []),
             'entity' => 'tenant_state',
             'entity_id' => $user->tenantId,
             'request_id' => $requestId,
@@ -507,7 +549,6 @@ final class LegacyApply
                 'rejected' => (int) (($result['counts']['rejected'] ?? 0)),
             ],
         ]);
-        return $result;
     }
 
     /** @return array<string,mixed> */
@@ -524,8 +565,12 @@ final class LegacyApply
         return $row;
     }
 
-    private function requireAdmin(Principal $user): void
+    private function requireAdmin(Principal|ProvisionImportContext $user): void
     {
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db);
+            return;
+        }
         if (!$user->isUser()) {
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'legacy migration requires a user session');
@@ -588,7 +633,7 @@ final class LegacyApply
     }
 
     /** @param array<string,mixed> $record @param array<string,string> $sourceMap */
-    private function createRecord(Database $tx, Principal $user, string $jobId,
+    private function createRecord(Database $tx, Principal|ProvisionImportContext $user, string $jobId,
                                   string $datasetSource, string $entity,
                                   string $sourceKey, array $record,
                                   array $sourceMap, string $requestId,
@@ -617,7 +662,7 @@ final class LegacyApply
     }
 
     /** @param array<string,mixed> $record @param array<string,string> $sourceMap */
-    private function mergeRecord(Database $tx, Principal $user, string $jobId,
+    private function mergeRecord(Database $tx, Principal|ProvisionImportContext $user, string $jobId,
                                  string $entity, string $targetId, array $record,
                                  array $sourceMap, string $requestId,
                                  string $now): void
@@ -674,7 +719,7 @@ final class LegacyApply
     }
 
     /** @param array<string,mixed> $record @param array<string,string> $sourceMap */
-    private function createTransaction(Database $tx, Principal $user,
+    private function createTransaction(Database $tx, Principal|ProvisionImportContext $user,
                                        string $jobId, string $datasetSource,
                                        array $record, array $sourceMap,
                                        string $requestId, string $now): string
@@ -810,7 +855,7 @@ final class LegacyApply
             'could not allocate a legacy-compatible row identity');
     }
 
-    private function change(Database $tx, Principal $user, string $jobId,
+    private function change(Database $tx, Principal|ProvisionImportContext $user, string $jobId,
                             string $entity, string $id, int $version,
                             string $now): void
     {
@@ -820,8 +865,9 @@ final class LegacyApply
             'id' => $id,
             'row_version' => $version,
             'action' => 'upsert',
-            'actor_type' => 'user',
-            'actor_user_id' => $user->userId,
+            'actor_type' => $user instanceof ProvisionImportContext ? 'operator' : 'user',
+            'actor_user_id' => $user instanceof ProvisionImportContext ? null : $user->userId,
+            ...($user instanceof ProvisionImportContext ? ['actor_operator_id' => $user->operatorId()] : []),
             'actor_device_id' => null,
             'operation_id' => $jobId,
             'changed_at' => $now,

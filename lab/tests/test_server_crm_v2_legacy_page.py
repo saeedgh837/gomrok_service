@@ -72,6 +72,35 @@ class LegacyMigrationPageStaticTests(unittest.TestCase):
         for selector in (".table-wrap", ".decision-controls", ".count-grid", "@media"):
             self.assertIn(selector, self.css)
 
+    def test_operator_provisioning_workflow_markup_and_attributes(self):
+        self.assertIn("workflow-tab", self.page)
+        self.assertIn("operator-login-form", self.page)
+        self.assertIn("operator-provision-fields", self.page)
+        self.assertIn('autocomplete="section-operator username"', self.page)
+        self.assertIn('autocomplete="section-operator current-password"', self.page)
+        self.assertIn('autocomplete="section-customer username"', self.page)
+        self.assertIn('autocomplete="section-customer new-password"', self.page)
+        self.assertIn('id="cust-username"', self.page)
+        self.assertIn('id="cust-password"', self.page)
+        self.assertIn('id="cust-password-confirm"', self.page)
+
+    def test_operator_provisioning_endpoints_and_lifecycle_in_js(self):
+        for route in (
+            "/operator/auth/login", "/operator/auth/logout",
+            "/operator/provision/analyze", "/operator/provision/review",
+            "/operator/provision/decision", "/operator/provision/apply",
+            "/operator/provision/cancel",
+        ):
+            self.assertIn(route, self.js)
+        self.assertIn("crypto.randomUUID()", self.js)
+        self.assertIn('byId("cust-password").value = ""', self.js)
+        self.assertIn('byId("cust-password-confirm").value = ""', self.js)
+        self.assertIn('byId("operator-password").value = ""', self.js)
+
+    def test_operator_styles_cover_workflow_switch_and_results(self):
+        for selector in (".workflow-tabs", ".tab-button", ".provision-result", ".connection-guide"):
+            self.assertIn(selector, self.css)
+
 
 class LegacyMigrationPageHttpTests(unittest.TestCase):
     @classmethod
@@ -120,6 +149,7 @@ class LegacyMigrationPageHttpTests(unittest.TestCase):
         source = """<?php
 return [
   'base_path' => '/v1',
+  'allow_loopback_http' => true,
   'legacy_import_enabled' => %s,
   'db' => ['host'=>'127.0.0.1','port'=>3306,'dbname'=>'unit_db','user'=>'unit_user','password'=>'unit_password'],
   'jwt_secret' => '%s',
@@ -193,6 +223,15 @@ return [
             status, _headers, body = self._request(path)
             self.assertEqual(status, 200)
             self.assertIn(marker, body)
+
+    def test_enabled_page_includes_operator_provisioning_surface_and_clean_passwords(self):
+        self._write_config(True)
+        status, headers, body = self._request("/legacy-import.php")
+        self.assertEqual(status, 200)
+        self.assertIn("Platform Operator", body)
+        self.assertIn("New private account", body)
+        self.assertIn('name="cust_username"', body)
+        self.assertNotIn('value="', body.split('name="cust_password"')[1].split('>')[0])
 
 
 if __name__ == "__main__":

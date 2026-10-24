@@ -57,9 +57,6 @@ final class Auth
     private readonly Tokens $tokens;
     private readonly RateLimit $rateLimit;
 
-    /** @var array<string, mixed>|null */
-    private ?array $tenantRow = null;
-
     /** A pre-computed Argon2id hash used only to equalise a failed lookup. */
     private static ?string $decoyHash = null;
 
@@ -102,44 +99,6 @@ final class Auth
         return [$idle, max($idle, $absolute)];
     }
 
-    private function tenantSlug(): string
-    {
-        $slug = $this->cfg['tenant_slug'] ?? 'default';
-        return is_string($slug) && $slug !== '' ? $slug : 'default';
-    }
-
-    /**
-     * The single shared tenant (spec §7).
-     *
-     * @throws ApiException 500 CONFIG_INVALID when it has not been created yet
-     * @return array<string, mixed>
-     */
-    public function tenant(): array
-    {
-        if ($this->tenantRow !== null) {
-            return $this->tenantRow;
-        }
-        $row = $this->db->queryOne(
-            'SELECT id, slug, name, status FROM tenants WHERE slug = ?',
-            [$this->tenantSlug()]
-        );
-        if ($row === null) {
-            throw new ApiException(500, Codes::CONFIG_INVALID,
-                'the tenant does not exist — run bin/create-admin.php first');
-        }
-        if (($row['status'] ?? '') !== 'active') {
-            throw new ApiException(403, Codes::PERMISSION_DENIED,
-                'the tenant is suspended');
-        }
-        $this->tenantRow = $row;
-        return $row;
-    }
-
-    public function tenantId(): string
-    {
-        return (string) $this->tenant()['id'];
-    }
-
     // ------------------------------------------------------------------
     // Passwords (spec §10.4)
     // ------------------------------------------------------------------
@@ -156,12 +115,30 @@ final class Auth
 
     public static function hashPassword(string $password): string
     {
-        $hash = password_hash($password, self::passwordAlgo());
+        $algorithm = self::passwordAlgo();
+        if (strlen($password) < 12 || strlen($password) > 4096
+            || str_contains($password, "\0")
+            || ($algorithm === PASSWORD_BCRYPT && strlen($password) > 72)) {
+            throw new ApiException(400, Codes::BAD_PAYLOAD,
+                'password must contain at least 12 bytes within the hash limit, without null bytes');
+        }
+        $hash = password_hash($password, $algorithm);
         if (!is_string($hash) || $hash === '') {
             throw new ApiException(500, Codes::SERVER_ERROR,
                 'password hashing is unavailable on this PHP build');
         }
         return $hash;
+    }
+
+    /** Reject bcrypt's silently ignored suffix, including on Argon2-capable hosts. */
+    public static function verifyPassword(string $password, string $hash): bool
+    {
+        if ($password === '' || strlen($password) > 4096 || str_contains($password, "\0")
+            || ((password_get_info($hash)['algoName'] ?? '') === 'bcrypt'
+                && strlen($password) > 72)) {
+            return false;
+        }
+        return password_verify($password, $hash);
     }
 
     /**
@@ -190,7 +167,7 @@ final class Auth
     public function login(array $body, string $ip, string $requestId): array
     {
         $username = isset($body['username']) && is_string($body['username'])
-            ? substr(trim($body['username']), 0, 64) : '';
+            ? strtolower(trim($body['username'])) : '';
         $password = isset($body['password']) && is_string($body['password'])
             ? $body['password'] : '';
         if ($username === '' || $password === '' || strlen($password) > 4096) {
@@ -201,18 +178,13 @@ final class Auth
         $now = gmdate('Y-m-d H:i:s');
         $this->rateLimit->check($this->db, $username, $ip, $now);
 
-        $tenant = $this->tenant();
-        $user = $this->db->queryOne(
-            'SELECT id, username, password_hash, display_name,'
-            . ' must_change_password, status, token_version'
-            . ' FROM users WHERE tenant_id = ? AND username = ?'
-            . ' AND deleted_at IS NULL LIMIT 2',
-            [$tenant['id'], $username]
-        );
+        $user = Workspace::resolveLoginName($this->db, $username);
+        $tenantId = $user !== null
+            ? (string) $user['tenant_id'] : Workspace::PLATFORM_TENANT;
 
         $ok = false;
         if ($user !== null && ($user['status'] ?? '') === 'active') {
-            $ok = password_verify($password, (string) $user['password_hash']);
+            $ok = self::verifyPassword($password, (string) $user['password_hash']);
         } else {
             // Same work as a real verification, so a miss is not a probe.
             password_verify($password, self::decoy());
@@ -225,15 +197,15 @@ final class Auth
         }
 
         if (!$ok || $user === null) {
-            $this->rateLimit->record($this->db, $tenant['id'], $username, $ip,
+            $this->rateLimit->record($this->db, $tenantId, $username, $ip,
                 'failure', $now);
             $this->log->line([
                 'request_id' => $requestId, 'action' => 'auth.login',
                 'outcome' => 'failure', 'code' => Codes::AUTH_REQUIRED,
-                'tenant_id' => (string) $tenant['id'],
+                'tenant_id' => (string) $tenantId,
             ]);
             $this->log->audit($this->db, [
-                'tenant_id' => (string) $tenant['id'],
+                'tenant_id' => (string) $tenantId,
                 'action' => 'auth.login',
                 'actor_type' => 'user',
                 'actor_user_id' => $user !== null
@@ -247,17 +219,18 @@ final class Auth
                 'username or password is incorrect');
         }
 
-        $role = $this->roleOf($tenant['id'], (string) $user['id']);
+        $role = $this->roleOf($tenantId, (string) $user['id']);
         if ($role === '') {
-            $this->rateLimit->record($this->db, $tenant['id'], $username, $ip,
+            $this->rateLimit->record($this->db, $tenantId, $username, $ip,
                 'failure', $now);
             throw new ApiException(403, Codes::ROLE_FORBIDDEN,
                 'the account has no role in this tenant');
         }
 
-        $this->rateLimit->record($this->db, $tenant['id'], $username, $ip,
+        Workspace::requireActive($this->db, $tenantId, (string) $user['id']);
+        $this->rateLimit->record($this->db, $tenantId, $username, $ip,
             'success', $now);
-        $issued = $this->issue(Tokens::KIND_USER, $tenant['id'],
+        $issued = $this->issue(Tokens::KIND_USER, $tenantId,
             (string) $user['id'], null, (int) $user['token_version'], null);
 
         $this->db->execute(
@@ -267,11 +240,11 @@ final class Auth
 
         $this->log->line([
             'request_id' => $requestId, 'action' => 'auth.login',
-            'outcome' => 'success', 'tenant_id' => (string) $tenant['id'],
+            'outcome' => 'success', 'tenant_id' => (string) $tenantId,
             'user_id' => (string) $user['id'],
         ]);
         $this->log->audit($this->db, [
-            'tenant_id' => (string) $tenant['id'],
+            'tenant_id' => (string) $tenantId,
             'action' => 'auth.login',
             'actor_type' => 'user',
             'actor_user_id' => (string) $user['id'],
@@ -287,10 +260,12 @@ final class Auth
             'expires_in' => $issued['expires_in'],
             'must_change_password' => (int) $user['must_change_password'] === 1,
             'user' => [
+                'id' => (string) $user['id'],
                 'username' => (string) $user['username'],
                 'role' => $role,
             ],
-            'tenant_id' => (string) $tenant['id'],
+            'user_id' => (string) $user['id'],
+            'tenant_id' => $tenantId,
         ];
     }
 
@@ -317,21 +292,39 @@ final class Auth
                 'refresh_token and kind are required');
         }
         $hash = Tokens::hashOpaque($token);
-        $now = gmdate('Y-m-d H:i:s');
-        $nowEpoch = time();
+        // Resolve only an immutable lock target, never authority, outside the transaction.
+        $candidate = $this->db->queryOne(
+            'SELECT s.tenant_id, s.user_id, s.sync_device_id, w.owner_user_id'
+            . ' FROM auth_sessions s JOIN account_workspaces w ON w.tenant_id = s.tenant_id'
+            . ' WHERE s.token_hash = ? AND s.kind = ?', [$hash, $kind]
+        );
+        if ($candidate === null) {
+            throw new ApiException(401, Codes::AUTH_REQUIRED, 'refresh token is not recognised');
+        }
 
         try {
             $result = $this->db->transaction(function (\Database $tx) use (
-                $hash, $kind, $now, $nowEpoch
+                $hash, $kind, $candidate
             ): array {
+                // Password recovery and every issuer serialize on owner before session.
+                $owner = $tx->queryOne('SELECT id FROM users WHERE id = ? AND tenant_id = ? FOR UPDATE',
+                    [$candidate['owner_user_id'], $candidate['tenant_id']]);
+                if ($owner === null) {
+                    throw new ApiException(401, Codes::AUTH_REVOKED, 'the account is no longer available');
+                }
                 $row = $tx->queryOne(
                     'SELECT * FROM auth_sessions WHERE token_hash = ? FOR UPDATE',
                     [$hash]
                 );
-                if ($row === null || ($row['kind'] ?? '') !== $kind) {
+                if ($row === null || ($row['kind'] ?? '') !== $kind
+                    || $row['tenant_id'] !== $candidate['tenant_id']
+                    || $row['user_id'] !== $candidate['user_id']
+                    || $row['sync_device_id'] !== $candidate['sync_device_id']) {
                     throw new ApiException(401, Codes::AUTH_REQUIRED,
                         'refresh token is not recognised');
                 }
+                $now = gmdate('Y-m-d H:i:s');
+                $nowEpoch = time();
                 if ($row['revoked_at'] !== null) {
                     throw new ApiException(401, Codes::AUTH_REVOKED,
                         'the token family has been revoked');
@@ -406,7 +399,7 @@ final class Auth
             $this->db->execute(
                 'UPDATE auth_sessions SET revoked_at = ?, revoked_reason = ?'
                 . ' WHERE family_id = ? AND revoked_at IS NULL',
-                [$now, 'reuse_detected', (string) $result['family_id']]
+                [gmdate('Y-m-d H:i:s'), 'reuse_detected', (string) $result['family_id']]
             );
             $this->log->line([
                 'request_id' => $requestId, 'action' => 'auth.refresh',
@@ -467,7 +460,7 @@ final class Auth
     {
         if (($row['kind'] ?? '') === Tokens::KIND_DEVICE) {
             $device = $tx->queryOne(
-                'SELECT id, status, token_version, enrolled_by, deleted_at'
+                'SELECT id, status, token_version, enrolled_by, owner_user_id, deleted_at'
                 . ' FROM sync_devices WHERE id = ? AND tenant_id = ?',
                 [(string) $row['sync_device_id'], (string) $row['tenant_id']]
             );
@@ -479,6 +472,7 @@ final class Auth
                 throw new ApiException(401, Codes::AUTH_REVOKED,
                     'the device has been revoked');
             }
+            Workspace::requireDevice($tx, (string) $row['tenant_id'], $device);
             return [
                 'sub' => (string) $device['id'],
                 'user_id' => null,
@@ -496,6 +490,7 @@ final class Auth
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'the account is not active');
         }
+        Workspace::requireActive($tx, (string) $row['tenant_id'], (string) $user['id']);
         return [
             'sub' => (string) $user['id'],
             'user_id' => (string) $user['id'],
@@ -566,6 +561,7 @@ final class Auth
                 'a user access token is required to enrol a device');
         }
         Roles::requireEnroll($principal->role);
+        Workspace::requireActive($this->db, $principal->tenantId, $principal->userId);
 
         $name = isset($body['name']) && is_string($body['name'])
             ? substr(trim($body['name']), 0, 120) : '';
@@ -581,6 +577,8 @@ final class Auth
         $token = $this->db->transaction(function (\Database $tx) use (
             $deviceId, $familyId, $name, $principal, $now, $nowEpoch
         ): string {
+            Workspace::lockCredential($tx, $principal->tenantId, $principal->userId,
+                $principal->tokenVersion);
             $tx->insert('sync_devices', [
                 'id' => $deviceId,
                 'tenant_id' => $principal->tenantId,
@@ -649,7 +647,13 @@ final class Auth
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'a bearer access token is required');
         }
-        return $this->principalFor($jwt);
+        $principal = $this->principalFor($jwt);
+        if ($principal->isDevice()) {
+            // Validate the complete request identity before any bookkeeping write.
+            $this->actingUser($request, $principal);
+            $this->touchDevice($principal->deviceId);
+        }
+        return $principal;
     }
 
     /**
@@ -658,7 +662,7 @@ final class Auth
      *
      * @throws ApiException 401 when the header is present but unusable
      */
-    public function actingUser(Request $request): ?Principal
+    public function actingUser(Request $request, ?Principal $device = null): ?Principal
     {
         $jwt = $request->bearer('x-acting-user');
         if ($jwt === '') {
@@ -672,6 +676,9 @@ final class Auth
         if (!$principal->isUser()) {
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'the acting user credential must be a user access token');
+        }
+        if ($device !== null) {
+            Workspace::requireAgreement($device, $principal);
         }
         return $principal;
     }
@@ -719,7 +726,7 @@ final class Auth
 
         if ($kind === Tokens::KIND_DEVICE) {
             $device = $this->db->queryOne(
-                'SELECT id, status, token_version, enrolled_by, deleted_at'
+                'SELECT id, status, token_version, enrolled_by, owner_user_id, deleted_at'
                 . ' FROM sync_devices WHERE id = ? AND tenant_id = ?',
                 [(string) $claims['sub'], (string) $claims['tid']]
             );
@@ -741,16 +748,14 @@ final class Auth
                 throw new ApiException(401, Codes::AUTH_REQUIRED,
                     'access token does not belong to this device session');
             }
-            $role = $device['enrolled_by'] !== null
-                ? $this->roleOf((string) $claims['tid'], (string) $device['enrolled_by'])
-                : '';
-            $this->touchDevice((string) $device['id']);
+            $owner = Workspace::requireDevice($this->db, (string) $claims['tid'], $device);
+            $role = $this->roleOf((string) $claims['tid'], $owner);
             return new Principal(
                 Tokens::KIND_DEVICE,
                 (string) $device['id'],
                 (string) $claims['tid'],
                 $role,
-                $device['enrolled_by'] !== null ? (string) $device['enrolled_by'] : '',
+                $owner,
                 (string) $device['id'],
                 $sessionId,
                 (int) $device['token_version']
@@ -775,6 +780,7 @@ final class Auth
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'access token does not belong to this user session');
         }
+        Workspace::requireActive($this->db, (string) $claims['tid'], (string) $user['id']);
         return new Principal(
             Tokens::KIND_USER,
             (string) $user['id'],
@@ -842,8 +848,9 @@ final class Auth
         $nowEpoch = time();
         $issued = $this->db->transaction(function (\Database $tx) use (
             $kind, $tenantId, $subjectId, $deviceId, $idle, $absolute,
-            $nowEpoch, $familyId
+            $nowEpoch, $familyId, $tokenVersion
         ): array {
+            Workspace::lockCredential($tx, $tenantId, $subjectId, $tokenVersion);
             $session = $this->insertSession($tx, [
                 'tenant_id' => $tenantId,
                 'family_id' => $familyId ?? Ids::v4(),

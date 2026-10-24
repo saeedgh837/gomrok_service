@@ -32,8 +32,8 @@ define('HOST_ROOT', dirname(__DIR__));
 
 foreach ([
     'Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
-    'RateLimit', 'Auth', 'Devices', 'Sync', 'Import', 'Finance', 'Presence',
-    'LegacyImport', 'LegacyVerify', 'LegacyApply',
+    'RateLimit', 'Workspace', 'Auth', 'OperatorAuth', 'Devices', 'Sync', 'Import', 'Finance', 'Presence',
+    'LegacyImport', 'LegacyVerify', 'LegacyApply', 'ProvisionImportContext', 'AccountProvision',
 ] as $classFile) {
     require_once HOST_ROOT . '/src/' . $classFile . '.php';
 }
@@ -93,6 +93,14 @@ try {
         '/auth/login' => ['POST'],
         '/auth/refresh' => ['POST'],
         '/auth/logout' => ['POST'],
+        '/operator/auth/login' => ['POST'],
+        '/operator/auth/refresh' => ['POST'],
+        '/operator/auth/logout' => ['POST'],
+        '/operator/provision/analyze' => ['POST'],
+        '/operator/provision/review' => ['GET'],
+        '/operator/provision/decision' => ['POST'],
+        '/operator/provision/apply' => ['POST'],
+        '/operator/provision/cancel' => ['POST'],
         '/sync-devices/enroll' => ['POST'],
         '/sync-devices/self-enroll' => ['POST'],
         '/sync-devices/revoke' => ['POST'],
@@ -122,7 +130,9 @@ try {
         $request->header('x-forwarded-proto'),
         $request->remoteAddr,
         isset($_SERVER['HTTPS']) && is_string($_SERVER['HTTPS'])
-            ? $_SERVER['HTTPS'] : ''
+            ? $_SERVER['HTTPS'] : '',
+        is_array($config['trusted_proxies'] ?? null) ? $config['trusted_proxies'] : [],
+        ($config['allow_loopback_http'] ?? false) === true
     )) {
         throw new ApiException(403, Codes::HTTPS_REQUIRED,
             'this API is reachable only over HTTPS');
@@ -149,7 +159,7 @@ try {
     }
 
     $limitBody = (int) ($config['limits']['max_body_bytes'] ?? 1048576);
-    $largeBodyRoutes = ['/bootstrap/import', '/legacy-import/analyze'];
+    $largeBodyRoutes = ['/bootstrap/import', '/legacy-import/analyze', '/operator/provision/analyze'];
     if (!in_array($route, $largeBodyRoutes, true) && $request->rawBody !== ''
         && strlen($request->rawBody) > $limitBody) {
         throw new ApiException(413, Codes::PAYLOAD_TOO_LARGE,
@@ -163,6 +173,102 @@ try {
             $statusCode = 200;
             $errorCode = '';
             Response::ok(['time' => gmdate('Y-m-d\TH:i:s\Z')]);
+            break;
+
+        case '/operator/auth/login':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $payload = $operatorAuth->login($request->jsonBody(), $ip, $requestId);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/auth/refresh':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $payload = $operatorAuth->refresh($request->jsonBody(), $ip, $requestId);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/auth/logout':
+            $request->jsonBody(false);
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $payload = $operatorAuth->logout($operatorAuth->authenticate($request), $requestId, $ip);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/provision/analyze':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $operator = $operatorAuth->authenticate($request);
+            $accountProvision = new AccountProvision($db, $log, $config);
+            $payload = $accountProvision->analyze($operator, $request->jsonBody(), $requestId, $ip);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/provision/review':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $operator = $operatorAuth->authenticate($request);
+            $id = stringQuery($request, 'id');
+            $accountProvision = new AccountProvision($db, $log, $config);
+            $payload = $accountProvision->review($operator, $id);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/provision/decision':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $operator = $operatorAuth->authenticate($request);
+            $body = $request->jsonBody();
+            $id = $body['provision_id'] ?? ($request->query['id'] ?? null);
+            if (!is_string($id) || !Ids::isUuid($id)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD, 'provision_id must be a UUID');
+            }
+            unset($body['provision_id']);
+            $accountProvision = new AccountProvision($db, $log, $config);
+            $payload = $accountProvision->decide($operator, $id, $body, $requestId, $ip);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/provision/apply':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $operator = $operatorAuth->authenticate($request);
+            $body = $request->jsonBody();
+            $id = $body['provision_id'] ?? null;
+            $reviewSha = $body['review_sha256'] ?? null;
+            if (!is_string($id) || !Ids::isUuid($id)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD, 'provision_id must be a UUID');
+            }
+            if (!is_string($reviewSha)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD, 'review_sha256 is required');
+            }
+            $accountProvision = new AccountProvision($db, $log, $config);
+            $payload = $accountProvision->apply($operator, $id, $reviewSha, $requestId, $ip);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
+            break;
+
+        case '/operator/provision/cancel':
+            $operatorAuth = new OperatorAuth($db, $log, $config);
+            $operator = $operatorAuth->authenticate($request);
+            $body = $request->jsonBody();
+            $id = $body['provision_id'] ?? null;
+            if (!is_string($id) || !Ids::isUuid($id)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD, 'provision_id must be a UUID');
+            }
+            $accountProvision = new AccountProvision($db, $log, $config);
+            $payload = $accountProvision->cancel($operator, $id, $requestId, $ip);
+            $statusCode = 200;
+            $errorCode = '';
+            Response::ok($payload);
             break;
 
         case '/auth/login':
@@ -267,7 +373,7 @@ try {
         case '/sync/mutations':
             $device = requireDevice($auth, $request);
             $body = $request->jsonBody();
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             $context = [
                 'device' => $device,
                 'user' => $acting,
@@ -291,7 +397,7 @@ try {
         case '/presence/heartbeat':
             $device = requireDevice($auth, $request);
             $body = $request->jsonBody();
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             if ($acting === null) {
                 throw new ApiException(401, Codes::AUTH_REQUIRED,
                     'an acting user token is required for presence');
@@ -305,7 +411,7 @@ try {
         case '/presence/close':
             $device = requireDevice($auth, $request);
             $body = $request->jsonBody();
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             if ($acting === null) {
                 throw new ApiException(401, Codes::AUTH_REQUIRED,
                     'an acting user token is required for presence');
@@ -319,7 +425,7 @@ try {
         case '/finance/transactions/append':
             $device = requireDevice($auth, $request);
             $body = $request->jsonBody();
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             $context = [
                 'device' => $device,
                 'user' => $acting,
@@ -336,7 +442,7 @@ try {
         case '/finance/transactions/void':
             $device = requireDevice($auth, $request);
             $body = $request->jsonBody();
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             $context = [
                 'device' => $device,
                 'user' => $acting,
@@ -413,7 +519,7 @@ try {
 
         case '/bootstrap/import':
             $device = requireDevice($auth, $request);
-            $acting = $auth->actingUser($request);
+            $acting = $auth->actingUser($request, $device);
             if ($acting === null) {
                 throw new ApiException(401, Codes::AUTH_REQUIRED,
                     'an import requires a user access token in X-Acting-User');
@@ -426,19 +532,10 @@ try {
             break;
 
         case '/admin/backup':
-            $device = requireDevice($auth, $request);
-            $acting = $auth->actingUser($request);
-            if ($acting === null) {
-                throw new ApiException(401, Codes::AUTH_REQUIRED,
-                    'backup requires a user access token in X-Acting-User');
-            }
-            Roles::requireAdmin($acting->role);
-            require_once dirname(__DIR__) . '/bin/backup-to-telegram.php';
-            $backupResult = run_database_backup($db, $config);
-            $statusCode = 200;
-            $errorCode = '';
-            Response::ok($backupResult);
-            break;
+            // Whole-database delivery is not a customer capability. Keep closed
+            // until the independent platform-operator boundary is available.
+            throw new ApiException(403, Codes::PERMISSION_DENIED,
+                'database backup requires platform operator authority');
 
         default:
             throw new ApiException(404, Codes::HTTP_404, 'no such endpoint');

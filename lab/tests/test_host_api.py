@@ -46,6 +46,8 @@ config file outside the repository, and redacted from every assertion message.
 Nothing is written to %LOCALAPPDATA%\\irica\\.
 """
 import atexit
+from contextlib import contextmanager
+import http.cookiejar
 import json
 import os
 import re
@@ -58,6 +60,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -118,6 +121,9 @@ def _find_mariadb():
     local = os.path.join(ROOT, MARIADB_RELATIVE)
     if os.path.isfile(local):
         return local
+    worktree_parent = os.path.abspath(os.path.join(ROOT, "..", "..", "..", MARIADB_RELATIVE))
+    if os.path.isfile(worktree_parent):
+        return worktree_parent
     for name in ("mariadb.exe", "mariadb", "mysql"):
         found = shutil.which(name)
         if found:
@@ -358,6 +364,15 @@ def _enroll(role="admin"):
     return refreshed["access_token"], enrolled["sync_device_id"]
 
 
+def _own_device(user_token):
+    """A device enrolled by the same private owner as its acting credential."""
+    enrolled, _headers = _ok("POST", "/sync-devices/self-enroll", {},
+                             token=user_token)
+    refreshed, _headers = _ok("POST", "/auth/refresh", {
+        "refresh_token": enrolled["device_refresh_token"], "kind": "device"})
+    return refreshed["access_token"]
+
+
 def _user_token():
     return _login(_state["user_user"], _state["user_password"])["access_token"]
 
@@ -378,6 +393,7 @@ def _write_config(directory, app_password, admin_password):
 return [
     'env' => 'test',
     'base_path' => '/v1',
+    'allow_loopback_http' => true,
     'tenant_slug' => 'default',
     'db' => [
         'host' => '127.0.0.1',
@@ -500,12 +516,56 @@ def _provision():
         raise AssertionError("create-user re-printed a supplied password")
 
     _state["tenant_id"] = _sql_value(
-        "SELECT id FROM tenants WHERE slug = 'default';")
+        "SELECT u.tenant_id FROM login_names n JOIN users u ON u.id=n.user_id"
+        " WHERE n.canonical='admin' AND n.state='active';")
+    _state["member_tenant_id"] = _sql_value(
+        "SELECT u.tenant_id FROM login_names n JOIN users u ON u.id=n.user_id"
+        " WHERE n.canonical='member' AND n.state='active';")
     _state["admin_user"] = "admin"
     _state["user_user"] = "member"
     _state["device_token"] = None
     _state["device_refresh"] = None
     _state["device_id"] = None
+
+
+@contextmanager
+def _setup_window():
+    """An empty disposable schema, never the API fixture's existing accounts."""
+    path = _state["config_path"]
+    with open(path, encoding="utf-8") as handle:
+        original = handle.read()
+    scratch = "irica_setup_" + uuid.uuid4().hex[:12]
+    key = secrets.token_hex(32)
+    _passwords.add(key)
+    account_host = os.environ.get("IRICA_TEST_DB_ACCOUNT_HOST", "127.0.0.1")
+    _run_sql("CREATE DATABASE `%s` DEFAULT CHARACTER SET utf8mb4;" % scratch)
+    try:
+        _run_sql("GRANT SELECT, INSERT, UPDATE, DELETE ON `%s`.* TO '%s'@'%s';"
+                 % (scratch, API_USER, account_host))
+        enabled = original.replace(API_DB, scratch).replace(
+            "'legacy_import_enabled' => false,",
+            "'legacy_import_enabled' => false,\n"
+            "    'operator_bootstrap_enabled' => true,\n"
+            "    'setup_key' => '%s'," % key)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(enabled)
+        yield key, enabled
+    finally:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(original)
+        _run_sql("DROP DATABASE IF EXISTS `%s`;" % scratch)
+
+
+def _setup_call(opener, fields=None, query="", method=None):
+    url = _state["base_url"].removesuffix("/v1") + "/setup.php" + query
+    data = None if fields is None else urllib.parse.urlencode(fields).encode()
+    request = urllib.request.Request(url, data=data, method=method)
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.code, dict(response.headers), response.read().decode("utf-8", "replace")
 
 
 def _run_bin(name, args=None, env=None, expect_ok=True, config=None):
@@ -731,7 +791,7 @@ class HostApiTest(unittest.TestCase):
         self._clean_dataset()
 
     def _clean_dataset(self):
-        """Put the shared tenant back to an empty, never-imported state.
+        """Put the fixture's private workspaces back to an empty state.
 
         Spec §8 makes `/bootstrap/import` legal only while the tenant holds
         no business rows, so the import cases need a fixture-level reset of
@@ -746,7 +806,9 @@ class HostApiTest(unittest.TestCase):
                   "change_log", "idempotency_keys")
         statements = ["SET FOREIGN_KEY_CHECKS = 0;"]
         statements += ["DELETE FROM `%s`.`%s` WHERE tenant_id = '%s';"
-                       % (API_DB, table, tenant) for table in tables]
+                       % (API_DB, table, account)
+                       for account in (tenant, _state["member_tenant_id"])
+                       for table in tables]
         statements.append(
             "UPDATE `%s`.tenant_state SET bootstrap_status = 'pending',"
             " dataset_epoch = 0, last_import_id = NULL,"
@@ -772,6 +834,70 @@ class HostApiTest(unittest.TestCase):
         }
 
     # -- §6: envelope, health, errors -----------------------------------
+
+    def test_operator_http_routes_enforce_reciprocal_realms_and_live_sessions(self):
+        # Routing to customer Auth or accepting customer tokens must break this proof.
+        name = "http-op-" + uuid.uuid4().hex[:12]
+        _run_bin("create-operator.php", args=["--username=" + name],
+                 env={"IRICA_OPERATOR_PASSWORD": _state["admin_password"]})
+        body = {"username": name, "password": _state["admin_password"]}
+        session, headers = _ok("POST", "/operator/auth/login", body)
+        self.assertIn("no-store", headers.get("Cache-Control", ""))
+        self.assertIn("operator_id", session)
+        self.assertNotIn("tenant_id", session)
+        self.assertNotIn("Set-Cookie", headers)
+        user = _login(_state["admin_user"], _state["admin_password"])
+        device = _device_token()
+        for token in (user["access_token"], device):
+            status, _error, _headers, _payload = _fail(
+                "POST", "/operator/auth/logout", {}, token=token)
+            self.assertEqual(status, 401)
+        for route in ("/auth/logout", "/sync-devices/enroll", "/sync/mutations"):
+            status, _error, _headers, _payload = _fail(
+                "POST", route, {}, token=session["access_token"])
+            self.assertEqual(status, 401)
+        for route, token in (("/operator/auth/refresh", user["refresh_token"]),
+                             ("/auth/refresh", session["refresh_token"])):
+            status, _error, _headers, _payload = _fail(
+                "POST", route, {"kind": "user", "refresh_token": token})
+            self.assertEqual(status, 401)
+        rotated, _headers = _ok("POST", "/operator/auth/refresh",
+                                {"refresh_token": session["refresh_token"]})
+        self.assertNotEqual(rotated["refresh_token"], session["refresh_token"])
+        status, _error, _headers, _payload = _fail(
+            "POST", "/operator/auth/refresh", {"refresh_token": session["refresh_token"]})
+        self.assertEqual(status, 401)
+        status, _error, _headers, _payload = _fail(
+            "POST", "/operator/auth/logout", {}, token=rotated["access_token"])
+        self.assertEqual(status, 401)
+        fresh, _headers = _ok("POST", "/operator/auth/login", body)
+        _ok("POST", "/operator/auth/logout", {}, token=fresh["access_token"])
+        status, _error, _headers, _payload = _fail(
+            "POST", "/operator/auth/refresh", {"refresh_token": fresh["refresh_token"]})
+        self.assertEqual(status, 401)
+        status, _error, _headers, _payload = _fail("GET", "/operator/auth/login")
+        self.assertEqual(status, 405)
+        status, _error, _headers, _payload = _fail("POST", "/operator/auth/login", {})
+        self.assertEqual(status, 400)
+
+    def test_operator_http_login_does_not_depend_on_customer_workspace_activation(self):
+        # Customer-workspace lookup must never decide independent operator authority.
+        name = _state["admin_user"]
+        _run_bin("create-operator.php", args=["--username=" + name],
+                 env={"IRICA_OPERATOR_PASSWORD": _state["admin_password"]})
+        _run_sql("UPDATE `%s`.account_workspaces SET state='pending' WHERE tenant_id='%s';"
+                 % (API_DB, _state["tenant_id"]))
+        try:
+            session, _headers = _ok("POST", "/operator/auth/login", {
+                "username": name, "password": _state["admin_password"]})
+            self.assertIn("operator_id", session)
+            status, _error, _headers, _payload = _fail("POST", "/auth/login", {
+                "username": name, "password": _state["admin_password"]})
+            self.assertIn(status, (401, 403))
+            _ok("POST", "/operator/auth/logout", {}, token=session["access_token"])
+        finally:
+            _run_sql("UPDATE `%s`.account_workspaces SET state='active' WHERE tenant_id='%s';"
+                     % (API_DB, _state["tenant_id"]))
 
     def test_health_live_is_liveness_only(self):
         status, payload, headers, text = _call("GET", "/health/live")
@@ -830,26 +956,164 @@ class HostApiTest(unittest.TestCase):
             self.assertEqual(value, _uuid5(entity, legacy),
                              "php and python disagree on uuid5 for %s" % entity)
 
-    def test_https_gate_is_a_pure_function_of_header_and_address(self):
+    def test_https_gate_requires_a_valid_address_and_explicit_proxy_trust(self):
         cases = [
-            (["https", "203.0.113.9", ""], True),
-            (["", "203.0.113.9", ""], False),
-            (["http", "203.0.113.9", ""], False),
-            (["HTTPS", "203.0.113.9", ""], True),
-            (["", "127.0.0.1", ""], True),
-            (["", "127.4.5.6", ""], True),
-            (["", "::1", ""], True),
-            (["", "203.0.113.9", "on"], True),
-            (["", "10.1.2.3", ""], False),
+            (["https", "203.0.113.9", "", []], False),
+            (["", "203.0.113.9", "", []], False),
+            (["HTTPS", "203.0.113.9", "", ["203.0.113.9"]], True),
+            (["https,http", "203.0.113.9", "", ["203.0.113.9"]], False),
+            (["https", "203.0.113.9", "", ["203.0.113.8"]], False),
+            (["https", "2001:db8::1", "", ["2001:0db8:0:0:0:0:0:1"]], True),
+            (["", "127.0.0.1", "", []], False),
+            (["", "127.4.5.6", "", [], True], True),
+            (["", "::1", "", [], True], True),
+            (["http", "127.0.0.1", "", ["127.0.0.1"], True], False),
+            (["", "127.0.0.1", "", ["127.0.0.1"], True], False),
+            (["", "::ffff:127.4.5.6", "", [], True], True),
+            (["", "127.attacker.invalid", "", []], False),
+            (["", "::ffff:127.invalid", "", []], False),
+            (["", "203.0.113.9", "on", []], True),
+            (["", "10.1.2.3", "", []], False),
         ]
         script = ("echo json_encode(array_map(function ($c) {"
-                  " return Request::isSecureTransport($c[0], $c[1], $c[2]); },"
+                  " return Request::isSecureTransport($c[0], $c[1], $c[2], $c[3], $c[4] ?? false); },"
                   " %s));" % json.dumps([list(c) for c, _ in cases]))
         produced = _php_json(script)
         for (args, expected), actual in zip(cases, produced):
             self.assertEqual(actual, expected,
                              "isSecureTransport%s should be %s"
                              % (tuple(args), expected))
+
+    def test_setup_migration_refuses_untracked_schema_and_checksum_drift(self):
+        with _setup_window() as (key, _enabled):
+            browser = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            _status, _headers, html = _setup_call(browser)
+            csrf = re.search(r'name="csrf" value="([a-f0-9]{64})"', html).group(1)
+            fields = {"key": key, "csrf": csrf, "action": "migrate"}
+            schema = _php_json("$db=Database::fromConfig(Config::db()); echo json_encode($db->queryValue('SELECT DATABASE()'));")
+            _run_sql("CREATE TABLE `%s`.untracked_fixture (id INT PRIMARY KEY);" % schema)
+            status, _h, _html = _setup_call(browser, fields)
+            self.assertEqual(status, 503)
+            _run_sql("DROP TABLE `%s`.untracked_fixture;" % schema)
+            status, _h, html = _setup_call(browser, fields)
+            self.assertEqual(status, 200)
+            columns = _php_json("$db=Database::fromConfig(Config::db());"
+                                "echo json_encode(array_column($db->query('SHOW COLUMNS FROM schema_migrations'),'Field'));")
+            self.assertEqual(set(columns), {"version", "description", "checksum", "applied_at", "applied_by"})
+            fields["csrf"] = re.search(r'name="csrf" value="([a-f0-9]{64})"', html).group(1)
+            _php("$db=Database::fromConfig(Config::db());"
+                 "$db->execute(\"UPDATE schema_migrations SET checksum=REPEAT('0',64) WHERE version='001_initial'\");")
+            status, _h, html = _setup_call(browser, fields)
+            self.assertEqual(status, 503)
+            self.assertIn("migration integrity", html)
+            self.assertFalse(key in html, "migration errors must not expose the setup secret")
+
+    def test_setup_requires_literal_flag_well_formed_secret_and_bounded_scalar_inputs(self):
+        with _setup_window() as (key, enabled):
+            browser = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            for replacement in ("false", "'true'", "null"):
+                with open(_state["config_path"], "w", encoding="utf-8") as handle:
+                    handle.write(enabled.replace("'operator_bootstrap_enabled' => true",
+                                                 "'operator_bootstrap_enabled' => " + replacement))
+                status, headers, _html = _setup_call(browser)
+                self.assertEqual(status, 404)
+                self.assertNotIn("Set-Cookie", headers)
+            with open(_state["config_path"], "w", encoding="utf-8") as handle:
+                handle.write(enabled.replace("'setup_key' => '%s'" % key, "'setup_key' => null"))
+            status, headers, _html = _setup_call(browser)
+            self.assertEqual(status, 403)
+            self.assertNotIn("Set-Cookie", headers)
+            with open(_state["config_path"], "w", encoding="utf-8") as handle:
+                handle.write(enabled)
+            _s, _h, html = _setup_call(browser)
+            csrf = re.search(r'name="csrf" value="([a-f0-9]{64})"', html).group(1)
+            base = {"key": key, "csrf": csrf, "action": "create_operator"}
+            for extra, expected in (({"key[]": key, "key": ""}, 403),
+                                    ({"username[]": "operator"}, 400),
+                                    ({"padding": "x" * 17000}, 413)):
+                status, _h, _html = _setup_call(browser, dict(base, **extra))
+                self.assertEqual(status, expected)
+
+    def test_setup_is_hidden_without_an_explicit_window(self):
+        status, headers, html = _setup_call(urllib.request.build_opener())
+        self.assertEqual(status, 404)
+        self.assertNotIn('name="password"', html)
+        self.assertIn("no-store", headers.get("Cache-Control", ""))
+
+    def test_setup_bootstraps_once_with_post_secret_csrf_and_no_customer_promotion(self):
+        with _setup_window() as (key, enabled):
+            jar = http.cookiejar.CookieJar()
+            browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            status, headers, html = _setup_call(browser)
+            self.assertEqual(status, 200)
+            self.assertIn("no-store", headers.get("Cache-Control", ""))
+            self.assertIn("frame-ancestors 'none'", headers.get("Content-Security-Policy", ""))
+            self.assertFalse(key in html, "the setup secret must never be rendered")
+            self.assertNotIn("create_admin", html)
+            self.assertNotIn("create_user", html)
+            csrf = re.search(r'name="csrf" value="([a-f0-9]{64})"', html)
+            self.assertIsNotNone(csrf, "setup must issue a session-bound CSRF token")
+            self.assertTrue(any(c.name == "irica_operator_setup" for c in jar))
+            self.assertIn("HttpOnly", headers.get("Set-Cookie", ""))
+            self.assertIn("SameSite=Strict", headers.get("Set-Cookie", ""))
+            fields = {"csrf": csrf.group(1), "key": key, "action": "migrate"}
+
+            # Neither URL secrets nor a copied token in another browser grant authority.
+            status, _h, response = _setup_call(browser, query="?key=" + key)
+            self.assertEqual(status, 400)
+            self.assertFalse(key in response, "query secrets must not be reflected")
+            status, _h, _body = _setup_call(urllib.request.build_opener(), fields)
+            self.assertEqual(status, 403)
+            status, _h, _body = _setup_call(browser, dict(fields, csrf="0" * 64))
+            self.assertEqual(status, 403)
+            status, _h, _body = _setup_call(browser, dict(fields, key="wrong"))
+            self.assertEqual(status, 403)
+            status, _h, _body = _setup_call(browser, {}, method="PUT")
+            self.assertEqual(status, 405)
+
+            # No SSH required: real schema migrations, then one independent operator.
+            status, _h, html = _setup_call(browser, fields)
+            self.assertEqual(status, 200)
+            self.assertIn("Migrations completed", html)
+            fields["csrf"] = re.search(r'name="csrf" value="([a-f0-9]{64})"', html).group(1)
+            password = _state["admin_password"]
+            create = dict(fields, action="create_operator", username="bootstrap-operator",
+                          password=password, password_confirmation=password)
+            status, _h, _body = _setup_call(browser, dict(create, password_confirmation="mismatch"))
+            self.assertEqual(status, 400)
+            status, _h, html = _setup_call(browser, create)
+            self.assertEqual(status, 200)
+            self.assertIn("Operator created", html)
+            fields["csrf"] = re.search(r'name="csrf" value="([a-f0-9]{64})"', html).group(1)
+            create["csrf"] = fields["csrf"]
+            self.assertFalse(password in html or key in html, "setup must not echo credentials")
+            operator, _h = _ok("POST", "/operator/auth/login", {
+                "username": "bootstrap-operator", "password": password})
+            self.assertIn("operator_id", operator)
+            _fail("POST", "/auth/login", {"username": "bootstrap-operator", "password": password})
+            status, _h, _body = _setup_call(browser, dict(create, username="another-operator"))
+            self.assertEqual(status, 403)
+
+            # Disabling/deleting an operator never reopens the durable bootstrap gate.
+            _php("$db=Database::fromConfig(Config::db());"
+                 "$db->execute('DELETE FROM operator_sessions');"
+                 "$db->execute('DELETE FROM platform_operators');")
+            status, _h, _body = _setup_call(browser, create)
+            self.assertEqual(status, 403)
+            # Deliberate maintenance remains possible, but no customer form is accepted.
+            status, _h, html = _setup_call(browser, fields)
+            self.assertEqual(status, 200)
+            self.assertIn("Migrations completed", html)
+            status, _h, _body = _setup_call(browser, dict(create, action="create_admin"))
+            self.assertEqual(status, 403)
+
+            with open(_state["config_path"], "w", encoding="utf-8") as handle:
+                handle.write(enabled.replace("'operator_bootstrap_enabled' => true",
+                                             "'operator_bootstrap_enabled' => false"))
+            status, _h, _body = _setup_call(browser, create)
+            self.assertEqual(status, 404)
 
     def test_legacy_migration_routes_are_default_off_admin_only_and_atomic(self):
         store = {
@@ -921,6 +1185,102 @@ class HostApiTest(unittest.TestCase):
             self.assertEqual(_sql_value(
                 "SELECT COUNT(*) FROM customers WHERE tenant_id='%s';"
                 % _state["tenant_id"]), "1")
+        finally:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(original)
+
+    def test_operator_provision_http_lifecycle_and_fail_closed_gates(self):
+        op_name = "http-prov-op-" + uuid.uuid4().hex[:12]
+        op_pw = "OperatorPass-" + secrets.token_urlsafe(16)
+        _run_bin("create-operator.php", args=["--username=" + op_name],
+                 env={"IRICA_OPERATOR_PASSWORD": op_pw})
+        op_session, _ = _ok("POST", "/operator/auth/login", {"username": op_name, "password": op_pw})
+        op_token = op_session["access_token"]
+
+        store = {
+            "customers": [{
+                "id": "cust01", "full_name": "HTTP Private Customer",
+                "address": "Private street", "mobile": "09122222222",
+                "notes": "", "created": "2026-01-01 12:00:00", "transactions": [],
+            }],
+            "owners": [], "identities": [], "devices": [], "periods": [],
+        }
+        prov_id = str(uuid.uuid4())
+        cust_user = "cust-" + uuid.uuid4().hex[:12]
+        cust_pw = "CustPass-" + secrets.token_urlsafe(16)
+        body = {
+            "provision_id": prov_id,
+            "username": cust_user,
+            "password": cust_pw,
+            "password_confirmation": cust_pw,
+            "source_text": json.dumps(store, ensure_ascii=False, separators=(",", ":")),
+            "filename": "crm_store.json",
+            "source_version": "1.13.1",
+        }
+
+        status, error, _, _ = _fail("POST", "/operator/provision/analyze", body)
+        self.assertEqual(status, 401)
+        cust_admin = _login(_state["admin_user"], _state["admin_password"])
+        status, error, _, _ = _fail("POST", "/operator/provision/analyze", body, token=cust_admin["access_token"])
+        self.assertEqual(status, 401)
+        status, error, _, _ = _fail("POST", "/operator/provision/analyze", body, token=_device_token())
+        self.assertEqual(status, 401)
+
+        path = _state["config_path"]
+        with open(path, "r", encoding="utf-8") as handle:
+            original = handle.read()
+        enabled = original.replace(
+            "'legacy_import_enabled' => false,",
+            "'legacy_import_enabled' => true,\n    'private_account_activation_enabled' => true,", 1)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(enabled)
+        try:
+            analyzed, _ = _ok("POST", "/operator/provision/analyze", body, token=op_token)
+            self.assertEqual(analyzed["provision"]["state"], "analyzed")
+            self.assertEqual(analyzed["provision"]["id"], prov_id)
+            review_sha = analyzed["review_sha256"]
+            self.assertTrue(re.match(r"^[a-f0-9]{64}$", review_sha))
+
+            status, _, _, _ = _fail("POST", "/auth/login", {"username": cust_user, "password": cust_pw})
+            self.assertIn(status, (401, 403))
+
+            reviewed, _ = _ok("GET", "/operator/provision/review?id=" + prov_id, token=op_token)
+            self.assertEqual(reviewed["provision"]["state"], "reviewed")
+            self.assertEqual(reviewed["review_sha256"], review_sha)
+            self.assertEqual(reviewed["review"]["unresolved"], 0)
+
+            closed = enabled.replace("'private_account_activation_enabled' => true",
+                                     "'private_account_activation_enabled' => false")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(closed)
+            status, error, _, _ = _fail("POST", "/operator/provision/apply",
+                                        {"provision_id": prov_id, "review_sha256": review_sha},
+                                        token=op_token)
+            self.assertEqual(status, 503)
+
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(enabled)
+
+            applied, _ = _ok("POST", "/operator/provision/apply",
+                             {"provision_id": prov_id, "review_sha256": review_sha},
+                             token=op_token)
+            self.assertEqual(applied["provision"]["state"], "active")
+            self.assertTrue(applied["verification"]["passed"])
+
+            login_res, _ = _ok("POST", "/auth/login", {"username": cust_user, "password": cust_pw})
+            self.assertIn("access_token", login_res)
+            self.assertEqual(login_res["user"]["username"], cust_user)
+            self.assertEqual(login_res["tenant_id"], applied["provision"]["tenant_id"])
+
+            status, error, _, _ = _fail("POST", "/operator/provision/cancel",
+                                        {"provision_id": prov_id}, token=op_token)
+            self.assertEqual(status, 409)
+
+            replay, _ = _ok("POST", "/operator/provision/apply",
+                            {"provision_id": prov_id, "review_sha256": review_sha},
+                            token=op_token)
+            self.assertEqual(replay["provision"]["state"], "active")
+            self.assertTrue(replay["verification"]["passed"])
         finally:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(original)
@@ -1307,8 +1667,9 @@ class HostApiTest(unittest.TestCase):
     # -- §7: the role matrix --------------------------------------------
 
     def test_role_matrix_gates_settings_and_periods(self):
-        device = _device_token()
+        admin_device = _device_token()
         member = _user_token()
+        device = _own_device(member)
         admin = _login(_state["admin_user"], _state["admin_password"])[
             "access_token"]
 
@@ -1350,7 +1711,7 @@ class HostApiTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "ROLE_FORBIDDEN")
 
         # …but may write an ordinary case record.
-        result = self._push([plain], acting=member)
+        result = self._push([plain], token=device, acting=member)
         self.assertEqual(result["applied"], [plain["operation_id"]])
 
         # A non-admin may not delete either (§7: "delete records" is admin).
@@ -1362,10 +1723,10 @@ class HostApiTest(unittest.TestCase):
         self.assertEqual(status, 403)
 
         # An admin acting user may.
-        result = self._push([settings_op], acting=admin)
+        result = self._push([settings_op], token=admin_device, acting=admin)
         self.assertEqual(result["applied"], [settings_op["operation_id"]],
                          "an admin must be able to write settings")
-        result = self._push([period_op], acting=admin)
+        result = self._push([period_op], token=admin_device, acting=admin)
         self.assertEqual(result["applied"], [period_op["operation_id"]])
 
         # A user access token alone is never a device credential.
@@ -1397,14 +1758,15 @@ class HostApiTest(unittest.TestCase):
     def test_create_user_cli_account_obeys_the_role_matrix(self):
         """§7 for an account only the CLI could create (§15.17)."""
         username, password = self._cli_user("cli")
-        device = _device_token()
+        admin_device = _device_token()
 
         # The account exists and its role comes from the membership row.
         login = _login(username, password)
         self.assertEqual(login["user"]["username"], username)
         self.assertEqual(login["user"]["role"], "user")
-        self.assertIs(login["must_change_password"], True)
+        self.assertIs(login["must_change_password"], False)
         member = login["access_token"]
+        device = _own_device(member)
 
         # §7 rows 1 and 4 — read all synced data, read `settings`. Sync
         # reads are device-credential routes (§6), so a user token alone
@@ -1416,7 +1778,7 @@ class HostApiTest(unittest.TestCase):
 
         # §7 row 2 — the colleague may create a case record …
         record = self._new_customer("clirole")
-        result = self._push([record], acting=member)
+        result = self._push([record], token=device, acting=member)
         self.assertEqual(result["applied"], [record["operation_id"]])
 
         # … and the admin may write the settings row (row 5, admin column).
@@ -1435,16 +1797,16 @@ class HostApiTest(unittest.TestCase):
                        "report_chat_id": "", "sound_enabled": True,
                        "current_period_id": None, "links": []},
         }
-        result = self._push([settings_op], acting=admin)
+        result = self._push([settings_op], token=admin_device, acting=admin)
         self.assertEqual(result["applied"], [settings_op["operation_id"]])
 
-        # Both reads answer on this machine while this user acts.
+        # Reads stay inside this owner's private dataset, not the admin's.
         snapshot, _h = _ok("GET", "/sync/bootstrap", token=device,
                            acting=member)
         self.assertEqual(len(snapshot["collections"]["customers"]), 1)
         self.assertEqual(
             snapshot["collections"]["customers"][0]["record"]["id"], "clirole")
-        self.assertEqual(len(snapshot["collections"]["settings"]), 1)
+        self.assertEqual(len(snapshot["collections"]["settings"]), 0)
         page, _h = _ok("GET", "/sync/changes?cursor=0&limit=50", token=device,
                        acting=member)
         self.assertIn("changes", page)
@@ -1503,7 +1865,7 @@ class HostApiTest(unittest.TestCase):
                                   env={"IRICA_USER_PASSWORD": password},
                                   expect_ok=False)
         self.assertEqual(code, 1, _redact(out + err))
-        self.assertIn("already exists", (out + err).lower())
+        self.assertIn("already reserved", (out + err).lower())
         self.assertEqual(int(_sql_value("SELECT COUNT(*) FROM users;")), before,
                          "a refused duplicate must not create an account")
 
@@ -1513,7 +1875,7 @@ class HostApiTest(unittest.TestCase):
             "create-user.php", args=["--username=" + _state["admin_user"]],
             env={"IRICA_USER_PASSWORD": password}, expect_ok=False)
         self.assertEqual(code, 1, _redact(out + err))
-        self.assertIn("already exists", (out + err).lower())
+        self.assertIn("already reserved", (out + err).lower())
         self.assertEqual(int(_sql_value("SELECT COUNT(*) FROM users;")), before,
                          "an admin username must not be taken over")
 
@@ -1542,7 +1904,7 @@ class HostApiTest(unittest.TestCase):
         for marker in ("$argon2", "$2y$", "$pbkdf2", "password_hash"):
             self.assertNotIn(marker, out + err)
         # --quiet prints only the outcome, never the account's metadata.
-        self.assertTrue(out.startswith("OK    user created"))
+        self.assertTrue(out.startswith("OK    private account created"))
         self.assertNotIn("user id:", out)
         self.assertGreaterEqual(len(password), 12)
         self.assertRegex(password, r"^[A-Za-z0-9_-]+$")
@@ -1601,8 +1963,9 @@ class HostApiTest(unittest.TestCase):
         self.assertEqual(status, "done")
 
     def test_import_needs_an_admin_user_and_a_device(self):
-        device = _device_token()
+        admin_device = _device_token()
         member = _user_token()
+        device = _own_device(member)
         admin = _login(_state["admin_user"], _state["admin_password"])[
             "access_token"]
         document = self._import_document("auth")

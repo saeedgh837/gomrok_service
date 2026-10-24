@@ -246,3 +246,47 @@ def bootstrap():
         return []
     _BOOTSTRAPPED.append(True)
     return migrate_legacy(APP_DIR, data_dir())
+
+
+def account_profile_key(api_base, tenant_id, user_id):
+    """Deterministic hash namespace for an authenticated account profile."""
+    import hashlib
+    clean_base = str(api_base or "").strip().rstrip("/")
+    clean_tenant = str(tenant_id or "").strip()
+    clean_user = str(user_id or "").strip()
+    if not clean_base or not clean_tenant or not clean_user:
+        raise ValueError("account_profile_key requires api_base, tenant_id and user_id")
+    canonical = f"{clean_base}:{clean_tenant}:{clean_user}".encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def account_profile_dir(api_base, tenant_id, user_id, base_dir=None):
+    """Absolute path to the isolated profile directory for this account."""
+    key = account_profile_key(api_base, tenant_id, user_id)
+    parent = os.path.abspath(base_dir or data_dir())
+    path = os.path.join(parent, "accounts", "v1", key)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+def write_account_manifest(profile_dir, *, api_base, tenant_id, user_id, username):
+    """Persist identity manifest inside the account directory."""
+    import json
+    import time
+    manifest = {
+        "api_base": str(api_base or "").strip().rstrip("/"),
+        "tenant_id": str(tenant_id or "").strip(),
+        "user_id": str(user_id or "").strip(),
+        "username": str(username or "").strip(),
+        "profile_key": account_profile_key(api_base, tenant_id, user_id),
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    path = os.path.join(profile_dir, "manifest.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return manifest

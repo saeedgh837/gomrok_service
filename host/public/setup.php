@@ -1,49 +1,37 @@
 <?php
-/**
- * setup.php — Web installer for shared hosting environments without SSH access.
- *
- * Security requirements:
- * 1. Must be protected by `setup_key` in config/config.php and ?key= query parameter.
- * 2. Compares key using constant-time hash_equals.
- * 3. Can run migrations, create the admin user, create colleague users, and run smoke tests.
- * 4. Provides a one-click button to delete itself (unlink) when setup is complete.
- */
-
+/** Controlled no-SSH maintenance and one-shot operator bootstrap, never customer creation. */
 declare(strict_types=1);
 
 ini_set('display_errors', '0');
 ini_set('display_startup_errors', '0');
+ini_set('html_errors', '0');
 error_reporting(E_ALL);
 
-define('HOST_ROOT', dirname(__DIR__));
-
-foreach ([
-    'Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
-    'RateLimit', 'Auth', 'Sync', 'Import',
-] as $classFile) {
+if (!defined('HOST_ROOT')) {
+    define('HOST_ROOT', dirname(__DIR__));
+}
+foreach (['Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
+          'RateLimit', 'Workspace', 'Auth', 'OperatorAuth'] as $classFile) {
     require_once HOST_ROOT . '/src/' . $classFile . '.php';
 }
 
-$cfg = null;
-$configError = '';
-try {
-    $cfg = Config::load();
-} catch (Throwable $e) {
-    $configError = $e->getMessage();
-}
+header('Cache-Control: no-store, no-cache, max-age=0, must-revalidate');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');
+header('Cross-Origin-Opener-Policy: same-origin');
+header('Cross-Origin-Resource-Policy: same-origin');
+header("Content-Security-Policy: default-src 'none'; style-src 'self'; "
+    . "base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+header('Content-Type: text/html; charset=UTF-8');
 
-$setupKey = (is_array($cfg) && isset($cfg['setup_key']) && is_string($cfg['setup_key']))
-    ? trim($cfg['setup_key'])
-    : '';
-
-$reqKey = (string) ($_GET['key'] ?? ($_POST['key'] ?? ''));
-
-function h(string $text): string
+function setupEscape(string $text): string
 {
     return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
-// Split SQL file into statements (same logic as migrate.php)
+// Keep the migration CLI's SQL splitting rules, including quoted semicolons.
 function setupSplitStatements(string $sql): array
 {
     $statements = [];
@@ -53,7 +41,6 @@ function setupSplitStatements(string $sql): array
     for ($i = 0; $i < $length; $i++) {
         $char = $sql[$i];
         $next = $i + 1 < $length ? $sql[$i + 1] : '';
-
         if ($state === 'line_comment') {
             $buffer .= $char;
             if ($char === "\n") {
@@ -81,12 +68,7 @@ function setupSplitStatements(string $sql): array
             }
             $close = $state === 'single' ? "'" : ($state === 'double' ? '"' : '`');
             if ($char === $close) {
-                if ($next === $close && $state !== 'backtick') {
-                    $buffer .= $next;
-                    $i++;
-                    continue;
-                }
-                if ($state === 'backtick' && $next === '`') {
+                if ($next === $close) {
                     $buffer .= $next;
                     $i++;
                     continue;
@@ -95,560 +77,278 @@ function setupSplitStatements(string $sql): array
             }
             continue;
         }
-
-        if ($char === '-' && $next === '-') {
+        if (($char === '-' && $next === '-') || $char === '#'
+            || ($char === '/' && $next === '/')) {
             $state = 'line_comment';
-            $buffer .= $char;
-            continue;
-        }
-        if ($char === '#' || ($char === '/' && $next === '/')) {
-            $state = 'line_comment';
-            $buffer .= $char;
-            continue;
-        }
-        if ($char === '/' && $next === '*') {
+        } elseif ($char === '/' && $next === '*') {
             $state = 'block_comment';
             $buffer .= '/*';
             $i++;
             continue;
-        }
-        if ($char === "'") {
+        } elseif ($char === "'") {
             $state = 'single';
-            $buffer .= $char;
-            continue;
-        }
-        if ($char === '"') {
+        } elseif ($char === '"') {
             $state = 'double';
-            $buffer .= $char;
-            continue;
-        }
-        if ($char === '`') {
+        } elseif ($char === '`') {
             $state = 'backtick';
-            $buffer .= $char;
-            continue;
-        }
-
-        if ($char === ';') {
-            $trimmed = trim($buffer);
-            if ($trimmed !== '') {
-                $statements[] = $trimmed;
+        } elseif ($char === ';') {
+            if (trim($buffer) !== '') {
+                $statements[] = trim($buffer);
             }
             $buffer = '';
             continue;
         }
-
         $buffer .= $char;
     }
-    $trimmed = trim($buffer);
-    if ($trimmed !== '') {
-        $statements[] = $trimmed;
+    if (trim($buffer) !== '') {
+        $statements[] = trim($buffer);
     }
     return $statements;
 }
 
-$notice = '';
-$noticeType = 'info';
-$output = '';
-
-if ($configError !== '') {
-    $notice = 'خطا در بارگذاری تنظیمات: ' . $configError;
-    $noticeType = 'error';
-} elseif ($setupKey === '') {
-    $notice = 'کلید setup_key در فایل config/config.php تنظیم نشده است. لطفاً ابتدا در config.php یک مقدار تصادفی برای setup_key مشخص کنید.';
-    $noticeType = 'error';
-} elseif (!hash_equals($setupKey, $reqKey)) {
-    http_response_code(403);
-    $notice = 'دسترسی غیرمجاز. کلید امنیتی (key) نادرست است.';
-    $noticeType = 'error';
-} else {
-    // Key is valid - handle actions
-    $action = (string) ($_POST['action'] ?? '');
-    if ($action === 'migrate') {
-        try {
-            $dbConfig = $cfg['db_migrate'] ?? $cfg['db'];
-            $db = Database::fromConfig($dbConfig);
-            $db->pdo()->exec(
-                'CREATE TABLE IF NOT EXISTS schema_migrations ('
-                . '  version     VARCHAR(128) NOT NULL,'
-                . '  checksum    VARCHAR(64)  NOT NULL,'
-                . '  applied_at  DATETIME     NOT NULL,'
-                . '  PRIMARY KEY (version)'
-                . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;'
-            );
-
-            $appliedRows = $db->query('SELECT version, checksum FROM schema_migrations ORDER BY version');
-            $applied = [];
-            foreach ($appliedRows as $row) {
-                $applied[(string) $row['version']] = (string) $row['checksum'];
-            }
-
-            $migDir = HOST_ROOT . '/migrations';
-            $files = glob($migDir . '/*.sql');
-            sort($files);
-
-            $log = [];
-            foreach ($files as $file) {
-                $version = basename($file, '.sql');
-                $checksum = hash_file('sha256', $file);
-                if (isset($applied[$version])) {
-                    if ($applied[$version] !== $checksum) {
-                        throw new RuntimeException("Migration checksum mismatch for {$version}");
-                    }
-                    $log[] = "SKIP {$version} (already applied)";
-                    continue;
-                }
-
-                $stmts = setupSplitStatements((string) file_get_contents($file));
-                foreach ($stmts as $stmt) {
-                    $db->pdo()->exec($stmt);
-                }
-                $now = gmdate('Y-m-d H:i:s');
-                $db->insert('schema_migrations', [
-                    'version' => $version,
-                    'checksum' => $checksum,
-                    'applied_at' => $now,
-                ]);
-                $log[] = "APPLY {$version} (success, " . count($stmts) . " statements)";
-            }
-            $notice = 'مایگریشن‌ها با موفقیت اجرا شدند.';
-            $noticeType = 'success';
-            $output = implode("\n", $log);
-        } catch (Throwable $e) {
-            $notice = 'خطا در اجرای مایگریشن: ' . $e->getMessage();
-            $noticeType = 'error';
+function setupMigrate(array $cfg): string
+{
+    $db = Database::fromConfig($cfg['db_migrate'] ?? $cfg['db']);
+    $tracker = (int) $db->queryValue('SELECT COUNT(*) FROM information_schema.TABLES'
+        . ' WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', ['schema_migrations']);
+    $applied = [];
+    if ($tracker === 1) {
+        foreach ($db->query('SELECT version, checksum FROM schema_migrations ORDER BY version') as $row) {
+            $applied[$row['version']] = $row['checksum'];
         }
-    } elseif ($action === 'create_admin') {
-        try {
-            $db = Database::fromConfig($cfg['db']);
-            $username = trim((string) ($_POST['username'] ?? 'admin'));
-            if ($username === '') {
-                throw new RuntimeException('نام کاربری نمی‌تواند خالی باشد.');
-            }
-            $tenantSlug = trim((string) ($_POST['tenant_slug'] ?? ($cfg['tenant_slug'] ?? 'default')));
-            $displayName = trim((string) ($_POST['display_name'] ?? 'مدیر سامانه'));
-            $password = trim((string) ($_POST['password'] ?? ''));
-
-            $generated = false;
-            if ($password === '') {
-                $password = rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');
-                $generated = true;
-            }
-
-            $now = gmdate('Y-m-d H:i:s');
-            $tenant = $db->queryOne('SELECT id FROM tenants WHERE slug = ?', [$tenantSlug]);
-            if ($tenant === null) {
-                $tenantId = Ids::v4();
-                $db->insert('tenants', [
-                    'id' => $tenantId, 'slug' => $tenantSlug, 'name' => 'IRICA',
-                    'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
-                ]);
-            } else {
-                $tenantId = (string) $tenant['id'];
-            }
-
-            $existing = $db->queryOne(
-                'SELECT u.id FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.tenant_id = ? AND m.role = ? LIMIT 1',
-                [$tenantId, Roles::ADMIN]
-            );
-            if ($existing !== null) {
-                throw new RuntimeException('حساب مدیر در این مستأجر از قبل وجود دارد. ایجاد مجدد مدیر اصلی مجاز نیست.');
-            }
-
-            $dupUser = $db->queryOne('SELECT id FROM users WHERE tenant_id = ? AND username = ?', [$tenantId, $username]);
-            if ($dupUser !== null) {
-                throw new RuntimeException("کاربری با نام {$username} قبلاً ثبت شده است.");
-            }
-
-            $hash = Auth::hashPassword($password);
-            $userId = Ids::v4();
-            $db->transaction(function (Database $tx) use ($userId, $tenantId, $username, $displayName, $hash, $now): void {
-                $tx->insert('users', [
-                    'id' => $userId, 'tenant_id' => $tenantId, 'username' => $username,
-                    'display_name' => $displayName, 'password_hash' => $hash,
-                    'status' => 'active', 'token_version' => 1, 'must_change_password' => 1,
-                    'created_at' => $now, 'updated_at' => $now,
-                ]);
-                $tx->insert('memberships', [
-                    'id' => Ids::v4(), 'tenant_id' => $tenantId, 'user_id' => $userId,
-                    'role' => Roles::ADMIN, 'created_at' => $now, 'updated_at' => $now,
-                ]);
-            });
-
-            $notice = "حساب مدیر '{$username}' با موفقیت ساخته شد.";
-            $noticeType = 'success';
-            $output = "نام کاربری: " . $username . "\nگذرواژه: " . $password . ($generated ? " (تولید تصادفی)" : "") . "\n\nحتماً این اطلاعات را یادداشت و ذخیره کنید.";
-        } catch (Throwable $e) {
-            $notice = 'خطا در ساخت مدیر: ' . $e->getMessage();
-            $noticeType = 'error';
+    }
+    $files = glob(HOST_ROOT . '/migrations/*.sql');
+    if (!is_array($files) || $files === []) {
+        throw new RuntimeException('migration files unavailable');
+    }
+    sort($files);
+    $pending = [];
+    $lines = [];
+    // Check every recorded checksum before executing any new DDL.
+    foreach ($files as $file) {
+        $version = basename($file, '.sql');
+        $checksum = hash_file('sha256', $file);
+        if (!is_string($checksum)) {
+            throw new RuntimeException('migration file unreadable');
         }
-    } elseif ($action === 'create_user') {
-        try {
-            $db = Database::fromConfig($cfg['db']);
-            $username = trim((string) ($_POST['username'] ?? ''));
-            if ($username === '') {
-                throw new RuntimeException('نام کاربری نمی‌تواند خالی باشد.');
+        if (isset($applied[$version])) {
+            if (!hash_equals($applied[$version], $checksum)) {
+                throw new RuntimeException('migration checksum mismatch');
             }
-            $role = trim((string) ($_POST['role'] ?? 'user'));
-            if (!in_array($role, Roles::ALL, true)) {
-                throw new RuntimeException('نقش نامعتبر است.');
-            }
-            $tenantSlug = trim((string) ($_POST['tenant_slug'] ?? ($cfg['tenant_slug'] ?? 'default')));
-            $displayName = trim((string) ($_POST['display_name'] ?? $username));
-            $password = trim((string) ($_POST['password'] ?? ''));
-
-            $generated = false;
-            if ($password === '') {
-                $password = rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');
-                $generated = true;
-            }
-
-            $now = gmdate('Y-m-d H:i:s');
-            $tenant = $db->queryOne('SELECT id FROM tenants WHERE slug = ?', [$tenantSlug]);
-            if ($tenant === null) {
-                throw new RuntimeException("مستأجر '{$tenantSlug}' یافت نشد. ابتدا حساب مدیر را ایجاد کنید.");
-            }
-            $tenantId = (string) $tenant['id'];
-
-            $dupUser = $db->queryOne('SELECT id FROM users WHERE tenant_id = ? AND username = ?', [$tenantId, $username]);
-            if ($dupUser !== null) {
-                throw new RuntimeException("کاربری با نام {$username} از قبل وجود دارد.");
-            }
-
-            $hash = Auth::hashPassword($password);
-            $userId = Ids::v4();
-            $db->transaction(function (Database $tx) use ($userId, $tenantId, $username, $displayName, $hash, $role, $now): void {
-                $tx->insert('users', [
-                    'id' => $userId, 'tenant_id' => $tenantId, 'username' => $username,
-                    'display_name' => $displayName, 'password_hash' => $hash,
-                    'status' => 'active', 'token_version' => 1, 'must_change_password' => 1,
-                    'created_at' => $now, 'updated_at' => $now,
-                ]);
-                $tx->insert('memberships', [
-                    'id' => Ids::v4(), 'tenant_id' => $tenantId, 'user_id' => $userId,
-                    'role' => $role, 'created_at' => $now, 'updated_at' => $now,
-                ]);
-            });
-
-            $notice = "حساب کاربر '{$username}' با نقش '{$role}' ساخته شد.";
-            $noticeType = 'success';
-            $output = "نام کاربری: " . $username . "\nنقش: " . $role . "\nگذرواژه: " . $password . ($generated ? " (تولید تصادفی)" : "") . "\n\nحتماً این اطلاعات را به همکار خود تحویل دهید.";
-        } catch (Throwable $e) {
-            $notice = 'خطا در ساخت حساب کاربر: ' . $e->getMessage();
-            $noticeType = 'error';
-        }
-    } elseif ($action === 'smoke_test') {
-        try {
-            $lines = [];
-            $fails = 0;
-            $pass = function (string $msg) use (&$lines) { $lines[] = "PASS  " . $msg; };
-            $fail = function (string $msg) use (&$lines, &$fails) { $lines[] = "FAIL  " . $msg; $fails++; };
-
-            if (version_compare(PHP_VERSION, '8.1.0', '>=')) {
-                $pass("نسخه PHP: " . PHP_VERSION);
-            } else {
-                $fail("نسخه PHP باید حداقل 8.1 باشد (فعلی: " . PHP_VERSION . ")");
-            }
-
-            foreach (['pdo_mysql', 'mbstring', 'json', 'hash', 'openssl', 'sodium'] as $ext) {
-                if (extension_loaded($ext)) {
-                    $pass("اکستنشن {$ext} فعال است");
-                } else {
-                    $fail("اکستنشن {$ext} فعال نیست");
-                }
-            }
-
-            if (in_array('argon2id', password_algos(), true)) {
-                $pass("الگوریتم هش Argon2id در دسترس است");
-            } else {
-                $pass("الگوریتم رمزنگاری پیش‌فرض PASSWORD_DEFAULT فعال است");
-            }
-
-            $db = Database::fromConfig($cfg['db']);
-            $db->query('SELECT 1');
-            $pass("اتصال دیتابیس با حساب کاربری اپلیکیشن برقرار است");
-
-            $tenant = $db->queryOne('SELECT id FROM tenants WHERE slug = ?', [$cfg['tenant_slug'] ?? 'default']);
-            if ($tenant !== null) {
-                $pass("مستأجر پیش‌فرض (Tenant) در دیتابیس ثبت شده است");
-            } else {
-                $lines[] = "WARN  مستأجر هنوز ایجاد نشده (پس از ایجاد اولین مدیر ساخته می‌شود)";
-            }
-
-            $migCount = (int) $db->queryValue('SELECT COUNT(*) FROM schema_migrations');
-            $pass("تعداد مایگریشن‌های اعمال‌شده: {$migCount}");
-
-            $notice = $fails === 0 ? 'آزمون سلامت کامل شد (PASS)' : 'آزمون سلامت دارای خطا بود (FAIL)';
-            $noticeType = $fails === 0 ? 'success' : 'error';
-            $output = implode("\n", $lines);
-        } catch (Throwable $e) {
-            $notice = 'خطا در آزمون سلامت: ' . $e->getMessage();
-            $noticeType = 'error';
-        }
-    } elseif ($action === 'delete_self') {
-        if (@unlink(__FILE__)) {
-            echo '<!DOCTYPE html><html dir="rtl" lang="fa"><head><meta charset="utf-8"><title>پایان نصب</title>'
-                . '<style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}'
-                . '.card{background:#1e293b;padding:32px;border-radius:12px;border:1px solid #334155;text-align:center;max-width:440px;}'
-                . 'h2{color:#22c55e;margin-top:0;}p{color:#94a3b8;line-height:1.7;}</style></head><body>'
-                . '<div class="card"><h2>فایل نصب با موفقیت حذف شد</h2>'
-                . '<p>فایل setup.php جهت امنیت سرور به طور کامل از هاست پاک شد. اکنون می‌توانید پنل دسکتاپ را به API متصل کنید.</p></div></body></html>';
-            exit;
+            $lines[] = 'SKIP ' . $version;
         } else {
-            $notice = 'حذف خودکار فایل ناموفق بود. لطفاً به صورت دستی فایل setup.php را از پوشه public حذف کنید.';
-            $noticeType = 'error';
+            $pending[] = ['version' => $version, 'checksum' => $checksum, 'file' => $file];
         }
+    }
+    if ($applied === [] && (int) $db->queryValue(
+        'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()'
+        . ' AND TABLE_NAME<>?', ['schema_migrations']) !== 0) {
+        throw new RuntimeException('untracked schema cannot be adopted');
+    }
+    foreach ($pending as $entry) {
+        $source = file_get_contents($entry['file']);
+        if (!is_string($source) || setupSplitStatements($source) === []) {
+            throw new RuntimeException('migration file unreadable');
+        }
+        foreach (setupSplitStatements($source) as $statement) {
+            $db->pdo()->exec($statement);
+        }
+        // Migration 001 creates the complete CLI-compatible tracker itself.
+        $db->insert('schema_migrations', ['version' => $entry['version'],
+            'description' => basename($entry['file']), 'checksum' => $entry['checksum'],
+            'applied_at' => gmdate('Y-m-d H:i:s'),
+            'applied_by' => substr((string) $db->queryValue('SELECT CURRENT_USER()'), 0, 64)]);
+        $lines[] = 'APPLY ' . $entry['version'];
+    }
+    return implode("\n", $lines);
+}
+
+$notice = '';
+$output = '';
+$csrf = '';
+$available = false;
+$success = false;
+http_response_code(200);
+try {
+    if (!Config::freshBoolean('operator_bootstrap_enabled', false)) {
+        throw new ApiException(404, Codes::NOT_FOUND, 'Setup is closed.');
+    }
+    $cfg = Config::load();
+    $setupKey = $cfg['setup_key'] ?? null;
+    if (!is_string($setupKey) || preg_match('/\A[a-f0-9]{64}\z/D', $setupKey) !== 1
+        || $setupKey === str_repeat('0', 64)) {
+        throw new ApiException(403, Codes::PERMISSION_DENIED, 'Setup is not configured.');
+    }
+    $remote = is_string($_SERVER['REMOTE_ADDR'] ?? null) ? $_SERVER['REMOTE_ADDR'] : '';
+    $https = is_string($_SERVER['HTTPS'] ?? null) ? $_SERVER['HTTPS'] : '';
+    $forwarded = is_string($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? null)
+        ? $_SERVER['HTTP_X_FORWARDED_PROTO'] : '';
+    $proxies = is_array($cfg['trusted_proxies'] ?? null) ? $cfg['trusted_proxies'] : [];
+    if (!Request::isSecureTransport($forwarded, $remote, $https, $proxies,
+        ($cfg['allow_loopback_http'] ?? false) === true)) {
+        throw new ApiException(403, Codes::HTTPS_REQUIRED, 'HTTPS is required.');
+    }
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if (!in_array($method, ['GET', 'POST'], true)) {
+        header('Allow: GET, POST');
+        throw new ApiException(405, Codes::HTTP_405, 'Use GET or POST.');
+    }
+    if ($_GET !== [] || ($_SERVER['QUERY_STRING'] ?? '') !== '') {
+        throw new ApiException(400, Codes::BAD_PAYLOAD, 'Query parameters are not accepted.');
+    }
+    if ($method === 'POST') {
+        $length = $_SERVER['CONTENT_LENGTH'] ?? '';
+        if (!is_scalar($length) || !ctype_digit((string) $length) || (int) $length > 16384) {
+            throw new ApiException(413, Codes::PAYLOAD_TOO_LARGE, 'Setup request is too large.');
+        }
+        $raw = file_get_contents('php://input', false, null, 0, 16385);
+        if (!is_string($raw) || strlen($raw) > 16384) {
+            throw new ApiException(413, Codes::PAYLOAD_TOO_LARGE, 'Setup request is too large.');
+        }
+        $contentType = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''))[0]));
+        if ($contentType !== 'application/x-www-form-urlencoded') {
+            throw new ApiException(415, Codes::UNSUPPORTED_MEDIA_TYPE, 'Use an HTML setup form.');
+        }
+    }
+
+    // This session carries only a CSRF token and an absolute issue time, never credentials.
+    ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.use_trans_sid', '0');
+    session_name('irica_operator_setup');
+    session_cache_limiter('');
+    session_set_cookie_params(['lifetime' => 900, 'path' => '/',
+        'secure' => Request::isSecureTransport($forwarded, $remote, $https, $proxies),
+        'httponly' => true, 'samesite' => 'Strict']);
+    if (!session_start()) {
+        throw new RuntimeException('setup session unavailable');
+    }
+    $validSession = is_string($_SESSION['csrf'] ?? null)
+        && is_int($_SESSION['issued_at'] ?? null)
+        && $_SESSION['issued_at'] <= time() && $_SESSION['issued_at'] > time() - 900;
+    if (!$validSession) {
+        $_SESSION = ['csrf' => bin2hex(random_bytes(32)), 'issued_at' => time()];
+        if (!session_regenerate_id(true)) {
+            throw new RuntimeException('setup session renewal failed');
+        }
+    }
+    $csrf = $_SESSION['csrf'];
+    $available = true;
+    if ($method === 'POST') {
+        $postedCsrf = $_POST['csrf'] ?? null;
+        $postedKey = $_POST['key'] ?? null;
+        if (!$validSession || !is_string($postedCsrf) || strlen($postedCsrf) !== 64
+            || !hash_equals($csrf, $postedCsrf) || !is_string($postedKey)
+            || strlen($postedKey) !== 64 || !hash_equals($setupKey, $postedKey)) {
+            throw new ApiException(403, Codes::PERMISSION_DENIED, 'Setup authorization failed.');
+        }
+        $action = $_POST['action'] ?? null;
+        if (!is_string($action) || !in_array($action, ['migrate', 'create_operator', 'smoke_test'], true)) {
+            throw new ApiException(403, Codes::PERMISSION_DENIED, 'Setup action is not permitted.');
+        }
+        if ($action === 'create_operator') {
+            $username = $_POST['username'] ?? null;
+            $password = $_POST['password'] ?? null;
+            $confirmation = $_POST['password_confirmation'] ?? null;
+            if (!is_string($username) || !is_string($password) || !is_string($confirmation)
+                || $password !== $confirmation || strlen($password) < 12
+                || strlen($password) > 4096 || str_contains($password, "\0")
+                || (Auth::passwordAlgo() === PASSWORD_BCRYPT && strlen($password) > 72)) {
+                throw new ApiException(400, Codes::BAD_PAYLOAD,
+                    'Supply matching passwords of at least 12 bytes within the hash limit.');
+            }
+            $name = Workspace::canonical($username);
+            $hash = Auth::hashPassword($password);
+            unset($password, $confirmation, $_POST['password'], $_POST['password_confirmation']);
+            OperatorAuth::create(Database::fromConfig($cfg['db']), $name, $hash, true);
+            unset($hash);
+            $notice = 'Operator created. Sign in to the operator panel with the chosen credentials.';
+        } elseif ($action === 'migrate') {
+            $output = setupMigrate($cfg);
+            $notice = 'Migrations completed.';
+        } else {
+            $lines = ['PHP ' . PHP_VERSION];
+            foreach (['pdo_mysql', 'mbstring', 'json', 'hash', 'openssl', 'sodium'] as $extension) {
+                if (!extension_loaded($extension)) {
+                    throw new RuntimeException('required extension unavailable');
+                }
+                $lines[] = 'PASS extension ' . $extension;
+            }
+            $db = Database::fromConfig($cfg['db']);
+            $db->queryValue('SELECT COUNT(*) FROM schema_migrations');
+            if ($db->queryOne('SELECT bootstrap_consumed FROM platform_operator_state WHERE id=1') === null) {
+                throw new RuntimeException('bootstrap state missing');
+            }
+            $lines[] = 'PASS application database and private-account schema';
+            $output = implode("\n", $lines);
+            $notice = 'Health checks completed.';
+        }
+        $_SESSION['csrf'] = $csrf = bin2hex(random_bytes(32));
+        $success = true;
+    }
+} catch (ApiException $error) {
+    http_response_code($error->status);
+    $notice = $error->getMessage();
+} catch (Throwable $error) {
+    http_response_code(503);
+    $notice = 'Setup failed. Check configuration and migration integrity through the hosting panel; no credentials are shown here.';
+} finally {
+    unset($setupKey, $postedKey, $_POST['key'], $_POST['password'], $_POST['password_confirmation']);
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
     }
 }
 ?>
-<!DOCTYPE html>
-<html dir="rtl" lang="fa">
+<!doctype html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>راه‌انداز دیتابیس ابری IRICA</title>
-    <style>
-        :root {
-            --bg: #0f172a;
-            --card: #1e293b;
-            --card-sub: #334155;
-            --border: #475569;
-            --text: #f8fafc;
-            --muted: #94a3b8;
-            --brand: #2563eb;
-            --brand-hover: #1d4ed8;
-            --success: #22c55e;
-            --error: #ef4444;
-            --warning: #f59e0b;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            padding: 24px 16px;
-            background: var(--bg);
-            color: var(--text);
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Tahoma, sans-serif;
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .container {
-            max-width: 680px;
-            margin: 0 auto;
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 24px;
-        }
-        .header h1 {
-            margin: 0 0 8px;
-            font-size: 22px;
-            font-weight: 700;
-        }
-        .header p {
-            margin: 0;
-            color: var(--muted);
-            font-size: 13px;
-        }
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-        }
-        .alert-info { background: #1e3a8a; color: #bfdbfe; }
-        .alert-success { background: #14532d; color: #bbf7d0; border: 1px solid var(--success); }
-        .alert-error { background: #7f1d1d; color: #fecaca; border: 1px solid var(--error); }
-        .card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .card-title {
-            margin: 0 0 12px;
-            font-size: 16px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .btn {
-            background: var(--brand);
-            color: #fff;
-            border: none;
-            padding: 9px 18px;
-            border-radius: 6px;
-            font-family: inherit;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.15s;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .btn:hover { background: var(--brand-hover); }
-        .btn-success { background: #16a34a; }
-        .btn-success:hover { background: #15803d; }
-        .btn-danger { background: #dc2626; }
-        .btn-danger:hover { background: #b91c1c; }
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-bottom: 12px;
-        }
-        @media (max-width: 600px) {
-            .form-row { grid-template-columns: 1fr; }
-        }
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            margin-bottom: 12px;
-        }
-        .form-group label {
-            font-size: 12px;
-            color: var(--muted);
-        }
-        input, select {
-            background: var(--card-sub);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 8px 12px;
-            color: var(--text);
-            font-family: inherit;
-            font-size: 13px;
-        }
-        input:focus, select:focus {
-            outline: none;
-            border-color: var(--brand);
-        }
-        pre {
-            background: #020617;
-            padding: 14px;
-            border-radius: 8px;
-            border: 1px solid #1e293b;
-            color: #38bdf8;
-            font-family: monospace;
-            font-size: 12px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            direction: ltr;
-            text-align: left;
-            margin-top: 14px;
-        }
-        .hint {
-            font-size: 12px;
-            color: var(--muted);
-            margin-top: 6px;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>IRICA · Secure setup</title>
+  <link rel="stylesheet" href="setup.css">
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>راه‌اندازی دیتابیس ابری (محیط هاست اشتراکی)</h1>
-        <p>نصب اسکیما، ساخت کاربران و تست سرویس بدون نیاز به SSH</p>
-    </div>
-
-    <?php if ($notice !== ''): ?>
-        <div class="alert alert-<?= h($noticeType) ?>"><?= h($notice) ?></div>
-    <?php endif; ?>
-
-    <?php if ($output !== ''): ?>
-        <pre><?= h($output) ?></pre>
-    <?php endif; ?>
-
-    <?php if ($setupKey !== '' && hash_equals($setupKey, $reqKey)): ?>
-
-        <!-- Step 1: Migration -->
-        <div class="card">
-            <h2 class="card-title">۱. ساخت جدول‌های دیتابیس (Migration)</h2>
-            <p class="hint">با کلیک روی این دکمه، تمام ۱۸ جدول و ایندکس‌های پایگاه‌داده روی MySQL ایجاد می‌شوند.</p>
-            <form method="POST">
-                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
-                <input type="hidden" name="action" value="migrate">
-                <button type="submit" class="btn btn-success">اجرای مایگریشن دیتابیس</button>
-            </form>
-        </div>
-
-        <!-- Step 2: Create Admin -->
-        <div class="card">
-            <h2 class="card-title">۲. ساخت حساب مدیر اصلی (Admin)</h2>
-            <p class="hint">حساب مدیر برای ورود اول، ثبت سیستم‌ها و انتقال پرونده‌ها استفاده می‌شود.</p>
-            <form method="POST">
-                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
-                <input type="hidden" name="action" value="create_admin">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>نام کاربری:</label>
-                        <input type="text" name="username" value="admin" required>
-                    </div>
-                    <div class="form-group">
-                        <label>نام نمایشی:</label>
-                        <input type="text" name="display_name" value="مدیر سامانه">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>گذرواژه (اختیاری — در صورت خالی بودن گذرواژهٔ تصادفی قوی تولید می‌شود):</label>
-                    <input type="text" name="password" placeholder="حداقل ۱۲ کاراکتر یا خالی بگذارید">
-                </div>
-                <button type="submit" class="btn">ایجاد مدیر اصلی</button>
-            </form>
-        </div>
-
-        <!-- Step 3: Create User (Optional) -->
-        <div class="card">
-            <h2 class="card-title">۳. ساخت حساب برای همکاران (اختیاری)</h2>
-            <p class="hint">هر یک از همکاران می‌تواند با نام کاربری و دسترسی اختصاصی وارد شود.</p>
-            <form method="POST">
-                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
-                <input type="hidden" name="action" value="create_user">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>نام کاربری همکار:</label>
-                        <input type="text" name="username" placeholder="مثال: reza" required>
-                    </div>
-                    <div class="form-group">
-                        <label>نقش دسترسی:</label>
-                        <select name="role">
-                            <option value="user">کاربر عادی (ویرایش و ثبت پرونده‌ها)</option>
-                            <option value="admin">مدیر (دسترسی کامل)</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>گذرواژه (اختیاری):</label>
-                    <input type="text" name="password" placeholder="حداقل ۱۲ کاراکتر یا خالی بگذارید">
-                </div>
-                <button type="submit" class="btn">ایجاد حساب همکار</button>
-            </form>
-        </div>
-
-        <!-- Step 4: Smoke Test -->
-        <div class="card">
-            <h2 class="card-title">۴. آزمون سلامت هاست (Smoke Test)</h2>
-            <p class="hint">بررسی سلامت وب‌سرور، اتصالات دیتابیس و توابع رمزنگاری.</p>
-            <form method="POST">
-                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
-                <input type="hidden" name="action" value="smoke_test">
-                <button type="submit" class="btn">اجرای تست سلامت</button>
-            </form>
-        </div>
-
-        <!-- Step 5: Self-Destruct -->
-        <div class="card" style="border-color: #7f1d1d;">
-            <h2 class="card-title" style="color: #f87171;">۵. پایان کار و حذف فایل Setup</h2>
-            <p class="hint">پس از اطمینان از انجام مراحل بالا، جهت امنیت سرور حتماً فایل راه‌انداز را حذف کنید.</p>
-            <form method="POST" onsubmit="return confirm('آیا از حذف کامل فایل setup.php اطمینان دارید؟');">
-                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
-                <input type="hidden" name="action" value="delete_self">
-                <button type="submit" class="btn btn-danger">حذف خودکار فایل setup.php از سرور</button>
-            </form>
-        </div>
-
-    <?php endif; ?>
-</div>
+<main class="setup-shell">
+  <header><p class="eyebrow">IRICA / Deployment maintenance</p>
+    <h1>Secure setup</h1>
+    <p>Install the schema and create the first platform operator. Customer accounts belong in the operator panel.</p>
+  </header>
+  <?php if ($notice !== ''): ?>
+  <div class="notice <?= $success ? 'success' : 'error' ?>" role="<?= $success ? 'status' : 'alert' ?>"><?= setupEscape($notice) ?></div>
+  <?php endif; ?>
+  <?php if ($output !== ''): ?><pre><?= setupEscape($output) ?></pre><?php endif; ?>
+  <?php if ($available): ?>
+  <section class="setup-card" aria-labelledby="maintenance-heading">
+    <h2 id="maintenance-heading">Maintenance action</h2>
+    <p class="hint">Run migrations first, then create the operator. Operator creation is permanently closed after the first success, including host CLI creation.</p>
+    <form method="post" action="setup.php">
+      <input type="hidden" name="csrf" value="<?= setupEscape($csrf) ?>">
+      <label for="key">Setup secret</label>
+      <input id="key" name="key" type="password" required maxlength="64" autocomplete="off" aria-describedby="key-hint">
+      <p id="key-hint" class="hint">Enter the temporary secret from the hosting configuration. Never put it in a URL.</p>
+      <label for="action">Action</label>
+      <select id="action" name="action">
+        <option value="migrate">1. Run database migrations</option>
+        <option value="create_operator">2. Create first platform operator</option>
+        <option value="smoke_test">3. Check host health</option>
+      </select>
+      <fieldset><legend>For operator creation only</legend>
+        <label for="username">Operator username</label>
+        <input id="username" name="username" autocomplete="username" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,63}" aria-describedby="username-hint">
+        <p id="username-hint" class="hint">3–64 ASCII letters, numbers, dots, underscores or hyphens. Names are case-insensitive.</p>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" maxlength="4096" aria-describedby="password-hint">
+        <p id="password-hint" class="hint">At least 12 bytes. A bcrypt host accepts at most 72 bytes. Passwords are not trimmed.</p>
+        <label for="password-confirmation">Confirm password</label>
+        <input id="password-confirmation" name="password_confirmation" type="password" autocomplete="new-password" maxlength="4096">
+      </fieldset>
+      <button type="submit">Run selected action</button>
+    </form>
+  </section>
+  <aside class="closing-note"><strong>Close the maintenance window when finished.</strong>
+    Set <code>operator_bootstrap_enabled</code> to <code>false</code> and remove <code>setup_key</code> in the hosting configuration. Generate a new secret for every future maintenance window.</aside>
+  <?php endif; ?>
+</main>
 </body>
 </html>

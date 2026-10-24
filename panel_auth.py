@@ -147,16 +147,45 @@ def verify_password(path, username, password):
 
 
 # ---------------------------------------------------------------- sessions
-def create_session(username, ttl_seconds=SESSION_TTL_SECONDS):
+def create_session(username, ttl_seconds=SESSION_TTL_SECONDS, *, mode="standalone",
+                   api_base=None, tenant_id=None, user_id=None, profile_key=None,
+                   role=None, profile_dir=None):
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
     with _SESSIONS_LOCK:
         _SESSIONS[token] = {
             "user": username,
+            "mode": mode,
+            "api_base": api_base,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "profile_key": profile_key,
+            "role": role,
+            "profile_dir": profile_dir,
             "csrf": csrf,
             "expires": time.time() + int(ttl_seconds),
         }
     return token
+
+
+def session_data(token):
+    """Full session record for an active session, or None."""
+    if not isinstance(token, str) or not token:
+        return None
+    with _SESSIONS_LOCK:
+        entry = _SESSIONS.get(token)
+        if not entry:
+            return None
+        if entry["expires"] < time.time():
+            del _SESSIONS[token]
+            return None
+        return dict(entry)
+
+
+def session_mode(token):
+    """The mode ('cloud' or 'standalone') for the given session, or None."""
+    data = session_data(token)
+    return data.get("mode") if data else None
 
 
 def session_user(token):
