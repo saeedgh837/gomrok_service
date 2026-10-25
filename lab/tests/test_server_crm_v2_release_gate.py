@@ -12,13 +12,15 @@ def text(path):
 
 class ReleaseGateTests(unittest.TestCase):
     def test_release_identity_and_forward_migrations(self):
-        self.assertEqual(text("VERSION").strip(), "1.15.1")
-        self.assertTrue((ROOT / "RELEASE_NOTES_v1.15.1.md").is_file())
+        self.assertEqual(text("VERSION").strip(), "1.16.0")
+        self.assertTrue((ROOT / "RELEASE_NOTES_v1.16.0.md").is_file())
         expected = [
             "001_initial.sql",
             "002_server_crm_v2_foundation.sql",
             "003_server_crm_v2_device_auth.sql",
             "004_legacy_import_verification.sql",
+            "005_private_accounts.sql",
+            "006_account_provision_import.sql",
         ]
         actual = sorted(p.name for p in (ROOT / "host" / "migrations").glob("*.sql"))
         for name in expected:

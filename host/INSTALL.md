@@ -129,44 +129,24 @@ the directory itself (`0750`).
 
 ## 3.5. Shared hosting without SSH or Terminal access
 
-If your cPanel plan does not provide SSH or Terminal access, you have two safe options to run migrations, create the admin user, and verify the host:
+If your hosting plan does not provide SSH, use the controlled setup page. It creates a **platform operator**, not a customer or a shared CRM administrator. Customer onboarding is a separate operator-panel workflow.
 
-### Option A: Web Setup Tool (`setup.php`) — Recommended for non-technical setup
+1. In the private `config/config.php`, set `operator_bootstrap_enabled` to the literal boolean `true` and set `setup_key` to a newly generated 64-character lowercase hexadecimal secret (`bin2hex(random_bytes(32))`). Do not reuse the JWT signing key.
+2. Use native HTTPS. If a reverse proxy terminates TLS, list its exact IPv4/IPv6 peer addresses in `trusted_proxies`; it must overwrite `X-Forwarded-Proto` with a single scheme. Leave `allow_loopback_http` false on deployed hosts, including loopback-proxy deployments.
+3. Open `https://api.<domain>/setup.php` **without any query string**. Enter the temporary secret in the password-type form field. A separate HttpOnly, SameSite=Strict setup cookie binds the CSRF token; HTTPS sets Secure. The setup session expires after 15 minutes.
+4. Select **Run database migrations**, then **Create first platform operator** and enter the chosen operator username and matching password. Supplied passwords and setup secrets are never shown again. This operator cannot sign in to CRM or enroll a customer device.
+5. Select **Check host health**. No shared tenant is required.
+6. Immediately set `operator_bootstrap_enabled` to `false` and remove `setup_key`. The page returns 404 while disabled. Use a fresh secret for every later maintenance window.
 
-1. In `config/config.php`, set a strong random secret in `setup_key`:
-   ```php
-   'setup_key' => 'YOUR_RANDOM_LONG_SECRET_KEY',
-   ```
-2. Open your browser and navigate to:
-   ```
-   https://api.<domain>/setup.php?key=YOUR_RANDOM_LONG_SECRET_KEY
-   ```
-3. Use the web interface to:
-   - Run all pending forward-only database migrations.
-   - Create the initial admin user.
-   - Run the smoke test to verify extensions and database connectivity.
-   - Click **"حذف خودکار فایل setup.php"** to permanently delete the setup script from the server once finished.
+Operator creation has a durable one-shot database gate shared with `bin/create-operator.php`. Disabling/deleting an operator, rotating the secret, rerunning migrations or reopening a maintenance window never rearms creation. Later deliberately authorized migrations still work with setup enabled, a fresh secret and CSRF. Exact-name operator recovery is host-controlled through `create-operator.php --reset-password`; it never promotes a customer.
 
-### Option B: Temporary cPanel Cron Job
-
-cPanel → **Cron Jobs**:
-1. Schedule a job to run once (e.g. `* * * * *`):
-   ```sh
-   /usr/local/bin/php /home/youruser/irica-host/bin/migrate.php > /home/youruser/migrate.log 2>&1
-   ```
-2. Check `migrate.log` in cPanel File Manager to confirm migration status.
-3. Run the admin creation cron:
-   ```sh
-   /usr/local/bin/php /home/youruser/irica-host/bin/create-admin.php --username=admin > /home/youruser/admin.log 2>&1
-   ```
-4. Check `admin.log` to retrieve the generated admin password.
-5. Delete the cron jobs immediately from cPanel.
+Do not place passwords in a cron command or leave generated passwords in web-accessible output. CLI-only deployments may run `bin/migrate.php` and `bin/create-operator.php` directly, with private environment/redirected-STDIN input; see each command's `--help`.
 
 ---
 
 ## 4. Create the schema
 
-Run migrations from the shell, **never** from a URL:
+For CLI-equipped deployments, run migrations from the shell. On no-SSH hosting use only the protected setup form in §3.5, never a secret-bearing URL:
 
 ```sh
 cd /home/youruser/irica-host
@@ -189,73 +169,62 @@ the account that holds `CREATE`.
 
 ---
 
-## 5. Create the first administrator
+## 5. Create a private customer administrator
+
+Platform operators and customer administrators are separate identities. Use the
+protected operator setup above for platform management. A host-controlled customer
+CLI always creates a **new private dataset**, never a member of another account.
 
 ```sh
-cd /home/youruser/irica-host
-IRICA_ADMIN_PASSWORD='…' php bin/create-admin.php --username=admin
+php bin/create-admin.php --username=customer-one --password-stdin
 ```
 
-* If `IRICA_ADMIN_PASSWORD` is absent a random one is generated and printed
-  **once** — copy it immediately; it is never recoverable from the database.
-* The password never appears on the command line (shell history) and the
-  hash is never printed.
-* The script is **single-use**: it refuses while an admin membership already
-  exists, and tells you to use `--reset-password` instead.
-* `--reset-password` bumps the user's `token_version` and revokes every live
-  session for that user, which is the correct way to force a re-login.
+Redirect a password-manager supplied line into standard input; interactive echoed
+input is refused. Alternatively supply `IRICA_ADMIN_PASSWORD` through a private
+process environment, not a command containing the secret. Do not use both sources.
+Passwords are not trimmed; they require at least 12 bytes, at most 4096 bytes
+(72 on bcrypt-only PHP), and cannot contain a null byte. `--password=...` is
+forbidden and rejected before database access.
 
-```
+If no password source is supplied, a random password is printed **once**, only
+after successful creation. Supplied passwords and hashes are never printed.
+
+The command is not single-use: each unused canonical username creates an isolated
+owner/workspace. `--reset-password --username=EXACT-NAME` only rotates an existing
+owner's password and revokes their user/device credentials. It never creates,
+renames, promotes or activates an account. Optional role/slug arguments on reset
+are identity constraints, not changes.
+
+```sh
 php bin/create-admin.php --help
 ```
 
-This account can sign in from the desktop client and self-enrol its own
-machine. Normal users can also self-enrol their own machines; administrators
-can revoke any machine in the tenant. Device credentials are independent
-refresh-token families, so signing out or revoking one machine does not
-implicitly terminate unrelated machines.
+## 6. Private accounts and desktop machines
 
----
+Every customer login owns exactly one dataset. Different logins never share CRM
+data, even when both have the tenant-local `admin` role. That role gives no
+platform authority or whole-database backup access. Web onboarding gives each
+customer the `admin` role within their own dataset.
 
-## 6. Create user accounts and enrol desktop machines
-
-`create-admin.php` is single-use by design, so it is not how a second person
-gets in. Create additional accounts with `bin/create-user.php`; there is
-deliberately no public HTTP endpoint for user creation. **One username per
-human is strongly recommended** because audit events can then identify who
-made a change. The server nevertheless supports multiple simultaneous sessions
-and multiple desktop machines for the same username when a shared account is
-operationally necessary:
+`bin/create-user.php` is the equivalent host-controlled creation/recovery command
+with a default tenant-local `user` role. Use `--role=admin` for full control of
+that new private dataset. `--tenant-slug` must be unused; it cannot join a workspace
+and configured `tenant_slug` is ignored. Username matching is case-insensitive
+under the strict ASCII policy; a duplicate canonical name creates nothing.
 
 ```sh
-cd /home/youruser/irica-host
-IRICA_USER_PASSWORD='…' php bin/create-user.php \
-    --username=amir --display-name='Amir' --role=user
-php bin/create-user.php --username=sara --display-name='Sara' --role=user
-php bin/create-user.php --help
+php bin/create-user.php --username=customer-two --role=admin --password-stdin
 ```
 
-* `--role=user` is the **non-administrator**: it reads common CRM data and
-  creates and edits cases, but it may not write administrator settings, open
-  or close a period, delete protected records, or run a legacy import. It can
-  self-enrol and revoke its own desktop machines. Use `--role=admin` only for
-  somebody who really administers the installation.
-* A user can sign in on more than one PC at the same time. Each PC receives a
-  distinct `sync_device_id` and device refresh-token family, so one machine can
-  be revoked without disabling the others.
-* A shared username is supported, including simultaneous use from two PCs, but
-  it weakens human attribution in the audit trail. Prefer separate usernames
-  whenever you need to know which person performed an action.
-* With no `--password=` and no `IRICA_USER_PASSWORD`, a random password is
-  generated and printed **once** — record it in the password manager
-  immediately, before it scrolls away; it exists nowhere else and no hash is
-  ever printed. Prefer the environment form over `--password=` so the secret
-  stays out of your shell history.
-* A username that already exists — including `admin` — is refused with exit 1
-  and creates nothing.
-* Keep `create-user.php` for as long as the installation runs: it is the only
-  supported way to add an account later. `create-admin.php` is the bootstrap
-  and the password-rotation path, and can be deleted after step 5.
+The private environment alternative is `IRICA_USER_PASSWORD`. With neither an
+environment password nor `--password-stdin`, a generated password is shown once.
+The same password-argument, input-source and byte-limit rules apply to both CLIs.
+Keep the host commands protected and available for exact-name recovery.
+
+Multiple PCs using the **same customer login** synchronize that account's private
+data. Each PC receives a distinct device ID and refresh-token family; revoking
+one machine does not grant or revoke access to any other customer's workspace.
+A second login is a second dataset, not another member of the first.
 
 ---
 

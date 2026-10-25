@@ -37,7 +37,7 @@ class PresenceStaticTests(unittest.TestCase):
     def test_routes_and_client_require_acting_user(self):
         self.assertIn("'/presence/heartbeat' => ['POST']", self.index)
         self.assertIn("'/presence/close' => ['POST']", self.index)
-        self.assertIn("$auth->actingUser($request)", self.index)
+        self.assertIn("$auth->actingUser($request, $device)", self.index)
         self.assertIn('"/presence/heartbeat"', self.client)
         self.assertIn('"/presence/close"', self.client)
         self.assertIn("acting=True", self.client)

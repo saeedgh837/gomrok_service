@@ -13601,49 +13601,227 @@ class Handler(BaseHTTPRequestHandler):
             payload = {}
         username = str(payload.get("username") or "").strip()
         password = str(payload.get("password") or "")
+        mode = str(payload.get("mode") or "").strip().lower()
+
+        # Resolve mode: explicit "standalone"/"local" vs "cloud"/"online", or autodetect
+        if mode in ("standalone", "local"):
+            resolved_mode = "standalone"
+        elif mode in ("cloud", "online"):
+            resolved_mode = "cloud"
+        else:
+            try:
+                from cloud_sync.config import load_config
+                cfg = load_config()
+                resolved_mode = "cloud" if getattr(cfg, "api_base", None) else "standalone"
+            except Exception:
+                resolved_mode = "standalone"
+
+        if resolved_mode == "standalone":
+            if panel_auth.is_locked_out(username):
+                self._json({"ok": False,
+                            "errors": ["تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید"]},
+                           429)
+                return
+            if panel_auth.verify_password(panel_auth.USERS_PATH, username, password):
+                panel_auth.register_success(username)
+                token = panel_auth.create_session(username, mode="standalone")
+                cookie = ("irica_session=" + token +
+                          "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
+                          str(panel_auth.SESSION_TTL_SECONDS))
+                csrf = panel_auth.session_csrf(token) or ""
+                csrf_cookie = (CSRF_COOKIE + "=" + csrf +
+                               "; Path=/; SameSite=Strict; Max-Age=" +
+                               str(panel_auth.SESSION_TTL_SECONDS))
+                self.send_response(200)
+                self.send_header("Set-Cookie", cookie)
+                self.send_header("Set-Cookie", csrf_cookie)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                body = json.dumps({"ok": True, "actor": username, "mode": "standalone"},
+                                  ensure_ascii=False).encode("utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                try:
+                    import crm as crm_mod
+                    crm_mod.crm_log("info", "login_ok", user=username)
+                except Exception:
+                    pass
+                return
+            if panel_auth.valid_username(username):
+                panel_auth.register_failed_login(username)
+            self._json({"ok": False,
+                        "errors": ["نام کاربری یا رمز عبور اشتباه است"]}, 401)
+            return
+
+        # Cloud mode — online-only, fails closed without local password fallback
+        if not username or not password:
+            self._json({"ok": False,
+                        "errors": ["نام کاربری و رمز عبور الزامی است"]}, 400)
+            return
         if panel_auth.is_locked_out(username):
             self._json({"ok": False,
                         "errors": ["تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید"]},
                        429)
             return
-        if panel_auth.verify_password(panel_auth.USERS_PATH, username, password):
-            panel_auth.register_success(username)
-            token = panel_auth.create_session(username)
-            # Session: HttpOnly + Strict, so neither script nor a cross-site
-            # request can touch it. Companion: the same CSRF token in a
-            # readable Strict cookie, which is the only way the page's JS can
-            # put it in the X-CSRF-Token header (the session cookie itself is
-            # invisible to script on purpose).
-            cookie = ("irica_session=" + token +
-                      "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
-                      str(panel_auth.SESSION_TTL_SECONDS))
-            csrf = panel_auth.session_csrf(token) or ""
-            csrf_cookie = (CSRF_COOKIE + "=" + csrf +
-                           "; Path=/; SameSite=Strict; Max-Age=" +
-                           str(panel_auth.SESSION_TTL_SECONDS))
-            self.send_response(200)
-            self.send_header("Set-Cookie", cookie)
-            self.send_header("Set-Cookie", csrf_cookie)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+
+        try:
+            runtime = _cloud_runtime()
+        except Exception:
+            self._json({"ok": False,
+                        "errors": ["تنظیمات سرور ابری نامعتبر است"]}, 500)
+            return
+
+        client = runtime.get("client")
+        config = runtime.get("config")
+        if client is None or not getattr(config, "api_base", None):
+            self._json({"ok": False,
+                        "errors": ["آدرس سرور ابری تنظیم نشده است"]}, 500)
+            return
+
+        from cloud_sync.errors import (
+            AuthRequiredError, HttpError, UnreachableError,
+            RequestTimeoutError, BadResponseError
+        )
+        try:
+            login_payload = client.login(username, password)
+        except AuthRequiredError:
+            if panel_auth.valid_username(username):
+                panel_auth.register_failed_login(username)
+            self._json({"ok": False,
+                        "errors": ["نام کاربری یا رمز عبور اشتباه است"]}, 401)
+            return
+        except (UnreachableError, RequestTimeoutError):
+            self._json({"ok": False,
+                        "errors": ["ارتباط با سرور برقرار نشد؛ حالت ابری نیازمند اتصال آنلاین است"]},
+                       503)
+            return
+        except BadResponseError:
+            self._json({"ok": False,
+                        "errors": ["پاسخ سرور نامعتبر است"]}, 502)
+            return
+        except HttpError as exc:
+            status = exc.status if 400 <= exc.status < 600 else 500
+            code = getattr(exc, "code", "SERVER_ERROR")
+            msg = cloud_error_message(code) or "ورود به سرور ناموفق بود"
+            self._json({"ok": False, "errors": [msg], "code": code}, status)
+            return
+        except Exception:
+            self._json({"ok": False,
+                        "errors": ["خطای غیرمنتظره در ارتباط با سرور"]}, 500)
+            return
+
+        user_id = str(login_payload.get("user_id") or
+                      (login_payload.get("user") or {}).get("id") or "").strip()
+        tenant_id = str(login_payload.get("tenant_id") or "").strip()
+        import uuid
+        def _is_uuid(val):
             try:
+                uuid.UUID(str(val))
+                return True
+            except Exception:
+                return False
+        if not _is_uuid(user_id) or not _is_uuid(tenant_id):
+            self._json({"ok": False,
+                        "errors": ["شناسه هویت یا فضای کاری سرور نامعتبر است"]}, 502)
+            return
+
+        api_base = config.api_base
+        profile_key = app_paths.account_profile_key(api_base, tenant_id, user_id)
+        account_dir = app_paths.account_profile_dir(api_base, tenant_id, user_id)
+        app_paths.write_account_manifest(account_dir, api_base=api_base,
+                                         tenant_id=tenant_id, user_id=user_id,
+                                         username=username)
+        config.tenant_id = tenant_id
+        config.save()
+
+        # Enrol machine identity if missing
+        vault = getattr(client, "vault", None)
+        has_dev = getattr(vault, "has_device_credentials", False) if vault else False
+        if not config.sync_device_id or not has_dev:
+            try:
+                client.enroll()
+            except Exception:
+                self._json({"ok": False,
+                            "errors": ["ثبت دستگاه در سرور ناموفق بود"]}, 502)
+                return
+
+        # Initial bootstrap snapshot if fresh account
+        if getattr(config, "dataset_epoch", None) is None:
+            try:
+                snapshot = client.bootstrap()
                 import crm as crm_mod
-                crm_mod.crm_log("info", "login_ok", user=username)
+                from cloud_sync import apply
+                from cloud_sync.importer import FileStore
+                store = FileStore(crm_mod._store_path())
+                versions_path = _cloud_versions_path()
+                versions = _load_cloud_versions(versions_path)
+                dirty = _cloud_dirty_set(runtime.get("outbox"))
+                apply.apply_snapshot(
+                    snapshot,
+                    store=store,
+                    source_installation_id=config.source_installation_id,
+                    versions=versions,
+                    dirty=dirty,
+                )
+                _save_cloud_versions(versions, versions_path)
+                client.commit_bootstrap(snapshot)
             except Exception:
                 pass
-            return
-        if panel_auth.valid_username(username):
-            panel_auth.register_failed_login(username)
-        self._json({"ok": False,
-                    "errors": ["نام کاربری یا رمز عبور اشتباه است"]}, 401)
+
+        global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE, _CLOUD_ROLE
+        user_info = login_payload.get("user") if isinstance(login_payload, dict) else {}
+        role = user_info.get("role") or "admin"
+        _CLOUD_ACTOR = _cloud_actor_name(login_payload, username)
+        _CLOUD_MUST_CHANGE = bool(login_payload.get("must_change_password"))
+        _CLOUD_ROLE = role
+        _cloud_apply_login_event(runtime)
+        cloud_worker_start()
+        cloud_worker_kick()
+
+        token = panel_auth.create_session(
+            username,
+            mode="cloud",
+            api_base=api_base,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            profile_key=profile_key,
+            role=role,
+            profile_dir=account_dir,
+        )
+        panel_auth.register_success(username)
+        cookie = ("irica_session=" + token +
+                  "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" +
+                  str(panel_auth.SESSION_TTL_SECONDS))
+        csrf = panel_auth.session_csrf(token) or ""
+        csrf_cookie = (CSRF_COOKIE + "=" + csrf +
+                       "; Path=/; SameSite=Strict; Max-Age=" +
+                       str(panel_auth.SESSION_TTL_SECONDS))
+        self.send_response(200)
+        self.send_header("Set-Cookie", cookie)
+        self.send_header("Set-Cookie", csrf_cookie)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        body = json.dumps({
+            "ok": True,
+            "actor": username,
+            "mode": "cloud",
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "role": role,
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_logout(self):
         token = _cookie_token(self.headers)
         if token:
+            data = panel_auth.session_data(token)
             panel_auth.destroy_session(token)
+            if data and data.get("mode") == "cloud":
+                try:
+                    cloud_logout()
+                except Exception:
+                    pass
         self.send_response(302)
         self.send_header("Location", "/login")
         self.send_header("Set-Cookie",

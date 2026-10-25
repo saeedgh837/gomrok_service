@@ -45,6 +45,7 @@ jobs:
           test_server_crm_v2_finance_route
           test_server_crm_v2_finance_transport
           test_server_crm_v2_presence_client
+          test_desktop_private_accounts
 
   windows-regression-contracts:
     runs-on: windows-latest
@@ -86,6 +87,7 @@ jobs:
       IRICA_DB_ROOT_PASSWORD: irica_ci_root
       IRICA_DB_HOST: 127.0.0.1
       IRICA_DB_PORT: '3307'
+      IRICA_TEST_DB_ACCOUNT_HOST: '%'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -112,6 +114,8 @@ jobs:
           test_server_crm_v2_backup_restore
           test_server_crm_v2_presence
           test_v115_audit_config_switch
+          test_private_accounts
+          test_legacy_shared_reset
       - name: Lint host PHP and migration page JavaScript
         run: |
           find host -type f -name '*.php' -print0 | xargs -0 -n1 php -l
@@ -136,6 +140,7 @@ jobs:
       IRICA_DB_ROOT_PASSWORD: irica_mysql57_root
       IRICA_DB_HOST: 127.0.0.1
       IRICA_DB_PORT: '3308'
+      IRICA_TEST_DB_ACCOUNT_HOST: '%'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 final class LegacyImport
 {
+    public const NORMALIZATION_VERSION = 'legacy-1';
     private const MAX_SUPPORTED_VERSION = '1.13.1';
 
     /** @var array<string, string> */
@@ -59,6 +60,19 @@ final class LegacyImport
      */
     public function analyze(Principal $user, array $body, string $requestId,
                             string $ip): array
+    {
+        return $this->analyzeUsing($user, $body, $requestId, $ip);
+    }
+
+    public function analyzeInTransaction(ProvisionImportContext $user, array $body,
+                                          string $requestId, string $ip): array
+    {
+        $user->requireBound($this->db, null, true);
+        return $this->analyzeUsing($user, $body, $requestId, $ip);
+    }
+
+    private function analyzeUsing(Principal|ProvisionImportContext $user, array $body,
+                                   string $requestId, string $ip): array
     {
         $this->requireAdminUser($user);
         $sourceText = $body['source_text'] ?? null;
@@ -129,7 +143,7 @@ final class LegacyImport
             || ($counts['invalid'] ?? 0) > 0) ? 'review' : 'ready';
 
         try {
-            $this->db->transaction(function (Database $tx) use (
+            $stage = function (Database $tx) use (
                 $jobId, $tenantId, $sha, $version, $sourceInstallationId,
                 $filename, $user, $now, $rows, $status
             ): void {
@@ -148,12 +162,13 @@ final class LegacyImport
                     'INSERT INTO legacy_import_jobs '
                     . '(id,tenant_id,source_sha256,source_version,'
                     . 'source_installation_id,original_filename,status,'
-                    . 'record_count,created_by,created_at,updated_at,error_code) '
-                    . 'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    . 'record_count,created_by,created_by_operator,created_at,updated_at,error_code) '
+                    . 'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     [
                         $jobId, $tenantId, $sha, $version,
                         $sourceInstallationId, $filename, 'analyzing',
-                        count($rows), $user->userId, $now, $now, '',
+                        count($rows), $user instanceof ProvisionImportContext ? null : $user->userId,
+                        $user instanceof ProvisionImportContext ? $user->operatorId() : null, $now, $now, '',
                     ]
                 );
 
@@ -179,7 +194,12 @@ final class LegacyImport
                     . 'WHERE id = ? AND tenant_id = ?',
                     [$status, $now, $jobId, $tenantId]
                 );
-            });
+            };
+            if ($user instanceof ProvisionImportContext) {
+                $stage($this->db);
+            } else {
+                $this->db->transaction($stage);
+            }
         } catch (LegacyImportDuplicate $duplicate) {
             return $this->preview($user, $duplicate->jobId);
         }
@@ -194,8 +214,9 @@ final class LegacyImport
         $this->log->audit($this->db, [
             'tenant_id' => $tenantId,
             'action' => 'legacy_import.analyze',
-            'actor_type' => 'user',
-            'actor_user_id' => $user->userId,
+            'actor_type' => $user instanceof ProvisionImportContext ? 'operator' : 'user',
+            'actor_user_id' => $user instanceof ProvisionImportContext ? null : $user->userId,
+            ...($user instanceof ProvisionImportContext ? ['actor_operator_id' => $user->operatorId()] : []),
             'entity' => 'tenant_state',
             'entity_id' => $tenantId,
             'request_id' => $requestId,
@@ -208,13 +229,21 @@ final class LegacyImport
                 'status' => $status,
             ],
         ]);
+        if ($user instanceof ProvisionImportContext) {
+            // The caller binds this new job before constructing a review capability.
+            return ['job' => ['id' => $jobId, 'source_sha256' => $sha,
+                'source_version' => $version, 'original_filename' => $filename]];
+        }
         return $this->preview($user, $jobId);
     }
 
     /** @return array<string, mixed> */
-    public function preview(Principal $user, string $jobId): array
+    public function preview(Principal|ProvisionImportContext $user, string $jobId): array
     {
         $this->requireAdminUser($user);
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db, $jobId);
+        }
         if (!Ids::isUuid($jobId)) {
             throw new ApiException(400, Codes::BAD_PAYLOAD,
                 'job_id must be a UUID');
@@ -271,8 +300,12 @@ final class LegacyImport
         ];
     }
 
-    private function requireAdminUser(Principal $user): void
+    private function requireAdminUser(Principal|ProvisionImportContext $user): void
     {
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db);
+            return;
+        }
         if (!$user->isUser()) {
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'legacy migration requires a user session');

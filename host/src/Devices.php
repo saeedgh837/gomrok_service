@@ -62,6 +62,8 @@ final class Devices
             $principal, $deviceId, $familyId, $refreshToken, $name,
             $now, $nowEpoch, $idle, $absolute
         ): void {
+            Workspace::lockCredential($tx, $principal->tenantId, $principal->userId,
+                $principal->tokenVersion);
             // Database::insert remains constrained by Schema.php. Migration
             // 003's BEFORE INSERT trigger copies enrolled_by to owner_user_id
             // within this exact transaction before the row becomes visible.

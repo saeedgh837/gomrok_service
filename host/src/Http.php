@@ -4,7 +4,7 @@
  *
  * Contract: lab/docs/CLOUD_SYNC_SPEC.md §6 (envelope), §10.6 (body size cap,
  * strict Content-Type, prepared inputs), §10.7 (CORS closed), §2 (HTTPS is
- * refused unless the connection is loopback or X-Forwarded-Proto says https).
+ * refused unless native TLS or an explicitly trusted proxy confirms HTTPS).
  *
  * Every failure leaves this module as
  *   {"ok":false,"error":{"code","message","request_id"}}
@@ -274,36 +274,41 @@ final class Request
         return $parsed;
     }
 
-    /**
-     * HTTPS gate of spec §2: refuse everything that is neither loopback (the
-     * health probe and the local verification server) nor forwarded over TLS.
-     *
-     * Deliberately a pure function of (proto, remote address, https flag) so
-     * lab/tests/test_host_api.py can assert the whole matrix without a proxy.
-     */
+    /** Exact binary peer matching; forwarding headers from other peers have no authority. */
     public static function isSecureTransport(string $forwardedProto,
                                              string $remoteAddr,
-                                             string $httpsFlag): bool
+                                             string $httpsFlag,
+                                             array $trustedProxies = [],
+                                             bool $allowLoopbackHttp = false): bool
     {
-        if (self::isLoopback($remoteAddr)) {
+        $peer = @inet_pton($remoteAddr);
+        if ($peer === false) {
+            return false;
+        }
+        if (strtolower($httpsFlag) === 'on') {
             return true;
         }
-        if (strtolower(trim($forwardedProto)) === 'https') {
-            return true;
+        foreach ($trustedProxies as $proxy) {
+            if (is_string($proxy) && @inet_pton($proxy) === $peer) {
+                // A local proxy must not fall through to the development exception.
+                return strtolower(trim($forwardedProto)) === 'https';
+            }
         }
-        // TLS terminated in front of PHP itself (not the cPanel layout, but
-        // correct when it happens).
-        return strtolower($httpsFlag) === 'on';
+        return $allowLoopbackHttp && self::isLoopback($remoteAddr);
     }
 
     public static function isLoopback(string $remoteAddr): bool
     {
-        if ($remoteAddr === '127.0.0.1' || $remoteAddr === '::1') {
-            return true;
+        $address = @inet_pton($remoteAddr);
+        if ($address === false) {
+            return false;
         }
-        // 127.0.0.0/8 and the IPv4-mapped form of ::1.
-        return preg_match('/^127\./', $remoteAddr) === 1
-            || preg_match('/^::ffff:127\./i', $remoteAddr) === 1;
+        if (strlen($address) === 4) {
+            return ord($address[0]) === 127;
+        }
+        return $address === inet_pton('::1')
+            || (substr($address, 0, 12) === hex2bin('00000000000000000000ffff')
+                && ord($address[12]) === 127);
     }
 }
 

@@ -138,7 +138,7 @@ final class Log
      *
      * @param array<string, mixed> $event
      */
-    public function audit(\Database $db, array $event): void
+    public function audit(\Database $db, array $event, bool $required = false): void
     {
         $metadata = $event['metadata'] ?? null;
         $encoded = null;
@@ -157,6 +157,8 @@ final class Log
                 'actor_type' => substr((string) ($event['actor_type'] ?? 'system'),
                     0, 16),
                 'actor_user_id' => $event['actor_user_id'] ?? null,
+                ...(isset($event['actor_operator_id'])
+                    ? ['actor_operator_id' => $event['actor_operator_id']] : []),
                 'actor_device_id' => $event['actor_device_id'] ?? null,
                 'entity' => substr((string) ($event['entity'] ?? ''), 0, 64),
                 'entity_id' => $event['entity_id'] ?? null,
@@ -167,6 +169,9 @@ final class Log
                 'metadata' => $encoded,
             ]);
         } catch (\Throwable $error) {
+            if ($required) {
+                throw $error;
+            }
             $fields = self::describe($error);
             $fields['action'] = 'audit.write_failed';
             $fields['level'] = 'error';

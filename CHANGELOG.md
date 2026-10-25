@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.16.0] - 2026-10-24
+
+### Added
+
+- **Private customer accounts and tenant isolation (one login, one private CRM dataset).**
+  - Forward migrations `005_private_accounts.sql` and `006_account_provision_import.sql` introducing `account_workspaces`, global `login_names` registry, independent `platform_operators`, and `account_provisions`.
+  - Immutable owner-to-workspace mapping with fail-closed gating across login, refresh, device enrollment, and active operations.
+  - Customer tenant-local `admin` role scoped strictly to their private dataset; platform operations and whole-database backups denied to customers.
+- **Operator onboarding web service and reviewed import publication.**
+  - New protected web provisioning workflow under `legacy-import.php` allowing platform operators to review legacy `crm_store.json` files and create customer accounts.
+  - Atomic compose of apply, reconciliation, account creation, and activation in a single database transaction; automatic rollback on failure.
+  - Independent platform operator authentication realm (`OperatorAuth`) with isolated sessions, rate limits, and CSRF protection.
+- **Online-only desktop application authentication and profile isolation.**
+  - Main `/login` dispatcher in `panel.py` cleanly separates standalone local mode from cloud authentication.
+  - Cloud mode is strictly online-only: server failures or invalid credentials fail closed immediately with zero fallback to local accounts; offline lease access retired.
+  - Local state and caches isolated under deterministic SHA-256 account directory namespaces (`accounts/v1/<profile_key>/`) with `manifest.json`.
+- **One-time legacy shared dataset reset tool.**
+  - Host maintenance CLI `host/bin/reset-legacy-shared-data.php` requiring `--confirm-destructive-wipe`, pre-wipe backup verification, operator presence check, and foreign-key ordered deletion. Preserves platform operators and private workspaces; logs action in `audit_events`.
+
 ## [1.15.1] - 2026-10-17
 
 ### Fixed

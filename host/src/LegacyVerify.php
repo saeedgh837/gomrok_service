@@ -122,9 +122,12 @@ final class LegacyVerify
     }
 
     /** @return array<string,mixed> */
-    public function report(Principal $user, string $jobId): array
+    public function report(Principal|ProvisionImportContext $user, string $jobId): array
     {
         $this->requireAdmin($user);
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db, $jobId);
+        }
         if (!Ids::isUuid($jobId)) {
             throw new ApiException(400, Codes::BAD_PAYLOAD, 'job_id must be a UUID');
         }
@@ -419,8 +422,12 @@ final class LegacyVerify
             + (int) ($links['invalid_transaction_customer_links'] ?? 0);
     }
 
-    private function requireAdmin(Principal $user): void
+    private function requireAdmin(Principal|ProvisionImportContext $user): void
     {
+        if ($user instanceof ProvisionImportContext) {
+            $user->requireBound($this->db);
+            return;
+        }
         if (!$user->isUser()) {
             throw new ApiException(401, Codes::AUTH_REQUIRED,
                 'legacy migration verification requires a user session');

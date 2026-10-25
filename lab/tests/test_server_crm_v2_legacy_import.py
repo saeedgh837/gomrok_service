@@ -15,6 +15,9 @@ MIGRATION_FILES = (
     "001_initial.sql",
     "002_server_crm_v2_foundation.sql",
     "003_server_crm_v2_device_auth.sql",
+    "004_legacy_import_verification.sql",
+    "005_private_accounts.sql",
+    "006_account_provision_import.sql",
 )
 
 

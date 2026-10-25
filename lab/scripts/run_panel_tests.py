@@ -171,6 +171,9 @@ DEFAULT = [
     "test_server_crm_v2_finance_route",
     "test_host_schema",
     "test_host_api",
+    "test_private_accounts",
+    "test_desktop_private_accounts",
+    "test_legacy_shared_reset",
 ]
 
 names = sys.argv[1:] or DEFAULT

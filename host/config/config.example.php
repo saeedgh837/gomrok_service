@@ -27,8 +27,13 @@ return [
     // The version prefix of every route (spec §6: https://api.<domain>/v1).
     'base_path' => '/v1',
 
-    // The one shared tenant of spec §7. bin/create-admin.php creates it.
-    'tenant_slug' => 'default',
+    // Forwarded HTTPS is accepted only from these exact IPv4/IPv6 peers.
+    // Each trusted proxy must overwrite X-Forwarded-Proto, not append to it.
+    'trusted_proxies' => [],
+
+    // Development only: direct loopback HTTP. Keep false on a deployed host,
+    // including hosts whose reverse proxy connects over loopback.
+    'allow_loopback_http' => false,
 
     // The application account: SELECT/INSERT/UPDATE/DELETE only (spec §2).
     // It must never hold CREATE — host/bin/smoke-test.php refuses to pass
@@ -98,8 +103,12 @@ return [
     // bin/smoke-test.php can prove TLS and response headers on the live host.
     'smoke_probe_url' => null,
 
-    // Optional setup key for web-based installation on shared hosting without SSH.
-    // If set, you can visit https://api.<domain>/setup.php?key=YOUR_SETUP_KEY
+    // Temporary no-SSH maintenance window. Only literal true enables setup.
+    // Open /setup.php without a query string; enter the secret in its POST form.
+    // Generate a new key for each window: bin2hex(random_bytes(32)).
+    // Afterwards disable the window and remove the key. Operator creation is
+    // permanently one-shot; later maintenance cannot rearm it.
+    'operator_bootstrap_enabled' => false,
     'setup_key' => null,
 
     // Optional secret key to secure public/telegram.php relay from unauthorized use.
