@@ -45,7 +45,7 @@ class PrivateAccountTests(unittest.TestCase):
         cls.jwt_secret = secrets.token_hex(32)
         cls.directory = Path(tempfile.mkdtemp(prefix="irica_private_"))
         cls.addClassCleanup(shutil.rmtree, cls.directory, True)
-        cls.account_host = os.environ.get("IRICA_TEST_DB_ACCOUNT_HOST", "127.0.0.1")
+        cls.account_host = os.environ.get("IRICA_TEST_DB_ACCOUNT_HOST", "%")
         if cls.account_host not in ("127.0.0.1", "%"):
             raise AssertionError("Invalid disposable database account host")
         cls._sql("CREATE DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" % cls.dbname,
