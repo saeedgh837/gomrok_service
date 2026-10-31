@@ -20,6 +20,7 @@ define('HOST_ROOT', dirname(__DIR__));
 foreach ([
     'Schema', 'Database', 'Http', 'Ids', 'Config', 'Log', 'Tokens', 'Roles',
     'RateLimit', 'Auth', 'Sync', 'Import', 'MigrationPreflight', 'Migrations',
+    'Accounts', 'Workspaces',
 ] as $classFile) {
     require_once HOST_ROOT . '/src/' . $classFile . '.php';
 }
@@ -366,6 +367,47 @@ if ($configError !== '') {
             $notice = 'خطا در ساخت حساب کاربر: ' . $e->getMessage();
             $noticeType = 'error';
         }
+    } elseif ($action === 'create_v2_account') {
+        try {
+            $db = Database::fromConfig($cfg['db']);
+            $accounts = new Accounts($db);
+            $kind = trim((string) ($_POST['v2_kind'] ?? 'operator'));
+            $login = trim((string) ($_POST['v2_login'] ?? ''));
+            $displayName = trim((string) ($_POST['v2_display_name'] ?? ''));
+            $password = (string) ($_POST['v2_password'] ?? '');
+
+            if ($login === '') {
+                throw new RuntimeException('شناسه کاربری (login) نمی‌تواند خالی باشد.');
+            }
+            $generated = false;
+            if ($password === '') {
+                $password = rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');
+                $generated = true;
+            }
+            if ($displayName === '') {
+                $displayName = null;
+            }
+
+            $now = time();
+            $receipt = $kind === 'first_operator'
+                ? $accounts->seedFirstOperator($login, $password, $displayName, $now)
+                : $accounts->create($login, $password, $displayName,
+                    $kind === 'operator' ? Accounts::ROLE_OPERATOR : Accounts::ROLE_MEMBER,
+                    $now);
+
+            $notice = "حساب نسخه ۲ (Platform Operator) با موفقیت ساخته شد.";
+            $noticeType = 'success';
+            $output = "Account ID: " . $receipt['account_id']
+                . "\nWorkspace ID: " . $receipt['workspace_id']
+                . "\nLogin: " . $receipt['login']
+                . "\nRole: " . $receipt['platform_role']
+                . "\nگذرواژه: " . $password . ($generated ? " (تولید تصادفی)" : "")
+                . "\nMust Change Password: " . ($receipt['must_change_password'] ? 'true' : 'false')
+                . "\n\nحتماً این مشخصات را ذخیره کنید.";
+        } catch (Throwable $e) {
+            $notice = 'خطا در ساخت حساب نسخه ۲: ' . $e->getMessage();
+            $noticeType = 'error';
+        }
     } elseif ($action === 'smoke_test') {
         try {
             $lines = [];
@@ -656,9 +698,44 @@ if ($configError !== '') {
             </form>
         </div>
 
-        <!-- Step 4: Smoke Test -->
+        <!-- Step 4: Create v2 Account / Platform Operator -->
         <div class="card">
-            <h2 class="card-title">۴. آزمون سلامت هاست (Smoke Test)</h2>
+            <h2 class="card-title">۴. ساخت حساب کاربری نسخه ۲ / Platform Operator</h2>
+            <p class="hint">ایجاد اپراتور پلتفرم همراه با فضای کاری اختصاصی (Phase B / v2 Identity).</p>
+            <form method="POST">
+                <input type="hidden" name="key" value="<?= h($reqKey) ?>">
+                <input type="hidden" name="action" value="create_v2_account">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>نوع حساب:</label>
+                        <select name="v2_kind">
+                            <option value="first_operator">اولین اپراتور پلتفرم (First Operator - بوت‌استراپ اولیه)</option>
+                            <option value="operator">اپراتور پلتفرم (Platform Operator)</option>
+                            <option value="member">عضو عادی (Member)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>شناسه کاربری (حروف کوچک انگلیسی، عدد، نقطه، خط تیره):</label>
+                        <input type="text" name="v2_login" placeholder="مثال: admin_op" required pattern="[a-z0-9._-]{1,64}">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>نام نمایشی (اختیاری):</label>
+                        <input type="text" name="v2_display_name" placeholder="مثال: Platform Operator">
+                    </div>
+                    <div class="form-group">
+                        <label>گذرواژه (حداقل ۱۲ کاراکتر، یا خالی برای تولید خودکار):</label>
+                        <input type="text" name="v2_password" placeholder="حداقل ۱۲ کاراکتر">
+                    </div>
+                </div>
+                <button type="submit" class="btn">ایجاد حساب نسخه ۲</button>
+            </form>
+        </div>
+
+        <!-- Step 5: Smoke Test -->
+        <div class="card">
+            <h2 class="card-title">۵. آزمون سلامت هاست (Smoke Test)</h2>
             <p class="hint">بررسی سلامت وب‌سرور، اتصالات دیتابیس و توابع رمزنگاری.</p>
             <form method="POST">
                 <input type="hidden" name="key" value="<?= h($reqKey) ?>">
@@ -667,9 +744,9 @@ if ($configError !== '') {
             </form>
         </div>
 
-        <!-- Step 5: Self-Destruct -->
+        <!-- Step 6: Self-Destruct -->
         <div class="card" style="border-color: #7f1d1d;">
-            <h2 class="card-title" style="color: #f87171;">۵. پایان کار و حذف فایل Setup</h2>
+            <h2 class="card-title" style="color: #f87171;">۶. پایان کار و حذف فایل Setup</h2>
             <p class="hint">پس از اطمینان از انجام مراحل بالا، جهت امنیت سرور حتماً فایل راه‌انداز را حذف کنید.</p>
             <form method="POST" onsubmit="return confirm('آیا از حذف کامل فایل setup.php اطمینان دارید؟');">
                 <input type="hidden" name="key" value="<?= h($reqKey) ?>">

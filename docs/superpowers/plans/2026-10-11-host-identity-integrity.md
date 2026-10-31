@@ -626,3 +626,28 @@ authored Phase C plan.
 
 If a valid, independently verifiable Phase A baseline cannot be separated from Phase B, stop and obtain an amended
 checkpoint boundary rather than creating a misleading intermediate commit.
+
+### Amendment extension — Phase C (added 2026-10-16, Advisor ruling, Saeed delegated the decision)
+
+Two separate authorizations, both narrow.
+
+**1. Retrospective ratification of `b596172`.** The sentence "does not authorize … committing a subsequently
+authored Phase C plan" is hereby relaxed for exactly one named commit: the docs-only Phase C plan
+`docs/superpowers/plans/2026-10-15-phase-c-queries-domain.md`, commit `b596172`. It is ratified as a third
+post-baseline commit on `lab/host-identity-phase-b` and no other. The two implementation-checkpoint slots above
+remain **exhausted**: this ratification does not create a reusable slot, and no further Phase C content may be
+committed to `lab/host-identity-phase-b` until the Phase C integration gate is reviewed and approved.
+
+**2. Phase C isolated-branch checkpoints.** Phase C implementation work is checkpointed **only** on an isolated
+worktree branch, never on `lab/host-identity-phase-b`. Permitted: local-only, task-scoped commits containing
+reviewed task scope — the task's implementation, its approved contract/document changes and its test fixtures —
+staged as an explicit file allowlist. Explicitly **not** permitted without the applicable later approval: a push,
+a merge, a cherry-pick onto `lab/host-identity-phase-b`, a tag, a release, or any deployment. An isolated-branch
+commit is a recovery and review boundary, not integration; control happens at the gate.
+
+Excluded from every such commit: generated databases, credentials, fixture secrets, runtime logs and state,
+the `.superpowers/` SDD workspace, and recovery-snapshot contents. Each commit carries an explicit file allowlist
+and a reviewed staged diff, and its exact committed tree is verified afterwards.
+
+Pending hunk: this extension is itself recorded uncommitted in the working tree and must ride with the next
+authorized commit on `lab/host-identity-phase-b` (the Phase C integration gate).

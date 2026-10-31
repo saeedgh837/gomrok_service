@@ -183,7 +183,7 @@ def from_wire_time(value, tz=IRAN_TZ):
         raise InvalidTimestampError(
             f"unparsable wire timestamp {value!r}") from exc
     if aware.tzinfo is None:
-        raise InvalidTimestampError(f"wire timestamp has no offset: {value!r}")
+        return aware.strftime(STORE_TIME_FORMAT)
     return aware.astimezone(tz).strftime(STORE_TIME_FORMAT)
 
 
