@@ -272,6 +272,22 @@ def validate_customer(data):
     return errors
 
 
+def validate_clerk(data):
+    errors = []
+    data = data or {}
+    name = str(data.get("name") or "").strip()
+    if not name:
+        errors.append("نام متصدی الزامی است")
+    elif len(name) > 80:
+        errors.append("نام متصدی حداکثر ۸۰ کاراکتر باشد")
+    mobile = normalize_digits(data.get("mobile")).replace("-", "").replace(" ", "")
+    if mobile and not re.fullmatch(MOBILE_RE, mobile):
+        errors.append("شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود")
+    if len(str(data.get("notes") or "")) > 500:
+        errors.append("یادداشت حداکثر ۵۰۰ کاراکتر باشد")
+    return errors
+
+
 def validate_owner(data):
     errors = []
     data = data or {}
@@ -448,7 +464,7 @@ def _normalise_settings(settings):
 
 def _empty_store():
     return {"version": 1, "customers": [], "owners": [], "identities": [],
-            "devices": [], "periods": [], "settings": _normalise_settings(
+            "devices": [], "periods": [], "clerks": [], "settings": _normalise_settings(
                 dict(DEFAULT_SETTINGS))}
 
 
@@ -477,7 +493,7 @@ def _store_read():
             loaded = {}
     data = _empty_store()
     for key in ("version", "customers", "owners", "identities", "devices",
-                "periods"):
+                "periods", "clerks"):
         if key in loaded:
             data[key] = loaded[key]
     settings = dict(DEFAULT_SETTINGS)
@@ -722,6 +738,14 @@ def add_transaction_seq(customer_id, amount, note="", kind="", image="",
                        if c.get("id") == customer_id), None)
         if not record:
             return None, None, ["مشتری پیدا نشد"]
+        device_id = str(device_id or "").strip()
+        if device_id:
+            dev = next((d for d in data.get("devices", [])
+                        if d.get("id") == device_id), None)
+            if not dev:
+                return None, None, ["دستگاه پیدا نشد"]
+            if dev.get("customer_id") and dev.get("customer_id") != customer_id:
+                return None, None, ["این پرونده به مشتری دیگری تعلق دارد"]
         try:
             amount = int(normalize_digits(amount))
         except (TypeError, ValueError):
@@ -876,6 +900,180 @@ def _refund_registry_fee(data, device):
         customer["updated"] = _now()
         refunded = True
     return refunded
+
+
+# --------------------------------------------------------------------------
+# Clerk CRUD & Accounting
+# --------------------------------------------------------------------------
+
+def clerk_balance(clerk):
+    """Net balance of a clerk.
+    Positive: business owes clerk (clerk is creditor / بستانکار).
+    Negative: clerk owes business (clerk is debtor / بدهکار).
+    """
+    total = 0
+    for t in (clerk or {}).get("transactions", []):
+        if not _tx_countable(t):
+            continue
+        amt = int(t.get("amount") or 0)
+        kind = str(t.get("kind") or "credit")
+        if kind == "credit":
+            total += amt
+        elif kind in ("payment", "debit"):
+            total -= amt
+    return total
+
+
+def add_clerk(fields):
+    errs = validate_clerk(fields)
+    if errs:
+        return None, errs
+    with STORE_LOCK:
+        data = _store_read()
+        record = {
+            "id": _new_id(),
+            "name": str(fields.get("name") or "").strip(),
+            "mobile": normalize_digits(fields.get("mobile")).strip(),
+            "notes": str(fields.get("notes") or "").strip(),
+            "active": bool(fields.get("active", True)),
+            "transactions": [],
+            "created": _now(),
+            "updated": _now(),
+        }
+        _collection(data, "clerks").append(record)
+        _store_write(data)
+        return record, []
+
+
+def update_clerk(clerk_id, fields):
+    with STORE_LOCK:
+        data = _store_read()
+        record = next((c for c in data.get("clerks", [])
+                       if c.get("id") == clerk_id), None)
+        if not record:
+            return None, ["متصدی ثبت پیدا نشد"]
+        merged = dict(record)
+        merged.update({k: fields[k] for k in
+                       ("name", "mobile", "notes") if k in (fields or {})})
+        if "active" in (fields or {}):
+            merged["active"] = bool(fields["active"])
+        errs = validate_clerk(merged)
+        if errs:
+            return None, errs
+        record.update(merged)
+        record["updated"] = _now()
+        _store_write(data)
+        return record, []
+
+
+def delete_clerk(clerk_id, force=False):
+    with STORE_LOCK:
+        data = _store_read()
+        record = next((c for c in data.get("clerks", [])
+                       if c.get("id") == clerk_id), None)
+        if not record:
+            return False, ["متصدی ثبت پیدا نشد"]
+        devices = [d for d in data.get("devices", [])
+                   if d.get("clerk_id") == clerk_id]
+        txs = [t for t in record.get("transactions", []) if _tx_active(t)]
+        if (devices or txs) and not force:
+            record["active"] = False
+            record["updated"] = _now()
+            _store_write(data)
+            return True, []
+        if devices:
+            for d in devices:
+                d["clerk_id"] = ""
+                d["updated"] = _now()
+        data["clerks"] = [c for c in data.get("clerks", [])
+                          if c.get("id") != clerk_id]
+        _store_write(data)
+        return True, []
+
+
+def add_clerk_transaction(clerk_id, amount, kind="credit", recipient_name="",
+                          device_id="", period_id="", note=""):
+    with STORE_LOCK:
+        data = _store_read()
+        record = next((c for c in data.get("clerks", [])
+                       if c.get("id") == clerk_id), None)
+        if not record:
+            return None, ["متصدی ثبت پیدا نشد"]
+        try:
+            amount = int(normalize_digits(amount))
+        except (TypeError, ValueError):
+            return None, ["مبلغ باید عدد باشد"]
+        if amount <= 0:
+            return None, ["مبلغ باید بزرگتر از صفر باشد"]
+        kind = str(kind or "credit").strip().lower()
+        if kind not in ("credit", "payment", "debit"):
+            return None, ["نوع تراکنش نامعتبر است"]
+        device_id = str(device_id or "").strip()
+        period_id = str(period_id or "").strip()
+        if device_id:
+            dev = next((d for d in data.get("devices", []) if d.get("id") == device_id), None)
+            if not dev:
+                return None, ["دستگاه پیدا نشد"]
+            dev_per = str(dev.get("period_id") or "").strip()
+            if not period_id and dev_per:
+                period_id = dev_per
+            elif period_id and dev_per and period_id != dev_per:
+                return None, ["دورهٔ انتخابی با دورهٔ این پرونده همخوانی ندارد"]
+        if period_id and not next((p for p in data.get("periods", []) if p.get("id") == period_id), None):
+            return None, ["دوره پیدا نشد"]
+        entry = {
+            "id": _new_id(),
+            "at": _now(),
+            "amount": amount,
+            "kind": kind,
+            "recipient_name": str(recipient_name or "").strip(),
+            "device_id": device_id,
+            "period_id": period_id,
+            "note": str(note or "").strip(),
+        }
+        record.setdefault("transactions", []).append(entry)
+        record["updated"] = _now()
+        _store_write(data)
+        return entry, []
+
+
+def void_clerk_transaction(clerk_id, tx_identifier, reason=""):
+    reason = str(reason or "").strip()
+    with STORE_LOCK:
+        data = _store_read()
+        record = next((c for c in data.get("clerks", [])
+                       if c.get("id") == clerk_id), None)
+        if not record:
+            return None, ["متصدی ثبت پیدا نشد"]
+        txs = record.setdefault("transactions", [])
+        tx = None
+        if isinstance(tx_identifier, int) and 0 <= tx_identifier < len(txs):
+            tx = txs[tx_identifier]
+        else:
+            tx = next((t for t in txs if t.get("id") == str(tx_identifier)), None)
+        if not tx:
+            return None, ["تراکنش پیدا نشد"]
+        if tx.get("voided_at"):
+            return None, ["این تراکنش قبلاً ابطال شده است"]
+        if tx.get("kind") == "void":
+            return None, ["ردیف ابطال قابل ابطال مجدد نیست"]
+        tx["voided_at"] = _now()
+        tx["void_reason"] = reason
+        reversal = {
+            "id": _new_id(),
+            "at": _now(),
+            "amount": int(tx.get("amount") or 0),
+            "kind": "void",
+            "reversal_of": tx.get("id"),
+            "recipient_name": tx.get("recipient_name") or "",
+            "device_id": tx.get("device_id") or "",
+            "period_id": tx.get("period_id") or "",
+            "note": f"ابطال تراکنش: {reason}" if reason else "ابطال تراکنش",
+        }
+        txs.append(reversal)
+        record["updated"] = _now()
+        _store_write(data)
+        return reversal, []
 
 
 def add_owner(fields):
@@ -1347,6 +1545,8 @@ def add_device(fields, customer=None, require_period=False):
             "period_id": str((current_period(data) or {}).get("id") or ""),
             "created": _now(), "updated": _now(),
         }
+        if fields.get("clerk_id"):
+            record["clerk_id"] = str(fields["clerk_id"]).strip()
         _collection(data, "devices").append(record)
         _charge_registry_fee(data, customer_id, record["id"],
                              fee_amount=fee_amount)
@@ -1390,7 +1590,7 @@ def update_device(device_id, fields):
         merged = dict(record)
         merged.update({k: fields[k] for k in
                        ("name", "serial1", "serial2", "customer_id",
-                        "auto_advance", "notes") if k in (fields or {})})
+                        "auto_advance", "notes", "clerk_id") if k in (fields or {})})
         errs = validate_device(merged, exclude_device_id=device_id)
         if errs:
             return None, errs
@@ -1459,7 +1659,7 @@ def _disable_detached_profile(device_id, profile_id):
                 device_id=device_id, profile_id=profile_id)
 
 
-def attach_owner(device_id, owner_id):
+def attach_owner(device_id, owner_id, clerk_id=None):
     """Bind an owner to a device (1:1 — review F9/operator decision 3)."""
     with STORE_LOCK:
         data = _store_read()
@@ -1477,6 +1677,8 @@ def attach_owner(device_id, owner_id):
         if bound:
             return None, ["این مسافر قبلاً به دستگاه دیگری متصل است"]
         device["owner_id"] = owner_id
+        if clerk_id is not None:
+            device["clerk_id"] = str(clerk_id or "").strip()
         device["updated"] = _now()
         _store_write(data)
         return device, []
@@ -1682,6 +1884,8 @@ def advance(device_id, action, **payload):
             if bound:
                 return None, ["این مسافر قبلاً به دستگاه دیگری متصل است"]
             device["owner_id"] = owner_id
+            if "clerk_id" in payload:
+                device["clerk_id"] = str(payload.get("clerk_id") or "").strip()
             device["stage"] = "ready_owner"
             device["updated"] = _now()
             _store_write(data)

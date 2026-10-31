@@ -550,6 +550,8 @@ def _snapshot_collection(entity, merged_rows, local_rows, is_dirty,
             out.append(local_by_id[legacy])     # §9: local wins while dirty
             continue
         taken.add((entity, legacy))
+        if entity == "crm_devices" and legacy in local_by_id and "clerk_id" in local_by_id[legacy]:
+            record["clerk_id"] = local_by_id[legacy]["clerk_id"]
         out.append(record)
     for legacy, record in local_by_id.items():
         if legacy in present:
@@ -799,6 +801,8 @@ def _upsert_row(document, entity, record, index, tz, cloud_id, prior):
             # A customer change carries no transactions — they have their own
             # rows — so the local ledger stays exactly where it is.
             new = dict(new, transactions=_transactions(existing))
+        elif entity == "crm_devices" and "clerk_id" in existing:
+            new["clerk_id"] = existing["clerk_id"]
         out.append(new)
         replaced = True
     if not replaced:

@@ -183,6 +183,9 @@ def from_wire_time(value, tz=IRAN_TZ):
         raise InvalidTimestampError(
             f"unparsable wire timestamp {value!r}") from exc
     if aware.tzinfo is None:
+        if "T" in value or "t" in value:
+            raise InvalidTimestampError(
+                f"wire timestamp lacks offset: {value!r}")
         return aware.strftime(STORE_TIME_FORMAT)
     return aware.astimezone(tz).strftime(STORE_TIME_FORMAT)
 
@@ -301,8 +304,11 @@ NULLABLE_REFERENCE_FIELDS = {
 }
 
 # Fields that are in ENTITY_FIELDS but must not be in a row: they are lifted
-# into their own table instead.
-LIFTED_OUT_FIELDS = {"customers": frozenset({"transactions"})}
+# into their own table instead, or managed locally.
+LIFTED_OUT_FIELDS = {
+    "customers": frozenset({"transactions"}),
+    "crm_devices": frozenset({"clerk_id"}),
+}
 
 # Fields whose value is required (and must be a non-empty string).
 # customer_transactions/settings have no source id — it is minted, so

@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] - 2026-11-01
+
+### Added
+
+- **Registration Clerks Subsystem («متصدی ثبت»).**
+  - New dedicated tab «متصدی ثبت» positioned next to the passenger tab for operational registration clerks management.
+  - Real-time balance calculations: tracks whether the business owes the clerk (creditor / بستانکار) or the clerk owes the business (debtor / بدهکار).
+  - Financial ledger recording for clerks: credit (حق‌الزحمه/پورسانت) and payments/disbursements (دریافتی متصدی/تسویه) with recipient person name tracking and detailed notes.
+  - Statement dialog («صورت‌حساب و گردش مالی متصدی») with complete transaction history, void support, and reversal lines.
+  - Safe clerk deletion: protects accounting integrity by soft-deactivating clerks who have associated devices or transactions.
+- **Period Clerks Segment («متصدی‌ها در دوره‌ها»).**
+  - Added fourth segment «متصدی‌ها» in period details (`dlgPeriod`) listing clerks active in the period, their assigned case counts, period credits, receipts/payments, and net period balance.
+  - Direct action buttons for registering clerk credits and payments for the period, with automatic inheritance of period attribution.
+  - Strict period attribution immutability: explicit transaction `period_id` takes precedence, preventing double-counting or attribution drift if cases are later moved.
+- **Customer Case Receipts in Any Stage («ثبت دریافتی از مشتری»).**
+  - Prominent «ثبت دریافتی از مشتری» button in case edit modal (`dlgDeviceEdit`), case details modal (`caseDetail`), and period cases table.
+  - Unconditionally available across all case stages (from `new` to `done`, `problem`, and `closed`).
+  - Strict backend validation linking transactions to `device_id` while preventing cross-customer case assignment.
+- **Clerk Selection on Passenger Attachment and Case Editing.**
+  - Added clerk selection dropdown in passenger attachment modal (`dlgAttach`) and device edit modal (`dlgDeviceEdit`).
+  - Quick clerk assignment and reassignment from case details (`dlgAttachClerk`).
+- **Enhanced Confirmation Dialogs with Risk Warnings.**
+  - Prominent `warnConfirmDlg` with clear warning banners for sensitive financial transactions, voiding, and clerk deletions.
+- **Cloud Sync Protection for Local Entities.**
+  - `cloud_sync/apply.py` guarantees local `clerk_id` assignments survive cloud snapshot and incremental delta synchronization.
+
 ## [1.16.1] - 2026-11-01
 
 ### Fixed

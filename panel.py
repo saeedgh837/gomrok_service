@@ -2183,6 +2183,8 @@ def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert", trans
             clean_rec = record
             if canon == "settings" and isinstance(record, dict) and "database_mode" in record:
                 clean_rec = {k: v for k, v in record.items() if k != "database_mode"}
+            elif canon == "crm_devices" and isinstance(record, dict) and "clerk_id" in record:
+                clean_rec = {k: v for k, v in record.items() if k != "clerk_id"}
             wire_record = mapper.to_row(canon, clean_rec, source_installation_id=inst)
             if canon == "customer_transactions":
                 cloud_id = wire_record["id"]
@@ -3028,6 +3030,12 @@ def crm_state_payload():
         enriched.append(row)
     out = dict(data)
     out["devices"] = enriched
+    clerks_enriched = []
+    for clk in data.get("clerks", []):
+        c_row = dict(clk)
+        c_row["balance"] = crm_mod.clerk_balance(clk)
+        clerks_enriched.append(c_row)
+    out["clerks"] = clerks_enriched
     live_runs = estelam_live_runs()
     out["estelam_running"] = bool(live_runs)
     out["estelam_runs"] = live_runs
@@ -8410,7 +8418,7 @@ var HAMTA_PILL = {'pending':'n','running':'warn','good':'ok','registered':'ok','
   'blocked':'bad','unknown':'warn','error':'bad','':'n'};
 var TABS = [
   ['devices','دستگاه‌ها'],['periods','دوره‌ها'],['customers','مشتریان'],['owners','اطلاعات مسافر'],
-  ['owner_archive','بایگانی مسافر‌ها'],
+  ['clerks','متصدی ثبت'],['owner_archive','بایگانی مسافر‌ها'],
   ['identities','استخر هویت'],['periodic','استعلام دوره‌ای گمرک'],['ledger','تراکنش‌ها'],['reports','گزارش‌ها'],
   ['done_tab','تکمیل شده‌ها'],['problem_tab','دارای اشکال'],['closed_tab','مختومه‌ها'],
   ['settings','تنظیمات'],['cloud','سرور ابری']
@@ -8429,6 +8437,7 @@ var TAB_SEARCH={
   devices:{ph:'جستجو در پرونده‌ها…',unit:'پرونده'},
   customers:{ph:'جستجو در مشتری‌ها…',unit:'مشتری'},
   owners:{ph:'جستجو در مسافر‌ها…',unit:'مسافر'},
+  clerks:{ph:'جستجو در متصدی‌ها…',unit:'متصدی'},
   owner_archive:{ph:'جستجو در بایگانی مسافر‌ها…',unit:'مسافر'},
   identities:{ph:'جستجو در استخر هویت…',unit:'مشخصات'},
   periodic:{ph:'جستجو در استعلام دوره‌ای…',unit:'دستگاه'},
@@ -8533,7 +8542,7 @@ function dlgCaseSig(d){
   var e=d.estelam||{},p=d.pay||{};
   var o=(STATE.owners||[]).find(x=>x.id===d.owner_id)||{};
   var c=(STATE.customers||[]).find(x=>x.id===d.customer_id)||{};
-  return [d.stage,d.updated,d.name,d.notes,d.customer_id,c.name,d.owner_id,o.name,o.passport,o.national,
+  return [d.stage,d.updated,d.name,d.notes,d.customer_id,c.name,d.clerk_id||'',d.owner_id,o.name,o.passport,o.national,
           d.profile_id,d.periodic_opt_out?1:0,
           e.status,e.hamta_status,p.run_status,p.browser_visible?1:0,
           (p.payment_link?'l':''),(STATE.identities||[]).length].join('|');
@@ -8630,6 +8639,14 @@ function confirmDlg(title,text,okLabel,cb){
     +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function confirmYes(){var cb=_confirmCb;_confirmCb=null;DLG_BACK='';closeDlg();if(cb)cb();}
+function warnConfirmDlg(title,text,warningText,okLabel,cb,isDanger){
+  _confirmCb=cb;
+  openDlg('<h3>'+esc(title)+'</h3>'
+    +(warningText?'<div style="background:var(--card,#fff3cd);border:1px solid var(--border-warn,#ffeeba);color:var(--text-warn,#856404);padding:10px 14px;border-radius:6px;margin:10px 0 14px;font-size:13px;line-height:1.8">⚠️ <b>هشدار مهم:</b> '+esc(warningText)+'</div>':'')
+    +'<p style="margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:1.9">'+esc(text)+'</p>'
+    +'<div class="row" style="margin-top:10px"><button class="btn '+(isDanger!==false?'danger':'primary')+'" onclick="confirmYes()">'+esc(okLabel||'تأیید')+'</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
 var urlTheme=new URLSearchParams(location.search).get('theme');
 var savedTheme=urlTheme||localStorage.getItem('irica-theme')||'light';
 document.documentElement.setAttribute('data-theme',savedTheme);
@@ -9495,6 +9512,7 @@ function bodyHtml(){
   else if(TAB==='closed_tab')body=closedTabHtml();
   else if(TAB==='customers')body=customersHtml();
   else if(TAB==='owners')body=ownersHtml();
+  else if(TAB==='clerks')body=clerksHtml();
   else if(TAB==='owner_archive')body=ownerArchiveHtml();
   else if(TAB==='identities')body=identitiesHtml();
   else if(TAB==='periodic')body=periodicHtml();
@@ -9768,19 +9786,24 @@ function perCasesHtml(p){
   var rows=ds.map(function(d){
     var cm=caseMoney(d.id);
     var o=((STATE&&STATE.owners)||[]).find(x=>String(x.id)===String(d.owner_id||''));
+    var clk=((STATE&&STATE.clerks)||[]).find(x=>String(x.id)===String(d.clerk_id||''));
     return '<tr><td><b>'+esc(d.name)+'</b>'
       +'<div class="kbd" dir="ltr">'+esc(d.serial1)+(d.serial2?' / '+esc(d.serial2):'')+'</div></td>'
       +'<td>'+esc(custName(d.customer_id)||'—')+'</td>'
       +'<td>'+(o?'<b>'+esc(o.first_name+' '+o.last_name)+'</b> <span class="pill ok">متصل</span>'
               :'<span class="pill n">بدون مسافر</span>')+'</td>'
+      +'<td>'+(clk?'<span class="pill n">'+esc(clk.name)+'</span>':'<span class="muted">—</span>')+'</td>'
       +'<td>'+stagePill(d.stage)+'</td>'
       +'<td class="pmoney d">'+(cm.debit?money(cm.debit):'—')+'</td>'
       +'<td class="pmoney c">'+(cm.credit?money(cm.credit):'—')+'</td>'
       +'<td>'+balancePill(cm.net)+'</td>'
-      +'<td>'+perDetailBtn(d.id,'جزئیات پرونده')+'</td></tr>';
+      +'<td><div class="ibacts">'
+      +'<button type="button" class="btn mini ok" data-static="1" aria-label="ثبت دریافتی از مشتری" data-tip="ثبت دریافتی از مشتری" onclick="dlgCaseReceipt(\''+d.id+'\')">'+ICONS.wallet+' دریافت</button>'
+      +perDetailBtn(d.id,'جزئیات پرونده')
+      +'</div></td></tr>';
   }).join('');
   return '<div class="card tblcard"><div class="tbl-wrap"><table><thead><tr>'
-    +'<th>پرونده</th><th>مشتری</th><th>مسافر</th><th>وضعیت</th>'
+    +'<th>پرونده</th><th>مشتری</th><th>مسافر</th><th>متصدی</th><th>وضعیت</th>'
     +'<th>بدهکاری</th><th>بستانکاری</th><th>مانده</th><th></th>'
     +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
@@ -9843,9 +9866,69 @@ function perCustomersHtml(p){
     +'<th>مشتری</th><th>موبایل</th><th>پرونده</th><th>بدهکاری</th><th>بستانکاری</th>'
     +'<th>مانده</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
+function perClerksHtml(p){
+  var ds=periodCases(p.id);
+  var clerks=STATE.clerks||[];
+  var list=[];
+  clerks.forEach(function(c){
+    var cDevs=ds.filter(d=>d.clerk_id===c.id);
+    var pTxs=(c.transactions||[]).filter(function(t){
+      if(t.voided_at || t.kind==='void') return false;
+      if(t.period_id) return t.period_id === p.id;
+      return Boolean(t.device_id && ds.some(d => d.id === t.device_id));
+    });
+    if(cDevs.length>0 || pTxs.length>0){
+      var cred=pTxs.filter(t=>t.kind==='credit').reduce((s,t)=>s+Number(t.amount||0),0);
+      var paid=pTxs.filter(t=>(t.kind==='payment'||t.kind==='debit')).reduce((s,t)=>s+Number(t.amount||0),0);
+      list.push({clerk:c, casesCount:cDevs.length, credit:cred, paid:paid, net:cred-paid, txs:pTxs});
+    }
+  });
+
+  var rows=list.map(function(item,i){
+    var c=item.clerk;
+    return '<tr>'
+      +'<td class="kbd">'+fa(i+1)+'</td>'
+      +'<td><b>'+esc(c.name)+'</b><div class="kbd">'+esc(c.mobile||'—')+'</div></td>'
+      +'<td><span class="pill n">'+fa(item.casesCount)+' پرونده</span></td>'
+      +'<td class="pmoney c">'+(item.credit?money(item.credit):'—')+'</td>'
+      +'<td class="pmoney d">'+(item.paid?money(item.paid):'—')+'</td>'
+      +'<td>'+clerkBalancePill(item.net)+'</td>'
+      +'<td><div class="ibacts">'
+      +'<button type="button" class="btn mini ok" onclick="dlgClerkTx(\''+c.id+'\',\'credit\',\'\',\''+p.id+'\')">'+ICONS.plus+' ثبت بستانکاری</button>'
+      +'<button type="button" class="btn mini primary" onclick="dlgClerkTx(\''+c.id+'\',\'payment\',\'\',\''+p.id+'\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="گردش حساب" data-tip="گردش حساب" onclick="dlgClerkStatement(\''+c.id+'\')">'+ICONS.list+'</button>'
+      +'</div></td>'
+      +'</tr>';
+  }).join('');
+
+  var empty='<tr><td colspan="7">'+emptyInnerHtml('متصدی‌ای برای این دوره به‌کار گرفته نشده است',
+    'با اتصال متصدی به پرونده‌ها در این دوره یا ثبت بستانکاری/دریافتی، اطلاعات متصدیان اینجا نمایش داده می‌شود.')+'</td></tr>';
+
+  return '<div class="card tblcard">'
+    +'<div class="row" style="margin-bottom:10px;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+    +'<span class="muted">متصدی‌های فعال در این دوره، تعداد پرونده‌ها، مبالغ بستانکاری و تسویه‌ها:</span>'
+    +(clerks.length?'<button type="button" class="btn" onclick="dlgPickClerkForPeriod(\''+p.id+'\')">+ ثبت تراکنش برای متصدی دیگر در این دوره</button>':'')
+    +'</div>'
+    +'<div class="tbl-wrap"><table><thead><tr>'
+    +'<th>ردیف</th><th>متصدی ثبت</th><th>پرونده‌های این دوره</th><th>مبلغ بستانکاری</th><th>دریافتی‌های متصدی</th><th>مانده دوره</th><th></th>'
+    +'</tr></thead><tbody>'+(rows||empty)+'</tbody></table></div></div>';
+}
+function dlgPickClerkForPeriod(pid){
+  var clerks=STATE.clerks||[];
+  if(!clerks.length){toast('ابتدا از تب «متصدی ثبت» یک متصدی ثبت کنید',false);return;}
+  var opts=clerks.map(c=>'<option value="'+c.id+'">'+esc(c.name)+(c.mobile?' ('+esc(c.mobile)+')':'')+'</option>').join('');
+  openDlg('<h3>انتخاب متصدی برای دوره</h3>'
+    +'<div class="row"><label class="f" style="flex:1">متصدی مورد نظر<select id="pickClerkPid">'+opts+'</select></label></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button class="btn ok" onclick="dlgClerkTx(v(\'pickClerkPid\'),\'credit\',\'\',\''+pid+'\')">ثبت بستانکاری</button>'
+    +'<button class="btn primary" onclick="dlgClerkTx(v(\'pickClerkPid\'),\'payment\',\'\',\''+pid+'\')">ثبت دریافتی متصدی</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
 function perBodyHtml(p){
   if(PER.seg==='owners')return perOwnersHtml(p);
   if(PER.seg==='customers')return perCustomersHtml(p);
+  if(PER.seg==='clerks')return perClerksHtml(p);
   return perCasesHtml(p);
 }
 function perSeg(seg){PER.seg=seg;perPaint();}
@@ -9880,6 +9963,7 @@ function dlgPeriod(pid, silent){
     +'<button type="button" data-pseg="cases" onclick="perSeg(\'cases\')">پرونده‌ها</button>'
     +'<button type="button" data-pseg="owners" onclick="perSeg(\'owners\')">مسافر‌ها</button>'
     +'<button type="button" data-pseg="customers" onclick="perSeg(\'customers\')">مشتری‌ها</button>'
+    +'<button type="button" data-pseg="clerks" onclick="perSeg(\'clerks\')">متصدی‌ها</button>'
     +'</div></div>'
     +'<div id="perBody"></div>'
     +'<div class="row" style="margin-top:12px">'
@@ -9913,7 +9997,7 @@ function perSig(pid){
       /* the fields the case table PRINTS — deliberately not d.updated, which
          every robot tick stamps: that would rebuild the table every 5 seconds
          and throw away the operator's scroll position */
-      s.push([d.id,d.name,d.stage,d.owner_id||'',d.customer_id||'',
+      s.push([d.id,d.name,d.stage,d.owner_id||'',d.customer_id||'',d.clerk_id||'',
               d.serial1||'',d.serial2||''].join(','));
     });
   /* it also prints identities, not only ids, and the passenger table lists the
@@ -9928,6 +10012,8 @@ function perSig(pid){
             bound[String(o.id)]?'b':''].join(','));});
   periodCustomers(pid).forEach(function(c){
     s.push(['c',c.id,c.full_name,c.mobile].join(','));});
+  ((STATE.clerks||[])).forEach(function(c){
+    s.push(['clk',c.id,c.name,c.balance||0,(c.transactions||[]).length].join(','));});
   var m=periodMoney(pid);
   s.push('m'+m.debit+'/'+m.credit);
   return s.join('|');
@@ -10258,6 +10344,15 @@ function caseDetail(id, silent){
     +'<span class="chip">'+ICONS.user+esc(custName(d.customer_id))+'</span>'
     +(d.auto_advance?'<span class="chip">پرداخت خودکار</span>':'')
     +'</div>'
+    +'<div class="dlg-lbl">متصدی ثبت پرونده</div>'
+    +'<div class="dlg-sec">'
+    +(function(){
+      var clk=((STATE&&STATE.clerks)||[]).find(x=>x.id===d.clerk_id);
+      return (clk?'<span class="chip ok">'+ICONS.user+'<b>'+esc(clk.name)+'</b>'+(clk.mobile?' ('+esc(clk.mobile)+')':'')+'</span>'
+                 :'<span class="chip n">بدون متصدی ثبت</span>')
+        +'<button type="button" class="btn mini ghost" onclick="dlgAttachClerk(\''+d.id+'\')">تغییر متصدی</button>';
+    })()
+    +'</div>'
     +'<div class="kbd">ایجاد: '+esc(faDate(d.created))+' · آخرین تغییر: '+esc(faDateTime(d.updated))+(d.done_at?' · تکمیل: '+esc(faDate(d.done_at)):'')+'</div>'
     +(d.notes?'<div class="kbd">یادداشت: '+esc(d.notes)+'</div>':'')
     +'<div class="dlg-lbl">استعلام</div>'
@@ -10273,6 +10368,7 @@ function caseDetail(id, silent){
     +(payRow?'<div class="grp"><div class="grp-lbl">پرداخت</div>'+payRow+'</div>':'')
     +'<div class="grp grp-quiet"><div class="grp-lbl">سایر اقدامات</div>'
     +'<div class="quiet">'
+    +'<button class="btn mini ok" onclick="dlgCaseReceipt(\''+d.id+'\')">'+ICONS.wallet+' ثبت دریافتی از مشتری</button>'
     +'<button class="btn mini ghost" onclick="dlgDeviceEdit(\''+d.id+'\')">ویرایش پرونده</button>'
     +'<button class="btn mini ghost" onclick="window.open(\'/crm-invoice?device_id='+d.id+'&fmt=html\',\'_blank\')">'+ICONS.doc+' فاکتور</button>'
     +(STAGE_BACK_FA[st]?'<button class="btn mini ghost" onclick="devTick(\''+d.id+'\',\'__stage_back\')">↩ برگشت به «'+STAGE_BACK_FA[st]+'»</button>':'')
@@ -10477,6 +10573,265 @@ function ownerArchiveHtml(){
     +'<span class="muted">مسافرانی که کد فعال‌سازی تحویل شده و پروندهٔ آن‌ها تکمیل شده است. با بازگرداندن پرونده به گام قبل، مسافر به‌صورت خودکار به لیست فعال برمی‌گردد.</span></div>'
     +'<table><thead><tr><th>ردیف</th><th>نام</th><th>کد ملی</th><th>تولد</th><th>موبایل</th><th>دستگاه</th><th>مشتری</th><th>تاریخ تحویل کد</th><th></th></tr></thead>'
     +'<tbody>'+(tr||'<tr><td colspan="9">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('هنوز مسافری بایگانی نشده است','با تکمیل پروندهٔ یک مسافر، او به‌صورت خودکار اینجا ظاهر می‌شود.'))+'</td></tr>')+'</tbody></table></div>';
+}
+
+/* ================= clerks tab ================= */
+function clerkBalancePill(b){
+  b=Number(b||0);
+  if(b>0)return '<span class="pill ok">بستانکار '+money(b)+'</span>';
+  if(b<0)return '<span class="pill bad">بدهکار '+money(Math.abs(b))+'</span>';
+  return '<span class="pill n">تسویه</span>';
+}
+function clerksHtml(){
+  var q=tabQ();
+  var cs=(STATE.clerks||[]).filter(c=>{
+    return tabSearchMatches([c.name, c.mobile, c.notes].join(' '), q);
+  });
+  cs=newestFirst(cs, c=>c.created);
+  TAB_COUNT=cs.length;
+  var rows=cs.map((c,i)=>{
+    var cDevs=(STATE.devices||[]).filter(d=>d.clerk_id===c.id);
+    var bal=Number(c.balance||0);
+    return '<tr><td class="kbd">'+fa(i+1)+'</td>'
+      +'<td><b>'+esc(c.name)+'</b>'+(c.active?'':' <span class="pill warn">غیرفعال</span>')+'</td>'
+      +'<td class="kbd">'+esc(c.mobile||'—')+'</td>'
+      +'<td><span class="pill n">'+fa(cDevs.length)+' پرونده</span></td>'
+      +'<td>'+clerkBalancePill(bal)+'</td>'
+      +'<td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.notes||'—')+'</td>'
+      +'<td><div class="ibacts">'
+      +'<button type="button" class="btn mini ok" data-static="1" onclick="dlgClerkTx(\''+c.id+'\',\'credit\')">'+ICONS.plus+' ثبت بستانکاری</button>'
+      +'<button type="button" class="btn mini primary" data-static="1" onclick="dlgClerkTx(\''+c.id+'\',\'payment\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="گردش حساب متصدی" data-tip="گردش حساب متصدی" onclick="dlgClerkStatement(\''+c.id+'\')">'+ICONS.list+'</button>'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش متصدی" data-tip="ویرایش متصدی" onclick="dlgClerk(\'edit\',\''+c.id+'\')">'+ICONS.edit+'</button>'
+      +'<button type="button" class="ibtn danger" aria-label="حذف متصدی" data-tip="حذف متصدی" onclick="dlgClerkDelete(\''+c.id+'\')">'+ICONS.trash+'</button>'
+      +'</div></td></tr>';
+  }).join('');
+  var totalCred=(STATE.clerks||[]).reduce((sum,c)=>sum+(c.balance>0?c.balance:0),0);
+  var totalDebt=(STATE.clerks||[]).reduce((sum,c)=>sum+(c.balance<0?Math.abs(c.balance):0),0);
+  return '<div class="card"><div class="row" style="margin-bottom:10px;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+    +'<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btn primary" onclick="dlgClerk(\'add\')">+ متصدی ثبت جدید</button>'
+    +'<span class="pill ok">مجموع بستانکاری متصدیان: '+money(totalCred)+'</span>'
+    +(totalDebt?'<span class="pill bad">مجموع بدهکاری متصدیان: '+money(totalDebt)+'</span>':'')
+    +'</div>'
+    +'<span class="muted">مدیریت متصدیان ثبت پرونده، مانده‌حساب، بستانکاری و تسویه‌ها.</span>'
+    +'</div>'
+    +'<table><thead><tr><th>ردیف</th><th>نام متصدی</th><th>موبایل</th><th>پرونده‌ها</th><th>مانده حساب</th><th>یادداشت</th><th>عملیات</th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="7">'+(searchActive()?searchEmptyHtml():emptyInnerHtml('متصدی ثبتی وجود ندارد','با افزودن متصدی ثبت جدید، می‌توانید پرونده‌ها را به متصدیان متصل کنید و تراز مالی آن‌ها را مدیریت نمایید.'))+'</td></tr>')+'</tbody></table></div>';
+}
+function dlgClerk(mode, id){
+  var c = id ? ((STATE.clerks||[]).find(x=>x.id===id)||{}) : {};
+  openDlg('<h3>'+(id?'ویرایش متصدی ثبت':'متصدی ثبت جدید')+'</h3>'
+    +'<div class="grid" style="margin-bottom:8px">'
+    +'<label class="f">نام و نام خانوادگی متصدی *<input id="clkName" value="'+esc(c.name||'')+'"></label>'
+    +'<label class="f">شماره موبایل (۱۱ رقم با ۰۹)<input id="clkMobile" value="'+esc(c.mobile||'')+'" inputmode="tel" class="ltr" placeholder="۰۹۱۲۳۴۵۶۷۸۹"></label>'
+    +'</div>'
+    +'<label class="f check" style="margin-bottom:8px"><input type="checkbox" id="clkActive"'+(c.active!==false?' checked':'')+'><span class="box"></span><span class="ft">متصدی فعال باشد (امکان انتخاب در پرونده‌ها)</span></label>'
+    +'<label class="f">یادداشت و توضیحات<textarea id="clkNotes" style="width:100%;height:60px;resize:vertical">'+esc(c.notes||'')+'</textarea></label>'
+    +'<div class="err" id="clkErr"></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button class="btn primary" onclick="doSaveClerk(\''+(id||'')+'\')">ذخیره</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
+function doSaveClerk(id){
+  var name=v('clkName');
+  if(!name){document.getElementById('clkErr').textContent='نام متصدی الزامی است';return;}
+  var payload={
+    action:id?'update':'add',
+    name:name,
+    mobile:v('clkMobile'),
+    notes:v('clkNotes'),
+    active:document.getElementById('clkActive').checked
+  };
+  if(id)payload.id=id;
+  api('/crm-clerk',payload).then(async()=>{
+    closeDlg();
+    toastCtx(name,'ذخیره شد');
+    await refresh();
+  }).catch(e=>{
+    document.getElementById('clkErr').textContent=e;
+    showFieldErrors(String(e));
+  });
+}
+function dlgClerkDelete(id){
+  var c=(STATE.clerks||[]).find(x=>x.id===id);
+  var cnm=c?c.name:'متصدی';
+  warnConfirmDlg('حذف متصدی ثبت',
+    'آیا از حذف متصدی «'+esc(cnm)+'» اطمینان دارید؟',
+    'در صورتی که متصدی دارای پرونده یا گردش مالی باشد، به منظور حفظ سلامت اسناد حسابداری فقط غیرفعال می‌شود و سوابق پاک نمی‌شوند.',
+    'حذف متصدی',
+    function(){
+      api('/crm-clerk',{action:'delete',id:id}).then(async()=>{
+        closeDlg();
+        toastCtx(cnm,'حذف شد');
+        await refresh();
+      }).catch(e=>toast(e,false));
+    },
+    true
+  );
+}
+function dlgClerkTx(clerkId, defaultKind, defaultDeviceId, defaultPeriodId){
+  var c=(STATE.clerks||[]).find(x=>x.id===clerkId);
+  if(!c){toast('متصدی پیدا نشد',false);return;}
+  defaultKind = defaultKind || 'credit';
+  var isCred = (defaultKind === 'credit');
+  var title = isCred ? ('ثبت بستانکاری متصدی — '+esc(c.name)) : ('ثبت دریافتی متصدی (پرداخت وجه به متصدی) — '+esc(c.name));
+
+  var devOpts='<option value="">بدون پرونده مشخص</option>'+(STATE.devices||[]).slice().sort((a,b)=>String(b.updated||'').localeCompare(String(a.updated||''))).map(d=>
+    '<option value="'+d.id+'"'+(d.id===defaultDeviceId?' selected':'')+'>'+esc(d.name)+' ('+esc(d.serial1)+')</option>'
+  ).join('');
+
+  var perOpts='<option value="">بدون دوره مشخص</option>'+(STATE.periods||[]).map(p=>
+    '<option value="'+p.id+'"'+(p.id===defaultPeriodId?' selected':'')+'>'+esc(periodName(p))+'</option>'
+  ).join('');
+
+  openDlg('<h3>'+title+'</h3>'
+    +'<div class="row" style="margin-bottom:10px;gap:14px;background:var(--bg-card);padding:8px 12px;border-radius:6px;border:1px solid var(--border)">'
+    +'<label class="f check" style="cursor:pointer"><input type="radio" name="clerkTxKind" value="credit"'+(isCred?' checked':'')+'><span class="box"></span><span class="ft"><b>بستانکاری متصدی</b> (حق‌الزحمه/پورسانت — افزایش طلب متصدی)</span></label>'
+    +'<label class="f check" style="cursor:pointer"><input type="radio" name="clerkTxKind" value="payment"'+(!isCred?' checked':'')+'><span class="box"></span><span class="ft"><b>دریافتی متصدی</b> (پرداخت/تسویه وجه — کاهش طلب متصدی)</span></label>'
+    +'</div>'
+    +'<div class="row"><label class="f">مبلغ (تومان) *<input id="clerkTxAmt" inputmode="numeric" class="ltr" style="width:170px" placeholder="مثلاً ۵۰۰,۰۰۰"></label>'
+    +'<label class="f" style="flex:1">نام شخص دریافت‌کننده وجه<input id="clerkTxRecipient" value="'+esc(c.name)+'" placeholder="نام شخص یا شماره حسابی که پول به آن واریز شد"></label></div>'
+    +'<div class="row" style="margin-top:8px">'
+    +'<label class="f" style="flex:1">پرونده مرتبط (اختیاری)<select id="clerkTxDev">'+devOpts+'</select></label>'
+    +'<label class="f" style="flex:1">دوره مرتبط (اختیاری)<select id="clerkTxPer">'+perOpts+'</select></label>'
+    +'</div>'
+    +'<label class="f" style="margin-top:8px">شرح و توضیحات *<input id="clerkTxNote" placeholder="علت ثبت یا جزئیات سند مالی"></label>'
+    +'<div class="err" id="clerkTxErr"></div>'
+    +'<div class="row" style="margin-top:14px">'
+    +'<button class="btn primary" onclick="doClerkTx(\''+clerkId+'\')">تأیید و ثبت</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
+function doClerkTx(clerkId){
+  var c=(STATE.clerks||[]).find(x=>x.id===clerkId);
+  var amt=Number(String(v('clerkTxAmt')||'').replace(/[,\s،]/g,''))||0;
+  if(!amt){document.getElementById('clerkTxErr').textContent='مبلغ باید عدد معتبر باشد';return;}
+  var kindEl=document.querySelector('input[name="clerkTxKind"]:checked');
+  var kind=kindEl?kindEl.value:'credit';
+  var recipient=v('clerkTxRecipient')||'';
+  var note=v('clerkTxNote')||'';
+  var devId=v('clerkTxDev')||'';
+  var perId=v('clerkTxPer')||'';
+  var kindFa=(kind==='credit'?'بستانکاری متصدی':'دریافتی متصدی / پرداخت وجه');
+
+  var warnText='آیا از ثبت «'+kindFa+'» به مبلغ «'+money(amt)+'» برای متصدی «'+(c?c.name:'')+'» اطمینان دارید؟';
+  if(kind==='payment'){
+    warnText+=' دریافت‌کننده وجه: «'+(recipient||(c?c.name:''))+'» — این مبلغ از مانده طلب متصدی کسر می‌شود.';
+  }else{
+    warnText+=' این مبلغ به بستانکاری و طلب متصدی افزوده می‌شود.';
+  }
+
+  warnConfirmDlg('تأیید ثبت تراکنش متصدی',
+    warnText,
+    'این تراکنش در تراز مالی متصدی ثبت قطعی می‌شود.',
+    'تأیید و ثبت نهایی',
+    function(){
+      api('/crm-clerk',{
+        action:'tx',
+        id:clerkId,
+        amount:amt,
+        kind:kind,
+        recipient_name:recipient,
+        device_id:devId,
+        period_id:perId,
+        note:note
+      }).then(async()=>{
+        toast('تراکنش مالی متصدی با موفقیت ثبت شد');
+        await refresh();
+        if(PER.live&&PER.pid)dlgPeriod(PER.pid,true);
+        else closeDlg();
+      }).catch(e=>{
+        toast(e,false);
+      });
+    },
+    false
+  );
+}
+function dlgClerkStatement(clerkId){
+  var c=(STATE.clerks||[]).find(x=>x.id===clerkId);
+  if(!c){toast('متصدی پیدا نشد',false);return;}
+  var txs=(c.transactions||[]).slice().reverse();
+  var credSum=0, paySum=0;
+  var trs=txs.map((t)=>{
+    var isVoided=Boolean(t.voided_at);
+    var isReversal=(t.kind==='void');
+    var isCred=(t.kind==='credit');
+    var isPay=(t.kind==='payment'||t.kind==='debit');
+    var amt=Number(t.amount||0);
+    if(!isVoided&&!isReversal){
+      if(isCred)credSum+=amt;
+      else if(isPay)paySum+=amt;
+    }
+    var kindBadge=isReversal?'<span class="pill warn">ابطال</span>'
+      :(isCred?'<span class="pill ok">بستانکاری</span>':'<span class="pill primary">دریافتی متصدی</span>');
+    var did=t.device_id;
+    var d=did?(STATE.devices||[]).find(x=>x.id===did):null;
+    var devLabel=d?esc(d.name):(did?'پرونده: '+esc(did):'—');
+    var pid=t.period_id;
+    var p=pid?periodById(pid):null;
+    var perLabel=p?esc(periodName(p)):'—';
+    var voidBtn=(!isVoided&&!isReversal)
+      ?'<button type="button" class="ibtn danger" data-static="1" aria-label="ابطال تراکنش" data-tip="ابطال تراکنش" onclick="dlgVoidClerkTx(\''+clerkId+'\',\''+t.id+'\')">'+ICONS.trash+'</button>'
+      :'';
+    return '<tr style="'+(isVoided?'text-decoration:line-through;opacity:0.6;':'')+'">'
+      +'<td class="kbd">'+esc(faDateTime(t.at))+'</td>'
+      +'<td>'+kindBadge+'</td>'
+      +'<td class="pmoney '+(isCred?'c':'d')+'">'+money(amt)+'</td>'
+      +'<td>'+esc(t.recipient_name||'—')+'</td>'
+      +'<td>'+devLabel+'</td>'
+      +'<td>'+perLabel+'</td>'
+      +'<td style="max-width:220px">'+esc(t.note||'—')+(isVoided?' <span class="pill bad">ابطال: '+esc(t.void_reason||'')+'</span>':'')+'</td>'
+      +'<td>'+voidBtn+'</td>'
+      +'</tr>';
+  }).join('');
+
+  var netBal=Number(c.balance||0);
+  openDlg('<div style="min-width:650px"><h3>صورت‌حساب و گردش مالی متصدی: '+esc(c.name)+'</h3>'
+    +'<div class="row" style="gap:10px;margin-bottom:12px;background:var(--bg-card);padding:10px 14px;border-radius:6px;border:1px solid var(--border);flex-wrap:wrap">'
+    +'<div>مجموع بستانکاری: <b class="pmoney c">'+money(credSum)+'</b></div>'
+    +'<div>مجموع دریافتی‌ها: <b class="pmoney d">'+money(paySum)+'</b></div>'
+    +'<div>مانده حساب: '+clerkBalancePill(netBal)+'</div>'
+    +'</div>'
+    +'<div class="row" style="margin-bottom:10px;gap:8px">'
+    +'<button class="btn ok" onclick="dlgClerkTx(\''+clerkId+'\',\'credit\')">'+ICONS.plus+' ثبت بستانکاری</button>'
+    +'<button class="btn primary" onclick="dlgClerkTx(\''+clerkId+'\',\'payment\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
+    +'</div>'
+    +'<div style="max-height:380px;overflow-y:auto">'
+    +'<table><thead><tr><th>تاریخ و ساعت</th><th>نوع</th><th>مبلغ</th><th>دریافت‌کننده وجه</th><th>پرونده</th><th>دوره</th><th>شرح</th><th></th></tr></thead>'
+    +'<tbody>'+(trs||'<tr><td colspan="8" class="muted" style="text-align:center">تراکنشی برای این متصدی ثبت نشده است</td></tr>')+'</tbody></table>'
+    +'</div>'
+    +'<div class="row" style="margin-top:14px"><button class="btn" onclick="closeDlg()">بستن</button></div>'
+    +'</div>');
+}
+function dlgVoidClerkTx(clerkId, txId){
+  openDlg('<h3>ابطال تراکنش متصدی</h3>'
+    +'<p class="muted">با ابطال، این تراکنش از مانده‌حساب متصدی خارج شده و یک ردیف ابطال در گردش مالی ثبت می‌شود.</p>'
+    +'<label class="f">علت / دلیل ابطال *<input id="voidClerkReason" placeholder="مثلاً ثبت اشتباه، بازگشت وجه، سند تکراری"></label>'
+    +'<div class="err" id="voidClerkErr"></div>'
+    +'<div class="row" style="margin-top:14px">'
+    +'<button class="btn danger" onclick="doVoidClerkTx(\''+clerkId+'\',\''+txId+'\')">تأیید ابطال سند</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
+function doVoidClerkTx(clerkId, txId){
+  var reason=v('voidClerkReason');
+  if(!reason){document.getElementById('voidClerkErr').textContent='علت ابطال الزامی است';return;}
+  warnConfirmDlg('تأیید ابطال تراکنش مالی',
+    'آیا از ابطال این تراکنش با علت «'+esc(reason)+'» مطمئن هستید؟',
+    'ردیف ابطال در تاریخچه سند درج می‌شود و اثر مالی این تراکنش معکوس خواهد شد.',
+    'ابطال قطعی تراکنش',
+    function(){
+      api('/crm-clerk',{action:'void_tx',id:clerkId,tx_id:txId,reason:reason})
+        .then(async()=>{
+          toast('تراکنش با موفقیت ابطال شد');
+          await refresh();
+          dlgClerkStatement(clerkId);
+        }).catch(e=>toast(e,false));
+    },
+    true
+  );
 }
 
 /* ================= periodic gomrok inquiry tab ================= */
@@ -11713,22 +12068,28 @@ function dlgDeviceEdit(id){
   var d=(STATE.devices||[]).find(x=>x.id===id);
   if(!d){toast('پرونده پیدا نشد',false);return;}
   var custOpts='<option value="">بدون مشتری</option>'+newestFirst(STATE.customers||[],c=>c.created).map(c=>'<option value="'+c.id+'"'+(c.id===d.customer_id?' selected':'')+'>'+esc(c.full_name)+'</option>').join('');
+  var clerkOpts='<option value="">بدون متصدی ثبت</option>'+(STATE.clerks||[]).map(c=>'<option value="'+c.id+'"'+(c.id===d.clerk_id?' selected':'')+'>'+esc(c.name)+(c.mobile?' ('+esc(c.mobile)+')':'')+'</option>').join('');
   openDlg('<h3>ویرایش پروندهٔ دستگاه</h3>'
     +'<div class="grid" style="margin-bottom:8px">'
     +'<label class="f">نام دستگاه *<input id="dvEName" value="'+esc(d.name||'')+'"></label>'
     +'<label class="f">سریال اول<input id="dvES1" value="'+esc(d.serial1||'')+'" inputmode="numeric" maxlength="15" disabled title="سریال اول قابل ویرایش نیست — برای تغییر، پرونده را حذف و دوباره بسازید"></label>'
     +'<label class="f">سریال دوم (اختیاری)<input id="dvES2" value="'+esc(d.serial2||'')+'" inputmode="numeric" maxlength="15"></label>'
     +'</div>'
-    +'<div class="row"><label class="f">مشتری<select id="dvECust">'+custOpts+'</select></label>'
+    +'<div class="row"><label class="f" style="flex:1">مشتری<select id="dvECust">'+custOpts+'</select></label>'
+    +'<label class="f" style="flex:1">متصدی ثبت پرونده<select id="dvEClerk">'+clerkOpts+'</select></label>'
     +'<label class="f check"><input type="checkbox" id="dvEAuto"'+(d.auto_advance?' checked':'')+'><span class="box" aria-hidden="true"></span><span class="ft">پرداخت خودکار پس از ثبت در گمرک</span></label></div>'
     +'<label class="f" style="margin-top:8px">یادداشت دستگاه (اختیاری)<input id="dvENotes" value="'+esc(d.notes||'')+'"></label>'
+    +'<div class="row" style="margin:12px 0 6px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;align-items:center;justify-content:space-between;gap:8px">'
+    +'<div><span style="font-weight:600">ثبت واریزی مشتری:</span> <span class="muted" style="font-size:12px">امکان ثبت وجه دریافتی در هر مرحله‌ای از پرونده</span></div>'
+    +'<button type="button" class="btn ok" onclick="dlgCaseReceipt(\''+id+'\')">'+ICONS.wallet+' ثبت دریافتی از مشتری</button>'
+    +'</div>'
     +'<div class="err" id="dvEErr"></div>'
     +'<div class="row" style="margin-top:10px"><button class="btn primary" onclick="doSaveDeviceEdit(\''+id+'\')">ذخیره</button><button class="btn" onclick="closeDlg()">انصراف</button></div>');
 }
 function doSaveDeviceEdit(id){
   var nm=v('dvEName');
   var payload={action:'update',id:id,name:nm,serial2:v('dvES2'),
-    customer_id:v('dvECust'),notes:v('dvENotes'),
+    customer_id:v('dvECust'),clerk_id:v('dvEClerk'),notes:v('dvENotes'),
     auto_advance:document.getElementById('dvEAuto').checked};
   /* No closeDlg() here: when the edit was opened from the case detail the
      dialog returns to it via dlgCaseRestore; otherwise it just closes. */
@@ -11758,29 +12119,36 @@ function gomrokGateAttrs(){
   return identityPoolReady()?'':' disabled title="'+IDENTITY_POOL_HINT+'"';
 }
 function dlgAttach(id){
+  var d=(STATE.devices||[]).find(x=>x.id===id);
   /* v1.5: only FREE owners are pickable — the bound map stays purely as
      the filter (the server remains the enforcer of the 1:1). With no free
      owner the dialog says so and the attach button stays disabled. */
-  var bound={};(STATE.devices||[]).forEach(d=>{if(d.owner_id)bound[d.owner_id]=true;});
+  var bound={};(STATE.devices||[]).forEach(x=>{if(x.owner_id)bound[x.owner_id]=true;});
   /* v1.9.0: newest passenger first in the picker, like the passenger tab. */
   var free=newestFirst((STATE.owners||[]).filter(o=>!bound[o.id]),o=>o.created);
   var opts=free.map(o=>{
     var label=esc(o.first_name+' '+o.last_name)+' — '+esc(o.national);
     return '<option value="'+o.id+'">'+label+'</option>';
   }).join('');
+  var clerkOpts='<option value="">بدون متصدی ثبت</option>'+(STATE.clerks||[]).map(c=>
+    '<option value="'+c.id+'"'+((d&&d.clerk_id===c.id)?' selected':'')+'>'+esc(c.name)+(c.mobile?' ('+esc(c.mobile)+')':'')+'</option>'
+  ).join('');
   openDlg('<h3>اتصال مسافر به دستگاه</h3>'
     +(free.length
-      ?'<div class="row"><select id="attOwner">'+opts+'</select>'
-       +'<button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال</button></div>'
+      ?'<div class="row"><label class="f" style="flex:1">انتخاب مسافر *<select id="attOwner">'+opts+'</select></label></div>'
+       +'<div class="row" style="margin-top:8px"><label class="f" style="flex:1">متصدی ثبت پرونده<select id="attClerk">'+clerkOpts+'</select></label></div>'
+       +'<div class="row" style="margin-top:12px"><button class="btn primary" onclick="doAttach(\''+id+'\')">اتصال مسافر و ذخیره</button>'
+       +'<button class="btn" onclick="closeDlg()">انصراف</button></div>'
       :'<p class="muted">مسافر آزادی برای اتصال وجود ندارد.</p>'
        +'<div class="row" style="margin-top:10px"><button class="btn primary" disabled>اتصال</button>'
        +'<button class="btn" onclick="closeDlg()">انصراف</button></div>')
-    +'<p class="muted">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
+    +'<p class="muted" style="margin-top:8px">هر مسافر فقط به یک دستگاه متصل می‌شود (نسبت یک‌به‌یک).</p>');
 }
 function doAttach(id){
   var o=findOwner(document.getElementById('attOwner').value);
   var oname=o?(o.first_name+' '+o.last_name):'';
-  api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value})
+  var clerkId=document.getElementById('attClerk')?v('attClerk'):'';
+  api('/crm-tick',{device_id:id,action:'attach_owner',owner_id:document.getElementById('attOwner').value,clerk_id:clerkId})
     .then(async r=>{toastCtx(oname,'متصل شد');if(r.profile_notice){toastCtx(oname,r.profile_notice,false);}await refresh();dlgCaseRestore(id);if(!CASE_MODAL.live)closeDlg();})
     .catch(e=>toastCtx(oname,String(e),false));
 }
@@ -11931,6 +12299,70 @@ function doTx(cid,kind){
   api('/crm-customer',payload)
     .then(async()=>{TX_IMAGE_B64='';TX_IMAGE_MIME='';closeDlg();toast('ثبت شد');await refresh();})
     .catch(e=>{document.getElementById('txErr').textContent=e;showFieldErrors(String(e));});
+}
+function dlgCaseReceipt(deviceId){
+  var d=(STATE.devices||[]).find(x=>x.id===deviceId);
+  if(!d){toast('پرونده پیدا نشد',false);return;}
+  var cid=d.customer_id;
+  var custs=(STATE.customers||[]);
+  if(!cid && !custs.length){
+    toast('ابتدا حداقل یک مشتری در سیستم ثبت کنید',false);return;
+  }
+  var custOpts=custs.map(c=>'<option value="'+c.id+'"'+(c.id===cid?' selected':'')+'>'+esc(c.full_name)+'</option>').join('');
+  openDlg('<h3>ثبت دریافتی از مشتری — پروندهٔ '+esc(d.name)+'</h3>'
+    +(!cid?'<div class="row" style="margin-bottom:8px"><label class="f" style="flex:1">مشتری پرداخت‌کننده *<select id="caseTxCust">'+custOpts+'</select></label></div>'
+          :'<div class="row" style="margin-bottom:8px"><span class="chip">مشتری: <b>'+esc(custName(cid))+'</b></span></div>')
+    +'<div class="row"><label class="f">مبلغ دریافتی (تومان) *<input id="txAmt" inputmode="numeric" class="ltr" style="width:170px" placeholder="مثلاً ۵۰۰,۰۰۰"></label>'
+    +'<label class="f" style="flex:1">شرح دریافتی<input id="txNote" value="بابت پرونده '+esc(d.name)+'" placeholder="مثلاً واریز کارت به کارت"></label></div>'
+    +'<label class="f" style="margin-top:8px">عکس رسید (اختیاری — PNG/JPG تا ۴ مگابایت)'
+    +'<input id="txImage" type="file" accept="image/png,image/jpeg,image/webp" onchange="readTxImage(this)"></label>'
+    +'<div class="kbd" id="txImageName" style="margin-top:4px;display:none"></div>'
+    +'<div class="err" id="txErr"></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button class="btn primary ok" onclick="doCaseReceipt(\''+deviceId+'\')">ثبت دریافتی</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
+}
+function doCaseReceipt(deviceId){
+  var d=(STATE.devices||[]).find(x=>x.id===deviceId);
+  var cid = (d && d.customer_id) || (document.getElementById('caseTxCust') ? v('caseTxCust') : '');
+  if(!cid){document.getElementById('txErr').textContent='انتخاب مشتری الزامی است';return;}
+  var amount=Number(String(v('txAmt')||'').replace(/[,\s،]/g,''))||0;
+  if(!amount){document.getElementById('txErr').textContent='مبلغ باید عدد معتبر باشد';return;}
+  var payload={action:'tx',id:cid,amount:amount,note:v('txNote'),kind:'receipt',device_id:deviceId};
+  if(TX_IMAGE_B64){payload.image_b64=TX_IMAGE_B64;payload.image_mime=TX_IMAGE_MIME;}
+  api('/crm-customer',payload)
+    .then(async()=>{
+      TX_IMAGE_B64='';TX_IMAGE_MIME='';
+      toast('دریافتی از مشتری با موفقیت ثبت شد');
+      await refresh();
+      if(CASE_MODAL.live)caseDetail(deviceId);
+      else if(PER.live&&PER.pid)dlgPeriod(PER.pid,true);
+      else closeDlg();
+    })
+    .catch(e=>{document.getElementById('txErr').textContent=e;showFieldErrors(String(e));});
+}
+function dlgAttachClerk(deviceId){
+  var d=(STATE.devices||[]).find(x=>x.id===deviceId);
+  if(!d){toast('پرونده پیدا نشد',false);return;}
+  var clerkOpts='<option value="">بدون متصدی ثبت</option>'+(STATE.clerks||[]).map(c=>
+    '<option value="'+c.id+'"'+(c.id===d.clerk_id?' selected':'')+'>'+esc(c.name)+(c.mobile?' ('+esc(c.mobile)+')':'')+'</option>'
+  ).join('');
+  openDlg('<h3>تخصیص متصدی ثبت برای پرونده '+esc(d.name)+'</h3>'
+    +'<div class="row"><label class="f" style="flex:1">متصدی ثبت پرونده<select id="selCaseClerk">'+clerkOpts+'</select></label></div>'
+    +'<div class="row" style="margin-top:12px">'
+    +'<button class="btn primary" onclick="doSaveCaseClerk(\''+deviceId+'\')">ذخیره</button>'
+    +'<button class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
+function doSaveCaseClerk(deviceId){
+  var clerkId=v('selCaseClerk')||'';
+  api('/crm-device',{action:'update',id:deviceId,clerk_id:clerkId})
+    .then(async()=>{
+      toast('متصدی ثبت پرونده ذخیره شد');
+      await refresh();
+      if(CASE_MODAL.live)caseDetail(deviceId);
+      else closeDlg();
+    }).catch(e=>toast(e,false));
 }
 /* ================= void transaction (v1.6) ================= */
 /* Voiding is bookkeeping-sensitive: the original row stays (history is
@@ -12440,7 +12872,7 @@ function renderTabs(){
   var arch=((STATE&&STATE.archived_owners)||[]).length;
   var allOwners=((STATE&&STATE.owners)||[]).length;
   var counts={devices:devs.length,periods:((STATE&&STATE.periods)||[]).length,customers:(STATE&&STATE.customers||[]).length,
-    owners:Math.max(0,allOwners-arch),owner_archive:arch,
+    owners:Math.max(0,allOwners-arch),clerks:((STATE&&STATE.clerks)||[]).length,owner_archive:arch,
     identities:(STATE&&STATE.identities||[]).length,
     periodic:devs.filter(d=>(d.stage==='handed'||d.stage==='to_payment'||d.stage==='payment'||d.stage==='payment_done')&&!d.periodic_opt_out).length,
     ledger:null,reports:null,
@@ -12940,7 +13372,8 @@ class Handler(BaseHTTPRequestHandler):
                         tx_amount = -tx_amount
                     record, tx_seq, errors = crm_mod.add_transaction_seq(
                         record_id, tx_amount, data.get("note") or "",
-                        kind=kind, image=image_name)
+                        kind=kind, image=image_name,
+                        device_id=data.get("device_id") or "")
             elif action == "void_tx":
                 # v1.6: void one ledger row. The index resolves inside
                 # crm.void_transaction under STORE_LOCK (re-checked there —
@@ -12989,6 +13422,27 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "delete":
                 ok, errors = crm_mod.delete_identity(record_id)
                 record = {"ok": ok} if ok else None
+            else:
+                errors = ["کنش نامعتبر است"]
+        elif entity == "clerk":
+            if action == "add":
+                record, errors = crm_mod.add_clerk(data)
+            elif action == "update":
+                record, errors = crm_mod.update_clerk(record_id, data)
+            elif action == "delete":
+                ok, errors = crm_mod.delete_clerk(record_id, force=bool(data.get("force")))
+                record = {"ok": ok} if ok else None
+            elif action == "tx":
+                record, errors = crm_mod.add_clerk_transaction(
+                    record_id, data.get("amount"), kind=data.get("kind") or "credit",
+                    recipient_name=data.get("recipient_name") or "",
+                    device_id=data.get("device_id") or "",
+                    period_id=data.get("period_id") or "",
+                    note=data.get("note") or "")
+            elif action == "void_tx":
+                tx_id = data.get("tx_id") or data.get("tx_index")
+                record, errors = crm_mod.void_clerk_transaction(
+                    record_id, tx_id, reason=str(data.get("reason") or ""))
             else:
                 errors = ["کنش نامعتبر است"]
         else:  # device
@@ -14442,7 +14896,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(clear_estelam_logs())
 
         elif self.path in ("/crm-customer", "/crm-owner", "/crm-identity",
-                           "/crm-device"):
+                           "/crm-device", "/crm-clerk"):
             self._crm_entity(self.path, self._read_json())
 
         elif self.path == "/crm-inquire":
@@ -14516,9 +14970,13 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             tick_device_id = str(data.get("device_id") or "")
             tick_action = str(data.get("action") or "")
-            device, errors = crm_advance_logged(tick_device_id, tick_action,
-                                                owner_id=data.get("owner_id") or "",
-                                                reason=str(data.get("reason") or ""))
+            tick_kw = {
+                "owner_id": data.get("owner_id") or "",
+                "reason": str(data.get("reason") or "")
+            }
+            if "clerk_id" in data:
+                tick_kw["clerk_id"] = data["clerk_id"]
+            device, errors = crm_advance_logged(tick_device_id, tick_action, **tick_kw)
             if errors:
                 self._json({"ok": False, "errors": errors}, 400)
             else:
