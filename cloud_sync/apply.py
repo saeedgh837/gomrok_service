@@ -524,7 +524,8 @@ def apply_snapshot(payload, *, store, source_installation_id, versions,
     report = ApplyReport(applied=applied, protected=len(envelopes) - applied)
     # Version state is committed only once the document is on disk: a write
     # that fails must not leave rows that were never written looking applied.
-    if document != local:
+    target_path = getattr(store, "path", None)
+    if document != local or (isinstance(target_path, str) and not os.path.exists(target_path)):
         store.write(document)
         report.written = True
     for entity, cloud_id, row_version in pending:
@@ -709,7 +710,8 @@ def apply_changes(page, *, store, source_installation_id, versions,
     # Version state is committed only once the document is on disk: a failure
     # halfway must leave `versions` untouched, or the rows it never wrote would
     # look applied and the next pull would skip them for good.
-    if document != local:
+    target_path = getattr(store, "path", None)
+    if document != local or (isinstance(target_path, str) and not os.path.exists(target_path)):
         store.write(document)
         report.written = True
     for key, row_version in pending:

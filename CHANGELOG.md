@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.16.1] - 2026-11-01
+
+### Fixed
+
+- **Instant online data sync on login and sync-now when local store is missing or empty.**
+  - If `crm_store.json` is missing or empty, `cloud_pull_step` automatically executes a bootstrap pull from the server regardless of prior local cursor state.
+  - `cloud_login` and `cloud_sync_now` now synchronously trigger `cloud_pull_step` on the request thread before returning to the UI, guaranteeing immediate availability of all online records.
+  - Frontend auto-refreshes CRM tables immediately after successful sync or login.
+  - `FileStore` safely writes snapshot data to disk even when the target local file does not yet exist.
+  - Gracefully accepts naive wire timestamps without crashing on missing timezone offsets.
+  - Automatically initializes default `api_base` to `https://api.oneserver.in` on fresh installations.
+
 ## [1.16.0] - 2026-10-24
 
 ### Added

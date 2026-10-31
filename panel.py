@@ -1404,6 +1404,12 @@ def _cloud_build_runtime():
     from cloud_sync.state import SyncStateMachine
 
     config = load_config()
+    if not config.api_base:
+        config.api_base = "https://api.oneserver.in"
+        try:
+            config.save()
+        except Exception:
+            pass
     machine = SyncStateMachine.load()
     lease = OfflineLease.load()
     # cloud_sync/outbox.py names its file "cloud_sync/outbox.jsonl", but
@@ -1697,6 +1703,12 @@ def cloud_login(username, password):
     _CLOUD_MUST_CHANGE = bool(payload.get("must_change_password"))
     user_info = payload.get("user") if isinstance(payload, dict) else None
     _CLOUD_ROLE = user_info.get("role") if isinstance(user_info, dict) else None
+    new_tenant = payload.get("tenant_id")
+    if new_tenant and new_tenant != getattr(runtime["config"], "tenant_id", None):
+        runtime["config"].tenant_id = new_tenant
+        runtime["config"].cursor = 0
+        runtime["config"].dataset_epoch = None
+        runtime["config"].sync_device_id = None
     if (not runtime["config"].sync_device_id
             or not client.vault.has_device_credentials):
         # A stale device id is not proof that this PC can authenticate. If
@@ -1706,6 +1718,10 @@ def cloud_login(username, password):
     _cloud_apply_login_event(runtime)
     cloud_worker_start()
     cloud_worker_kick()
+    try:
+        cloud_pull_step(runtime)
+    except Exception:
+        pass
     try:
         cloud_worker_beat()
     except Exception:
@@ -1749,6 +1765,14 @@ def cloud_sync_now():
     cloud_worker_kick()
     try:
         cloud_worker_beat()
+    except Exception:
+        pass
+    try:
+        runtime = _cloud_runtime()
+        import crm as _crm_mod
+        store_path = _crm_mod._store_path()
+        if _local_store_is_empty(store_path):
+            cloud_pull_step(runtime)
     except Exception:
         pass
     return {"ok": True, "queued": True,
@@ -2178,6 +2202,18 @@ def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert", trans
         pass
 
 
+def _local_store_is_empty(store_path):
+    if not os.path.exists(store_path) or os.path.getsize(store_path) < 10:
+        return True
+    try:
+        import crm as _crm
+        data = _crm._store_read()
+        has_data = any(bool(data.get(k)) for k in ("customers", "devices", "periods", "owners"))
+        return not has_data
+    except Exception:
+        return True
+
+
 def cloud_pull_step(runtime=None):
     """Run one pull cycle: bootstrap snapshot if cursor == 0, else pull_all.
 
@@ -2211,18 +2247,23 @@ def cloud_pull_step(runtime=None):
 
     pulled_pages = 0
     with crm_mod.STORE_LOCK:
-        if getattr(config, "dataset_epoch", None) is None:
+        store_path = crm_mod._store_path()
+        store_missing = _local_store_is_empty(store_path)
+        if store_missing or getattr(config, "dataset_epoch", None) is None:
             snapshot = client.bootstrap()
+            snap_install_id = snapshot.get("source_installation_id") or source_installation_id
             try:
                 apply.apply_snapshot(
                     snapshot,
                     store=store,
-                    source_installation_id=source_installation_id,
+                    source_installation_id=snap_install_id,
                     versions=versions,
                     dirty=dirty,
                 )
             except RemoteNotReadyError:
                 return {"pulled": 0, "skipped": "remote_not_ready"}
+            if snapshot.get("source_installation_id"):
+                config.source_installation_id = snapshot["source_installation_id"]
             # Cross-file commit order is deliberate: local CRM bytes first
             # (inside apply_snapshot), then row versions, and only then the
             # cursor/epoch marker. A crash can cause a harmless re-bootstrap,
@@ -2235,7 +2276,7 @@ def cloud_pull_step(runtime=None):
                 apply.apply_changes(
                     page,
                     store=store,
-                    source_installation_id=source_installation_id,
+                    source_installation_id=config.source_installation_id or source_installation_id,
                     versions=versions,
                     dirty=dirty,
                 )
@@ -11282,7 +11323,10 @@ function cloudPost(path,body,onOk){
 }
 
 function cloudSyncNow(){
-  cloudPost('/cloud-sync',{},function(){toast('همگام‌سازی با موفقیت انجام شد.',true);});
+  cloudPost('/cloud-sync',{},function(){
+    toast('همگام‌سازی با موفقیت انجام شد.',true);
+    if(typeof refresh==='function'){refresh();}
+  });
 }
 
 function cloudSetDbMode(mode){
@@ -11320,6 +11364,7 @@ function cloudLogin(){
   p.value='';
   cloudPost('/cloud-login',{username:username,password:password},function(){
     u.value='';toast('دستگاه با موفقیت در سرور ثبت شد.',true);
+    if(typeof refresh==='function'){refresh();}
   });
 }
 
