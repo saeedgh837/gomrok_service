@@ -292,32 +292,24 @@ def _spawn_proxy_process(timeout=PROXY_START_TIMEOUT):
 # HTTP (proxy is not optional)
 # --------------------------------------------------------------------------
 
-def http_get_bytes(url, proxy, timeout=HTTP_TIMEOUT, deadline=None, **kwargs):
-    """GET through the proxy. Raises DriverUpdateError; never falls back direct.
-
-    ``deadline`` is an absolute ``time.monotonic()`` instant the transfer must
-    finish by, and it is what makes the caller's budget real. ``requests``'
-    ``timeout`` is a per-read *stall* timeout, not a total one: a tunnel that
-    trickles one byte just under each read window resets it forever, so one GET
-    could otherwise outlive any budget — on the launch path that means a robot
-    start held open by a half-dead tunnel. The body is therefore read in chunks
-    and the deadline re-checked between them. Because a chunk is only delivered
-    once its read completes, that check cannot interrupt a read already in
-    flight, so it is a soft bound: the transfer ends by ``deadline`` plus at
-    most one read, and the callers above keep that one read's allowance itself
-    within the budget (``min(nominal, budget left)``).
-    """
-    if not str(proxy or "").strip():
+def http_get_bytes(url, proxy, timeout=HTTP_TIMEOUT, deadline=None, allow_direct=False, **kwargs):
+    """GET through the proxy (or direct if allow_direct=True). Raises DriverUpdateError."""
+    if not str(proxy or "").strip() and not allow_direct:
         raise DriverUpdateError(
             "refusing to download without a proxy: direct connections are not "
             "allowed for this updater")
     import requests
 
     session = requests.Session()
-    session.trust_env = False  # ignore ambient HTTP(S)_PROXY, never widen scope
+    if allow_direct and not str(proxy or "").strip():
+        session.trust_env = True
+        proxies = None
+    else:
+        session.trust_env = False  # ignore ambient HTTP(S)_PROXY, never widen scope
+        proxies = {"http": proxy, "https": proxy}
     response = None
     try:
-        response = session.get(url, proxies={"http": proxy, "https": proxy},
+        response = session.get(url, proxies=proxies,
                                timeout=timeout, stream=True)
         if response.status_code != 200:
             raise DriverUpdateError(
@@ -546,9 +538,22 @@ def install_from_zip(zip_path, target_exe, expected_major, read_major,
             # way, since only the two sharing codes actually name a live image.
             if getattr(exc, "winerror", None) in (32, 33):
                 raise
+            # If target missing after failed replace, attempt restore from backup
+            if not os.path.isfile(target_exe) and os.path.isfile(target_exe + ".bak"):
+                try:
+                    os.replace(target_exe + ".bak", target_exe)
+                except Exception as restore_exc:
+                    raise DriverUpdateError(
+                        f"cannot write over {target_exe}: {exc}; backup restore also failed: {restore_exc}") from exc
             raise DriverUpdateError(
                 f"cannot write over {target_exe}: {exc}") from exc
         except OSError as exc:
+            if not os.path.isfile(target_exe) and os.path.isfile(target_exe + ".bak"):
+                try:
+                    os.replace(target_exe + ".bak", target_exe)
+                except Exception as restore_exc:
+                    raise DriverUpdateError(
+                        f"could not replace {target_exe}: {exc}; backup restore also failed: {restore_exc}") from exc
             raise DriverUpdateError(
                 f"could not replace {target_exe}: {exc}") from exc
         return target_exe
@@ -595,7 +600,8 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
                         read_version=None, fetcher=None, probe=None,
                         spawn_proxy=None, env=None, extra_targets=(),
                         timeout=HTTP_TIMEOUT, attempts=ATTEMPTS, backoff=BACKOFF,
-                        total=RETRY_TOTAL_SECONDS, log=None):
+                        total=RETRY_TOTAL_SECONDS, log=None,
+                        proxy_override=None, allow_direct=False):
     """Bring the driver at ``target_exe`` (and any ``extra_targets``) up to
     major ``expected_major``.
 
@@ -638,30 +644,35 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
     # caller's budget.
     deadline = (time.monotonic() + total) if total else None
 
-    proxy = proxy_url()
-    probe = probe or proxy_ready
-    if not probe(PROXY_HOST, PROXY_PORT):
-        log("driver update: proxy down, starting it")
-        spawn = spawn_proxy or _spawn_proxy_process
-        try:
-            # The spawn allowance is spent from the same budget as everything
-            # else: with a small total the caller must not be kept waiting the
-            # full start-up allowance and only then be told there is no time
-            # left for the transfer.
-            started = spawn(timeout=_budget_left(deadline, PROXY_START_TIMEOUT))
-        except Exception:
-            started = False
-        if not started:
-            return finish("failed",
-                          f"proxy {proxy} is not available and could not be "
-                          f"started")
+    if proxy_override:
+        proxy = str(proxy_override).strip()
+    elif allow_direct:
+        proxy = ""
+    else:
+        proxy = proxy_url()
+        probe = probe or proxy_ready
+        if not probe(PROXY_HOST, PROXY_PORT):
+            log("driver update: proxy down, starting it")
+            spawn = spawn_proxy or _spawn_proxy_process
+            try:
+                # The spawn allowance is spent from the same budget as everything
+                # else: with a small total the caller must not be kept waiting the
+                # full start-up allowance and only then be told there is no time
+                # left for the transfer.
+                started = spawn(timeout=_budget_left(deadline, PROXY_START_TIMEOUT))
+            except Exception:
+                started = False
+            if not started:
+                return finish("failed",
+                              f"proxy {proxy} is not available and could not be "
+                              f"started")
 
     if deadline is not None and time.monotonic() > deadline:
         return finish("failed",
                       "the time budget was spent before the download could "
                       "start")
 
-    fetch = fetcher or http_get_bytes
+    fetch = fetcher or (lambda u, p, t, **kw: http_get_bytes(u, p, timeout=t, allow_direct=allow_direct, **kw))
     try:
         version = _resolve_version(fetch, proxy, expected_major, timeout,
                                    attempts, backoff, total=total,

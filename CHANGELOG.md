@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.18.0] - 2026-11-01
+
+### Added
+
+- **Period Clerk Financial Metrics («شاخص‌های مالی متصدی‌ها در دوره»).**
+  - Replaced case debits/credits in period details («متصدی‌ها» tab) with 3 accurate clerk financial metrics:
+    1. مجموع بستانکاری متصدی‌ها (Total Clerk Credits in period)
+    2. مجموع دریافتی متصدی‌ها (Total Clerk Disbursements/Payments in period)
+    3. مانده حساب متصدی‌ها (Net Clerk Balance in period: credits minus disbursements)
+  - Computed via authoritative backend calculation `period_clerks_summary` and frontend `periodClerksMoney`.
+- **Period-Scoped Clerk Statement & Printable Statement Export («گردش حساب دوره‌ای و خروجی صورتحساب»).**
+  - Opening clerk statement from within a period dialog automatically filters transactions strictly to that period.
+  - Quick-switch button «مشاهده گردش حساب کلی این متصدی» in statement dialog bottom-left to toggle between period-scoped and overall ledger across all periods.
+  - Dedicated «دریافت خروجی صورتحساب» button and route `/crm-clerk-statement`: generates a self-contained, presentation-ready RTL HTML document with Vazirmatn typography, business header, metadata summary cards, detailed ledger rows, signature areas, and optimized `@media print` rules for A4 output.
+- **Pre-Login Updates & System Health Diagnostics («بررسی بروزرسانی‌ها و سلامت سرویس‌ها در صفحه ورود»).**
+  - Top navigation pill bar on Login page with quick access to «بررسی بروزرسانی‌ها» and «بررسی سلامت سرویس‌ها».
+  - Automatic version inspection of installed Google Chrome (64-bit Windows) and ChromeDriver against official Google Chrome-for-Testing (CfT) channels and milestones via configured proxy.
+  - Clear user guidance on free internet access with «فیلترشکن را روشن کردم؛ مجدداً بررسی کن» button for direct retry.
+  - Sequential 3-step service health diagnostic: Cloud database server, Telegram API/relay, and Proxy connection (with graceful «تنظیم نشده» state when proxy is unconfigured).
+  - Global system proxy card («پروکسی سراسری سامانه») in Settings tab supporting SOCKS5, HTTP, and HTTPS protocols with live connection test and password redaction.
+  - Hardened security with loopback-only client restriction and rate-limiting concurrency locks on driver update.
+
 ## [1.17.0] - 2026-11-01
 
 ### Added

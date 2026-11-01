@@ -1076,6 +1076,553 @@ def void_clerk_transaction(clerk_id, tx_identifier, reason=""):
         return reversal, []
 
 
+def period_clerks_summary(data, period_id):
+    """Authoritative clerk summary for a specific period (v1.17.0).
+
+    Returns a dict with:
+      - period: the matched period object
+      - clerks_count: count of active clerks in this period
+      - cases_count: total cases of these clerks in this period
+      - credit: مجموع بستانکاری متصدی‌ها در دوره
+      - paid: مجموع دریافتی متصدی‌ها در دوره
+      - net: مانده حساب متصدی‌ها در دوره (credit - paid)
+      - clerks: list of per-clerk summary objects
+    """
+    period = next((p for p in data.get("periods", []) if str(p.get("id")) == str(period_id)), None)
+    ds = [d for d in data.get("devices", []) if str(d.get("period_id") or "") == str(period_id)]
+    dev_ids = {str(d.get("id")) for d in ds}
+
+    clerk_items = []
+    total_credit = 0
+    total_paid = 0
+    total_cases = 0
+
+    for c in data.get("clerks", []):
+        cid = str(c.get("id") or "")
+        c_devs = [d for d in ds if str(d.get("clerk_id") or "") == cid]
+        p_txs = []
+        for t in c.get("transactions", []):
+            if not _tx_countable(t):
+                continue
+            t_pid = str(t.get("period_id") or "").strip()
+            if t_pid:
+                if t_pid == str(period_id):
+                    p_txs.append(t)
+            elif t.get("device_id") and str(t.get("device_id")) in dev_ids:
+                p_txs.append(t)
+
+        if c_devs or p_txs:
+            cred = sum(int(t.get("amount") or 0) for t in p_txs if str(t.get("kind") or "credit") == "credit")
+            paid = sum(int(t.get("amount") or 0) for t in p_txs if str(t.get("kind") or "") in ("payment", "debit"))
+            net = cred - paid
+            clerk_items.append({
+                "clerk": c,
+                "cases_count": len(c_devs),
+                "credit": cred,
+                "paid": paid,
+                "net": net,
+                "transactions": p_txs,
+            })
+            total_credit += cred
+            total_paid += paid
+            total_cases += len(c_devs)
+
+    return {
+        "period": period,
+        "clerks_count": len(clerk_items),
+        "cases_count": total_cases,
+        "credit": total_credit,
+        "paid": total_paid,
+        "net": total_credit - total_paid,
+        "clerks": clerk_items,
+    }
+
+
+def clerk_statement(data, clerk_id, period_id=None):
+    """Statement and ledger for a clerk, optionally scoped to a period (v1.17.0)."""
+    clerk = next((c for c in data.get("clerks", []) if str(c.get("id")) == str(clerk_id)), None)
+    if not clerk:
+        return None, ["متصدی ثبت پیدا نشد"]
+
+    period = None
+    dev_ids_in_period = set()
+    if period_id:
+        period = next((p for p in data.get("periods", []) if str(p.get("id")) == str(period_id)), None)
+        if not period:
+            return None, ["دوره پیدا نشد"]
+        dev_ids_in_period = {
+            str(d.get("id")) for d in data.get("devices", [])
+            if str(d.get("period_id") or "") == str(period_id)
+        }
+
+    devices_by_id = {str(d.get("id")): d for d in data.get("devices", [])}
+    periods_by_id = {str(p.get("id")): p for p in data.get("periods", [])}
+
+    txs = sorted(clerk.get("transactions", []), key=lambda t: str(t.get("at") or ""))
+
+    rows = []
+    running_balance = 0
+    total_credit = 0
+    total_paid = 0
+
+    for t in txs:
+        t_pid = str(t.get("period_id") or "").strip()
+        in_scope = True
+        if period_id:
+            if t_pid:
+                in_scope = (t_pid == str(period_id))
+            else:
+                in_scope = bool(t.get("device_id") and str(t.get("device_id")) in dev_ids_in_period)
+
+        if not in_scope:
+            continue
+
+        is_void = not _tx_countable(t)
+        amt = int(t.get("amount") or 0)
+        kind = str(t.get("kind") or "credit").lower()
+        is_cred = (kind == "credit")
+        is_pay = (kind in ("payment", "debit"))
+
+        bal_after = None
+        if not is_void:
+            if is_cred:
+                running_balance += amt
+                total_credit += amt
+            elif is_pay:
+                running_balance -= amt
+                total_paid += amt
+            bal_after = running_balance
+
+        did = str(t.get("device_id") or "").strip()
+        dev = devices_by_id.get(did)
+        pid = t_pid or (dev.get("period_id") if dev else "")
+        per = periods_by_id.get(str(pid))
+
+        rows.append({
+            "id": t.get("id"),
+            "at": t.get("at"),
+            "at_fa": jalali.to_fa_datetime(t.get("at")) if t.get("at") else "—",
+            "kind": kind,
+            "amount": amt,
+            "credit": amt if (is_cred and not is_void) else 0,
+            "debit": amt if (is_pay and not is_void) else 0,
+            "recipient_name": str(t.get("recipient_name") or ""),
+            "device_id": did,
+            "device_name": dev.get("name") if dev else "",
+            "period_id": pid,
+            "period_name": (per.get("label") or f"دورهٔ {jalali.fa_digits(per.get('number') or 0)}") if per else "",
+            "note": str(t.get("note") or ""),
+            "voided": is_void,
+            "void_reason": str(t.get("void_reason") or ""),
+            "balance": bal_after,
+        })
+
+    settings = data.get("settings") or {}
+    business = {
+        "name": str(settings.get("business_name") or "").strip(),
+        "phone": str(settings.get("business_phone") or "").strip(),
+    }
+
+    per_label = ""
+    if period:
+        per_label = period.get("label") or f"دورهٔ {jalali.fa_digits(period.get('number') or 0)}"
+
+    return {
+        "clerk": {
+            "id": clerk.get("id"),
+            "name": clerk.get("name"),
+            "mobile": clerk.get("mobile"),
+            "notes": clerk.get("notes"),
+            "active": clerk.get("active", True),
+            "balance": clerk_balance(clerk),
+        },
+        "period": {
+            "id": period.get("id"),
+            "number": period.get("number"),
+            "label": per_label,
+            "opened_at_fa": jalali.to_fa_datetime(period.get("opened_at")) if period.get("opened_at") else "",
+            "closed_at_fa": jalali.to_fa_datetime(period.get("closed_at")) if period.get("closed_at") else "",
+        } if period else None,
+        "business": business,
+        "generated_at": _now(),
+        "generated_at_fa": jalali.to_fa_datetime(_now()),
+        "rows": rows,
+        "totals": {
+            "credit": total_credit,
+            "paid": total_paid,
+            "net": total_credit - total_paid,
+            "overall_balance": clerk_balance(clerk),
+        }
+    }, []
+
+
+def clerk_statement_html(stmt):
+    """Printable professional HTML statement for a clerk (v1.17.0)."""
+    clerk = stmt.get("clerk") or {}
+    period = stmt.get("period")
+    business = stmt.get("business") or {}
+    totals = stmt.get("totals") or {}
+    rows = stmt.get("rows") or []
+
+    biz_name = _esc(business.get("name") or "ایریکا")
+    biz_phone = _esc(business.get("phone") or "")
+    clerk_name = _esc(clerk.get("name") or "—")
+    clerk_mobile = _esc(clerk.get("mobile") or "—")
+    scope_title = f"محدوده: {_esc(period.get('label'))}" if period else "گردش حساب کلی (تمام دوره‌ها)"
+
+    net_amt = int(totals.get("net") or 0)
+    if net_amt > 0:
+        net_pill = f'<span class="pill ok">بستانکار: {_fa_money(net_amt)}</span>'
+    elif net_amt < 0:
+        net_pill = f'<span class="pill bad">بدهکار: {_fa_money(abs(net_amt))}</span>'
+    else:
+        net_pill = '<span class="pill zero">تسویه</span>'
+
+    table_rows = []
+    for i, r in enumerate(rows):
+        is_void = bool(r.get("voided"))
+        row_cls = ' class="void"' if is_void else ""
+        cred_str = _fa_money(r["credit"]) if r.get("credit") else "—"
+        deb_str = _fa_money(r["debit"]) if r.get("debit") else "—"
+        bal_str = _fa_money(r["balance"]) if (r.get("balance") is not None and not is_void) else "—"
+        recip = _esc(r.get("recipient_name") or "—")
+        dev = _esc(r.get("device_name") or ("پرونده " + r["device_id"] if r.get("device_id") else "—"))
+        desc = _esc(r.get("note") or "—")
+        if is_void:
+            desc += f' <span class="void-tag">(ابطال شده{": " + _esc(r["void_reason"]) if r.get("void_reason") else ""})</span>'
+
+        table_rows.append(
+            f"<tr{row_cls}>"
+            f"<td class='c'>{jalali.fa_digits(i + 1)}</td>"
+            f"<td>{_esc(r.get('at_fa'))}</td>"
+            f"<td>{desc}</td>"
+            f"<td>{recip}</td>"
+            f"<td>{dev}</td>"
+            f"<td class='pmoney deb'>{deb_str}</td>"
+            f"<td class='pmoney cred'>{cred_str}</td>"
+            f"<td class='pmoney bal'>{bal_str}</td>"
+            f"</tr>"
+        )
+
+    table_body = "".join(table_rows) if table_rows else "<tr><td colspan='8' class='c muted'>هیچ تراکنشی در این محدوده ثبت نشده است.</td></tr>"
+
+    return f"""<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>صورت‌حساب متصدی — {clerk_name}</title>
+<style>
+@font-face {{
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-var.woff2') format('woff2-variations'),
+       url('/fonts/Vazirmatn-var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}}
+@font-face {{
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}}
+:root {{
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-dark: #cbd5e1;
+  --brand: #2563eb;
+  --ok: #059669;
+  --ok-bg: #ecfdf5;
+  --bad: #dc2626;
+  --bad-bg: #fef2f2;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  font-family: 'Vazirmatn', Tahoma, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 13px;
+  padding: 20px;
+}}
+.no-print {{
+  max-width: 960px;
+  margin: 0 auto 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}}
+.btn {{
+  background: var(--brand);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}}
+.btn.ghost {{
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--line-dark);
+}}
+.sheet {{
+  max-width: 960px;
+  margin: 0 auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 32px 36px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}}
+.header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}}
+.header h1 {{
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 4px;
+}}
+.header .sub {{
+  color: var(--muted);
+  font-size: 12px;
+}}
+.biz {{
+  text-align: left;
+}}
+.biz .name {{
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--brand);
+}}
+.biz .phone {{
+  color: var(--muted);
+  font-size: 12px;
+  direction: ltr;
+}}
+.meta-grid {{
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+}}
+.meta-item .lbl {{
+  font-size: 11px;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 2px;
+}}
+.meta-item .val {{
+  font-size: 13px;
+  font-weight: 600;
+}}
+.pill {{
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+}}
+.pill.ok {{ background: var(--ok-bg); color: var(--ok); }}
+.pill.bad {{ background: var(--bad-bg); color: var(--bad); }}
+.pill.zero {{ background: #f1f5f9; color: var(--muted); }}
+table {{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 20px;
+}}
+th, td {{
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: right;
+}}
+th {{
+  background: #f1f5f9;
+  font-weight: 700;
+  color: #334155;
+}}
+.c {{ text-align: center; }}
+.pmoney {{ direction: ltr; text-align: left; font-family: Tahoma, 'Vazirmatn', sans-serif; }}
+.pmoney.deb {{ color: var(--bad); font-weight: 600; }}
+.pmoney.cred {{ color: var(--ok); font-weight: 600; }}
+.pmoney.bal {{ font-weight: 700; }}
+tr.void td {{
+  text-decoration: line-through;
+  color: #94a3b8;
+  background: #fafafa;
+}}
+.void-tag {{
+  color: var(--bad);
+  font-size: 10.5px;
+  text-decoration: none;
+  display: inline-block;
+}}
+.summary-box {{
+  display: flex;
+  justify-content: space-between;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-top: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}}
+.summary-item {{
+  display: flex;
+  flex-direction: column;
+}}
+.summary-item .l {{
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}}
+.summary-item .v {{
+  font-size: 14px;
+  font-weight: 700;
+}}
+.signatures {{
+  display: flex;
+  justify-content: space-between;
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px dashed var(--line-dark);
+}}
+.sig-box {{
+  width: 220px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}}
+.sig-line {{
+  height: 60px;
+}}
+@media print {{
+  .no-print {{ display: none !important; }}
+  body {{ background: #fff !important; padding: 0 !important; margin: 0 !important; }}
+  .sheet {{ border: none !important; box-shadow: none !important; padding: 0 !important; max-width: 100% !important; }}
+  @page {{ size: A4 portrait; margin: 12mm 10mm; }}
+  table {{ page-break-inside: auto; }}
+  tr {{ page-break-inside: avoid; page-break-after: auto; }}
+  thead {{ display: table-header-group; }}
+}}
+</style>
+</head>
+<body>
+
+<div class="no-print">
+  <button class="btn ghost" onclick="window.close()">بستن</button>
+  <button class="btn" onclick="window.print()">🖨️ چاپ صورت‌حساب / ذخیره به PDF</button>
+</div>
+
+<div class="sheet">
+  <div class="header">
+    <div>
+      <h1>صورت‌حساب و گردش مالی متصدی ثبت</h1>
+      <div class="sub">{scope_title}</div>
+    </div>
+    <div class="biz">
+      <div class="name">{biz_name}</div>
+      {f'<div class="phone">{biz_phone}</div>' if biz_phone else ''}
+    </div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-item">
+      <span class="lbl">نام متصدی ثبت</span>
+      <span class="val">{clerk_name}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">شماره تماس متصدی</span>
+      <span class="val">{clerk_mobile}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">تاریخ صدور صورت‌حساب</span>
+      <span class="val">{_esc(stmt.get("generated_at_fa"))}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">وضعیت مانده در این صورت‌حساب</span>
+      <span class="val">{net_pill}</span>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="c" style="width: 40px">ردیف</th>
+        <th style="width: 130px">تاریخ و ساعت</th>
+        <th>شرح و بابت</th>
+        <th>دریافت‌کننده وجه</th>
+        <th>پرونده</th>
+        <th style="width: 110px">دریافتی متصدی (بدهکار)</th>
+        <th style="width: 110px">بستانکاری (طلب متصدی)</th>
+        <th style="width: 110px">مانده حساب</th>
+      </tr>
+    </thead>
+    <tbody>
+      {table_body}
+    </tbody>
+  </table>
+
+  <div class="summary-box">
+    <div class="summary-item">
+      <span class="l">مجموع بستانکاری در این صورت‌حساب</span>
+      <span class="v" style="color: var(--ok)">{_fa_money(totals.get("credit"))}</span>
+    </div>
+    <div class="summary-item">
+      <span class="l">مجموع دریافتی‌ها در این صورت‌حساب</span>
+      <span class="v" style="color: var(--bad)">{_fa_money(totals.get("paid"))}</span>
+    </div>
+    <div class="summary-item">
+      <span class="l">مانده حساب این صورت‌حساب</span>
+      <span class="v">{_fa_money(totals.get("net"))}</span>
+    </div>
+    {f'''<div class="summary-item">
+      <span class="l">مانده کل حساب متصدی (تمام دوره‌ها)</span>
+      <span class="v">{_fa_money(totals.get("overall_balance"))}</span>
+    </div>''' if period else ''}
+  </div>
+
+  <div class="signatures">
+    <div class="sig-box">
+      <div>مهر و امضای امور مالی</div>
+      <div class="sig-line"></div>
+    </div>
+    <div class="sig-box">
+      <div>امضای متصدی ثبت</div>
+      <div class="sig-line"></div>
+      <div>{clerk_name}</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
+"""
+
+
 def add_owner(fields):
     errs = validate_owner(fields)
     if errs:

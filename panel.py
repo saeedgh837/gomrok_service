@@ -1290,6 +1290,572 @@ def public_telegram_config():
 
 
 # =====================================================================
+# System proxy, updates & service health (v1.17.0)
+# =====================================================================
+PROXY_CONFIG_PATH = app_paths.data_path("proxy_config.json")
+
+
+def load_system_proxy_config():
+    """Load system proxy configuration (v1.17.0).
+    Priority: proxy_config.json -> upstream_proxy.json -> telegram_config.json.
+    """
+    cfg = {
+        "enabled": False,
+        "protocol": "socks5",
+        "proto": "socks5",
+        "host": "",
+        "port": 0,
+        "username": "",
+        "user": "",
+        "password": "",
+        "pass": "",
+        "proxy_url": ""
+    }
+    if os.path.isfile(PROXY_CONFIG_PATH):
+        try:
+            with open(PROXY_CONFIG_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f) or {}
+            cfg.update(saved)
+            cfg["proto"] = cfg.get("protocol") or cfg.get("proto") or "socks5"
+            cfg["protocol"] = cfg["proto"]
+            cfg["user"] = cfg.get("username") or cfg.get("user") or ""
+            cfg["username"] = cfg["user"]
+            cfg["pass"] = cfg.get("password") or cfg.get("pass") or ""
+            cfg["password"] = cfg["pass"]
+            return cfg
+        except Exception:
+            pass
+
+    # Fallback to upstream_proxy.json if present
+    up_path = app_paths.data_path("upstream_proxy.json")
+    if os.path.isfile(up_path):
+        try:
+            with open(up_path, "r", encoding="utf-8") as f:
+                up = json.load(f) or {}
+            if up.get("host") and up.get("port"):
+                cfg["enabled"] = True
+                cfg["protocol"] = "socks5"
+                cfg["proto"] = "socks5"
+                cfg["host"] = str(up.get("host") or "").strip()
+                cfg["port"] = int(up.get("port") or 0)
+                cfg["username"] = str(up.get("username") or "").strip()
+                cfg["user"] = cfg["username"]
+                cfg["password"] = str(up.get("password") or "").strip()
+                cfg["pass"] = cfg["password"]
+                auth = f"{cfg['username']}:{cfg['password']}@" if cfg["username"] and cfg["password"] else ""
+                cfg["proxy_url"] = f"socks5h://{auth}{cfg['host']}:{cfg['port']}"
+                return cfg
+        except Exception:
+            pass
+
+    # Fallback to telegram_config.json
+    tg_path = app_paths.data_path("telegram_config.json")
+    if os.path.isfile(tg_path):
+        try:
+            with open(tg_path, "r", encoding="utf-8") as f:
+                tg = json.load(f) or {}
+            p_url = str(tg.get("proxy_url") or "").strip()
+            if p_url:
+                cfg["enabled"] = True
+                cfg["proxy_url"] = p_url
+                proto = p_url.split("://")[0].lower().replace("h", "")
+                cfg["protocol"] = proto if proto in ("socks5", "socks4", "http", "https") else "socks5"
+                return cfg
+        except Exception:
+            pass
+
+    return cfg
+
+
+def save_system_proxy_config(data):
+    """Save system proxy settings and synchronize upstream_proxy.json."""
+    enabled = bool(data.get("enabled", True))
+    protocol = str(data.get("protocol") or data.get("proto") or "socks5").strip().lower()
+    if protocol not in ("socks5", "http", "https"):
+        protocol = "socks5"
+    host = str(data.get("host") or "").strip()
+    try:
+        port = int(data.get("port") or 0)
+    except (ValueError, TypeError):
+        port = 0
+    username = str(data.get("username") or data.get("user") or "").strip()
+    password = str(data.get("password") or data.get("pass") or "").strip()
+    raw_url = str(data.get("proxy_url") or "").strip()
+
+    if host and port:
+        auth = f"{username}:{password}@" if username and password else ""
+        scheme = "socks5h" if protocol == "socks5" else protocol
+        proxy_url = f"{scheme}://{auth}{host}:{port}"
+    elif raw_url:
+        proxy_url = raw_url
+    else:
+        proxy_url = ""
+        enabled = False
+
+    clean = {
+        "enabled": enabled,
+        "protocol": protocol,
+        "proto": protocol,
+        "host": host,
+        "port": port,
+        "username": username,
+        "user": username,
+        "password": password,
+        "pass": password,
+        "proxy_url": proxy_url
+    }
+    with open(PROXY_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
+
+    # If socks5, also keep upstream_proxy.json synced
+    if protocol == "socks5" and host and port:
+        up_path = app_paths.data_path("upstream_proxy.json")
+        try:
+            with open(up_path, "w", encoding="utf-8") as f:
+                json.dump({"host": host, "port": port, "username": username, "password": password},
+                          f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    return public_proxy_config(clean)
+
+
+def public_proxy_config(cfg=None):
+    """Return proxy config without secrets for UI."""
+    if cfg is None:
+        cfg = load_system_proxy_config()
+    p_url = cfg.get("proxy_url") or ""
+    masked_url = re.sub(r":([^:@]+)@", ":****@", p_url)
+    proto_val = cfg.get("protocol") or cfg.get("proto") or "socks5"
+    user_val = cfg.get("username") or cfg.get("user") or ""
+    pass_val = cfg.get("password") or cfg.get("pass") or ""
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "protocol": proto_val,
+        "proto": proto_val,
+        "host": cfg.get("host") or "",
+        "port": cfg.get("port") or 0,
+        "username": user_val,
+        "user": user_val,
+        "has_auth": bool(user_val),
+        "pass_set": bool(pass_val),
+        "proxy_url": masked_url,
+    }
+
+
+def get_requests_proxies(force_direct=False):
+    """Format proxies dict for requests library."""
+    if force_direct:
+        return None
+    cfg = load_system_proxy_config()
+    if not cfg.get("enabled") or not cfg.get("proxy_url"):
+        return None
+    p_url = cfg["proxy_url"]
+    return {"http": p_url, "https": p_url}
+
+
+def test_proxy_connection(proxy_url=None, timeout=6):
+    """Test connecting through a proxy URL to a reliable target."""
+    import time
+    import requests
+    if not proxy_url:
+        cfg = load_system_proxy_config()
+        proxy_url = cfg.get("proxy_url")
+    if not proxy_url:
+        return {"ok": False, "error": "پروکسی تنظیم نشده است"}
+    t0 = time.monotonic()
+    try:
+        r = requests.get("https://googlechromelabs.github.io",
+                         proxies={"http": proxy_url, "https": proxy_url},
+                         timeout=timeout)
+        lat = int((time.monotonic() - t0) * 1000)
+        return {"ok": True, "status_code": r.status_code, "latency_ms": lat,
+                "message": f"اتصال به پروکسی با موفقیت برقرار شد ({lat} میلی‌ثانیه)"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc),
+                "message": f"خطا در برقراری ارتباط با پروکسی: {exc}"}
+
+
+def get_installed_chrome_version():
+    """Read full Chrome version from registry or common paths."""
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon") as key:
+                    val, _ = winreg.QueryValueEx(key, "version")
+                    if val:
+                        return str(val).strip()
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def check_system_updates(force_direct=False):
+    """Check installed Chrome and ChromeDriver against Google Chrome-for-Testing (v1.17.0)."""
+    import captcha_collector
+    import chromedriver_updater
+    import requests
+
+    chrome_ver = get_installed_chrome_version()
+    chrome_major = int(chrome_ver.split(".")[0]) if (chrome_ver and chrome_ver.split(".")[0].isdigit()) else captcha_collector._chrome_major_from_registry_or_path()
+
+    driver_path = captcha_collector.resolve_chromedriver()
+    driver_ver = chromedriver_updater.read_exe_version(driver_path) if driver_path else None
+    driver_major = captcha_collector._read_major_version(driver_path) if driver_path else None
+
+    proxy_cfg = public_proxy_config()
+    proxies = get_requests_proxies(force_direct=force_direct)
+
+    cft_channels = {}
+    cft_milestones = {}
+
+    try:
+        session = requests.Session()
+        if force_direct:
+            session.trust_env = True
+            use_proxies = None
+        else:
+            session.trust_env = False
+            use_proxies = proxies
+
+        if not use_proxies and not force_direct:
+            # If no proxy configured, test if direct access works
+            try:
+                r_test = session.get(chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL,
+                                     proxies=None, timeout=3)
+                if r_test.status_code == 200:
+                    cft_channels = r_test.json().get("channels", {})
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "proxy_required",
+                    "notice": "برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد. لطفاً پروکسی را تنظیم کنید یا فیلترشکن سیستم را روشن کنید.",
+                    "chrome": {
+                        "installed_version": chrome_ver or "یافت نشد",
+                        "installed_major": chrome_major,
+                    },
+                    "chromedriver": {
+                        "installed_version": driver_ver or "یافت نشد",
+                        "installed_major": driver_major,
+                        "compatible": bool(chrome_major and driver_major and chrome_major == driver_major),
+                    },
+                    "proxy": proxy_cfg,
+                }
+        else:
+            r_ch = session.get(chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL,
+                               proxies=use_proxies, timeout=8)
+            if r_ch.status_code == 200:
+                cft_channels = r_ch.json().get("channels", {})
+
+        if not cft_milestones:
+            r_ms = session.get(chromedriver_updater.CFT_MILESTONE_URL,
+                               proxies=use_proxies, timeout=8)
+            if r_ms.status_code == 200:
+                cft_milestones = r_ms.json().get("milestones", {})
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "connection_error",
+            "notice": "برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد. لطفاً پروکسی را تنظیم کنید یا فیلترشکن سیستم را روشن کنید.",
+            "details": str(exc),
+            "chrome": {
+                "installed_version": chrome_ver or "یافت نشد",
+                "installed_major": chrome_major,
+            },
+            "chromedriver": {
+                "installed_version": driver_ver or "یافت نشد",
+                "installed_major": driver_major,
+                "compatible": bool(chrome_major and driver_major and chrome_major == driver_major),
+            },
+            "proxy": proxy_cfg,
+        }
+
+    stable = cft_channels.get("Stable", {})
+    latest_stable_chrome = stable.get("version") or ""
+
+    matched_driver = None
+    matched_driver_ver = None
+    if chrome_major:
+        ms_data = cft_milestones.get(str(chrome_major), {})
+        matched_driver_ver = ms_data.get("version")
+        drivers = ms_data.get("downloads", {}).get("chromedriver", [])
+        matched_driver = next((d for d in drivers if d.get("platform") == "win64"), None)
+
+    compat_ok = bool(chrome_major and driver_major and chrome_major == driver_major)
+    if not chrome_ver:
+        status_msg = "مرورگر گوگل کروم روی سیستم شناسایی نشد."
+        action = "no_chrome"
+    elif not driver_ver:
+        status_msg = "فایل درایور ChromeDriver یافت نشد. دریافت خودکار الزامی است."
+        action = "download_driver"
+    elif not compat_ok:
+        status_msg = f"نسخه درایور ({driver_major}) با نسخه گوگل کروم ({chrome_major}) ناسازگار است. بروزرسانی درایور الزامی است."
+        action = "update_driver"
+    elif matched_driver_ver and driver_ver != matched_driver_ver:
+        status_msg = f"نسخه جدیدتر ChromeDriver ({matched_driver_ver}) برای کروم {chrome_major} موجود است."
+        action = "update_driver"
+    else:
+        status_msg = f"نسخه درایور ({driver_ver}) با کروم ({chrome_ver}) کاملاً هماهنگ و بروز است."
+        action = "up_to_date"
+
+    return {
+        "ok": True,
+        "action_required": action,
+        "notice": status_msg,
+        "chrome": {
+            "installed_version": chrome_ver or "نامشخص",
+            "installed_major": chrome_major,
+            "latest_stable": latest_stable_chrome,
+        },
+        "chromedriver": {
+            "installed_version": driver_ver or "یافت نشد",
+            "installed_major": driver_major,
+            "compatible": compat_ok,
+            "matched_version": matched_driver_ver or "نامشخص",
+            "download_url": matched_driver.get("url") if matched_driver else None,
+        },
+        "proxy": {
+            "configured": bool(proxy_cfg.get("enabled")),
+            "protocol": proxy_cfg.get("protocol"),
+            "used_direct": force_direct,
+        }
+    }
+
+
+_DRIVER_UPDATE_LOCK = threading.Lock()
+_LAST_DRIVER_UPDATE = 0.0
+
+
+def run_chromedriver_update(force_direct=False):
+    """Download and install compatible ChromeDriver via proxy or direct (v1.17.0)."""
+    global _LAST_DRIVER_UPDATE
+    if not _DRIVER_UPDATE_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "عملیات بروزرسانی درایور در حال انجام است؛ لطفاً شکیبا باشید"}
+    try:
+        now = time.monotonic()
+        if now - _LAST_DRIVER_UPDATE < 8.0:
+            return {"ok": False, "error": "عملیات بروزرسانی به تازگی انجام شده است؛ چند لحظه بعد دوباره امتحان کنید"}
+
+        import captcha_collector
+        import chromedriver_updater
+
+        target = captcha_collector.resolve_chromedriver()
+        if not target:
+            target = os.path.join(captcha_collector.HERE, ".tools", "chromedriver.exe")
+        primary, extras = captcha_collector._driver_update_targets(target)
+
+        browser_major = captcha_collector._chrome_major_from_registry_or_path()
+        if not browser_major:
+            return {"ok": False, "error": "نسخهٔ گوگل کروم شناسایی نشد"}
+
+        proxy_url_val = None
+        if not force_direct:
+            cfg = load_system_proxy_config()
+            if cfg.get("enabled") and cfg.get("proxy_url"):
+                proxy_url_val = cfg["proxy_url"]
+
+        res = chromedriver_updater.update_chromedriver(
+            target_exe=primary,
+            expected_major=int(browser_major),
+            extra_targets=extras,
+            proxy_override=proxy_url_val,
+            allow_direct=force_direct,
+            total=120.0
+        )
+
+        _LAST_DRIVER_UPDATE = time.monotonic()
+        if res.get("status") in ("updated", "up-to-date"):
+            new_ver = chromedriver_updater.read_exe_version(primary)
+            return {"ok": True, "status": res.get("status"), "version": new_ver,
+                    "message": f"درایور ChromeDriver با موفقیت به نسخهٔ {new_ver} بروزرسانی شد."}
+        else:
+            return {"ok": False, "status": res.get("status"), "detail": res.get("detail"),
+                    "error": f"بروزرسانی درایور با خطا مواجه شد: {res.get('detail')}"}
+    finally:
+        _DRIVER_UPDATE_LOCK.release()
+
+
+def check_services_health():
+    """Perform the 3-step service health diagnostics (v1.17.0)."""
+    import time
+    import requests
+
+    results = []
+    overall_status = "ok"
+
+    # Step 1: Cloud Server
+    cloud_cfg_path = app_paths.data_path("cloud_config.json")
+    api_base = "https://api.oneserver.in"
+    if os.path.isfile(cloud_cfg_path):
+        try:
+            with open(cloud_cfg_path, "r", encoding="utf-8") as f:
+                c_cfg = json.load(f) or {}
+            if c_cfg.get("api_base"):
+                api_base = str(c_cfg["api_base"]).strip()
+        except Exception:
+            pass
+
+    t0 = time.monotonic()
+    try:
+        r_cloud = requests.get(f"{api_base}/v1/health/live", timeout=6)
+        latency = int((time.monotonic() - t0) * 1000)
+        if r_cloud.status_code == 200:
+            results.append({
+                "id": "cloud",
+                "name": "اتصال به سرور ابری",
+                "status": "ok",
+                "message": f"ارتباط با سرور ابری برقرار است ({latency} میلی‌ثانیه)",
+                "latency_ms": latency,
+                "endpoint": api_base
+            })
+        else:
+            overall_status = "warning"
+            results.append({
+                "id": "cloud",
+                "name": "اتصال به سرور ابری",
+                "status": "error",
+                "message": f"سرور ابری وضعیت غیرمنتظره بازگرداند (کد {r_cloud.status_code})",
+                "latency_ms": latency,
+                "endpoint": api_base
+            })
+    except Exception as exc:
+        overall_status = "warning"
+        results.append({
+            "id": "cloud",
+            "name": "اتصال به سرور ابری",
+            "status": "error",
+            "message": "خطا در اتصال به سرور ابری (ممکن است اتصال اینترنت قطع باشد)",
+            "details": str(exc),
+            "endpoint": api_base
+        })
+
+    # Step 2: Telegram
+    tg_cfg_path = app_paths.data_path("telegram_config.json")
+    tg_cfg = {}
+    if os.path.isfile(tg_cfg_path):
+        try:
+            with open(tg_cfg_path, "r", encoding="utf-8") as f:
+                tg_cfg = json.load(f) or {}
+        except Exception:
+            pass
+
+    mode = tg_cfg.get("mode") or "host"
+    t0 = time.monotonic()
+    try:
+        if mode == "host":
+            relay_url = tg_cfg.get("relay_url") or "https://api.oneserver.in/telegram.php"
+            r_tg = requests.get(relay_url, timeout=6)
+            latency = int((time.monotonic() - t0) * 1000)
+            if r_tg.status_code in (200, 400, 403, 405):
+                results.append({
+                    "id": "telegram",
+                    "name": "اتصال به سرویس تلگرام",
+                    "status": "ok",
+                    "message": f"ارتباط با سرویس هاست تلگرام برقرار است ({latency} میلی‌ثانیه)",
+                    "latency_ms": latency,
+                    "mode": "سرویس هاست ابری"
+                })
+            else:
+                overall_status = "warning"
+                results.append({
+                    "id": "telegram",
+                    "name": "اتصال به سرویس تلگرام",
+                    "status": "error",
+                    "message": f"خطا در پاسخ سرویس رله تلگرام (کد {r_tg.status_code})",
+                    "latency_ms": latency
+                })
+        else:
+            proxies = get_requests_proxies()
+            r_tg = requests.get("https://api.telegram.org", proxies=proxies, timeout=7)
+            latency = int((time.monotonic() - t0) * 1000)
+            if r_tg.status_code in (200, 302, 400, 404):
+                results.append({
+                    "id": "telegram",
+                    "name": "اتصال به سرویس تلگرام",
+                    "status": "ok",
+                    "message": f"ارتباط با سرورهای تلگرام برقرار است ({latency} میلی‌ثانیه)",
+                    "latency_ms": latency,
+                    "mode": "مستقیم / پروکسی"
+                })
+            else:
+                overall_status = "warning"
+                results.append({
+                    "id": "telegram",
+                    "name": "اتصال به سرویس تلگرام",
+                    "status": "error",
+                    "message": "عدم دسترسی به سرورهای تلگرام",
+                    "latency_ms": latency
+                })
+    except Exception as exc:
+        overall_status = "warning"
+        results.append({
+            "id": "telegram",
+            "name": "اتصال به سرویس تلگرام",
+            "status": "error",
+            "message": "عدم برقراری ارتباط با API تلگرام (نیاز به اینترنت آزاد یا سرویس هاست)",
+            "details": str(exc)
+        })
+
+    # Step 3: Proxy
+    p_cfg = load_system_proxy_config()
+    if not p_cfg.get("enabled") or not p_cfg.get("proxy_url"):
+        results.append({
+            "id": "proxy",
+            "name": "اتصال به پروکسی اینترنت آزاد",
+            "status": "not_configured",
+            "message": "پروکسی تنظیم نشده است (اختیاری)"
+        })
+    else:
+        p_url = p_cfg["proxy_url"]
+        proto = p_cfg.get("protocol") or "socks5"
+        t0 = time.monotonic()
+        try:
+            r_p = requests.get("https://googlechromelabs.github.io",
+                               proxies={"http": p_url, "https": p_url}, timeout=6)
+            latency = int((time.monotonic() - t0) * 1000)
+            if r_p.status_code in (200, 301, 302):
+                results.append({
+                    "id": "proxy",
+                    "name": "اتصال به پروکسی اینترنت آزاد",
+                    "status": "ok",
+                    "message": f"ارتباط پروکسی ({proto.upper()}) موفقیت‌آمیز است ({latency} میلی‌ثانیه)",
+                    "latency_ms": latency,
+                    "type": proto.upper()
+                })
+            else:
+                overall_status = "warning"
+                results.append({
+                    "id": "proxy",
+                    "name": "اتصال به پروکسی اینترنت آزاد",
+                    "status": "error",
+                    "message": f"پروکسی پاسخ نامعتبر بازگرداند (کد {r_p.status_code})",
+                    "type": proto.upper()
+                })
+        except Exception as exc:
+            overall_status = "warning"
+            results.append({
+                "id": "proxy",
+                "name": "اتصال به پروکسی اینترنت آزاد",
+                "status": "error",
+                "message": f"خطا در اتصال به پروکسی ({proto.upper()})",
+                "details": str(exc),
+                "type": proto.upper()
+            })
+
+    has_err = any(r["status"] == "error" for r in results)
+    return {
+        "ok": True,
+        "overall": "error" if has_err else "ok",
+        "steps": results,
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+
+# =====================================================================
 # Cloud sync surface (spec §5, §9, §11) — workstream D
 # =====================================================================
 # Panel-side only: it drives cloud_sync, never re-implements it, and every
@@ -9534,7 +10100,10 @@ function renderBody(){
     if(ae&&el.contains(ae))return;
   }
   el.innerHTML=bodyHtml();
-  if(TAB==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+  if(TAB==='settings'){
+    if(typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+    if(typeof settingsLoadSystemProxy==='function')settingsLoadSystemProxy();
+  }
 }
 
 /* ================= KPI strip ================= */
@@ -9761,7 +10330,45 @@ function periodsHtml(){
     +'<span class="muted">هر پرونده‌ای که در دورهٔ باز ثبت شود عضو آن می‌شود؛ تا دوره بسته نشود ارقام نهایی نیستند.</span>'
     +'</div>'+periodCardsHtml()+'</div>';
 }
+function periodClerksMoney(pid){
+  var ds=periodCases(pid);
+  var clerks=STATE.clerks||[];
+  var totalCredit=0, totalPaid=0, activeClerks=0, casesCount=0;
+  clerks.forEach(function(c){
+    var cDevs=ds.filter(d=>d.clerk_id===c.id);
+    var pTxs=(c.transactions||[]).filter(function(t){
+      if(t.voided_at || t.kind==='void') return false;
+      if(t.period_id) return t.period_id === pid;
+      return Boolean(t.device_id && ds.some(d => d.id === t.device_id));
+    });
+    if(cDevs.length>0 || pTxs.length>0){
+      activeClerks++;
+      casesCount += cDevs.length;
+      var cred=pTxs.filter(t=>t.kind==='credit').reduce((s,t)=>s+Number(t.amount||0),0);
+      var paid=pTxs.filter(t=>(t.kind==='payment'||t.kind==='debit')).reduce((s,t)=>s+Number(t.amount||0),0);
+      totalCredit += cred;
+      totalPaid += paid;
+    }
+  });
+  return {
+    clerksCount: activeClerks,
+    casesCount: casesCount,
+    credit: totalCredit,
+    paid: totalPaid,
+    net: totalCredit - totalPaid
+  };
+}
 function perKpisHtml(p){
+  if(PER.seg==='clerks'){
+    var cm=periodClerksMoney(p.id);
+    return '<div class="per-kpis">'
+      +'<div class="per-kpi"><span class="l">متصدیان فعال</span><span class="v">'+fa(cm.clerksCount)+'</span></div>'
+      +'<div class="per-kpi"><span class="l">پرونده‌های متصدیان</span><span class="v">'+fa(cm.casesCount)+'</span></div>'
+      +'<div class="per-kpi ok"><span class="l">مجموع بستانکاری متصدی‌ها</span><span class="v">'+money(cm.credit)+'</span></div>'
+      +'<div class="per-kpi"><span class="l">مجموع دریافتی متصدی‌ها</span><span class="v">'+money(cm.paid)+'</span></div>'
+      +'<div class="per-kpi'+(cm.net>0?' ok':(cm.net<0?' bad':''))+'"><span class="l">مانده حساب متصدی‌ها</span><span class="v">'+money(cm.net)+'</span></div>'
+      +'</div>';
+  }
   var ds=periodCases(p.id);
   var done=ds.filter(d=>d.stage==='done').length;
   var m=periodMoney(p.id);
@@ -9896,7 +10503,7 @@ function perClerksHtml(p){
       +'<td><div class="ibacts">'
       +'<button type="button" class="btn mini ok" onclick="dlgClerkTx(\''+c.id+'\',\'credit\',\'\',\''+p.id+'\')">'+ICONS.plus+' ثبت بستانکاری</button>'
       +'<button type="button" class="btn mini primary" onclick="dlgClerkTx(\''+c.id+'\',\'payment\',\'\',\''+p.id+'\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
-      +'<button type="button" class="ibtn" data-static="1" aria-label="گردش حساب" data-tip="گردش حساب" onclick="dlgClerkStatement(\''+c.id+'\')">'+ICONS.list+'</button>'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="گردش حساب متصدی در این دوره" data-tip="گردش حساب متصدی در این دوره" onclick="dlgClerkStatement(\''+c.id+'\',\''+p.id+'\')">'+ICONS.list+'</button>'
       +'</div></td>'
       +'</tr>';
   }).join('');
@@ -10749,10 +11356,19 @@ function doClerkTx(clerkId){
     false
   );
 }
-function dlgClerkStatement(clerkId){
+function dlgClerkStatement(clerkId, periodId){
   var c=(STATE.clerks||[]).find(x=>x.id===clerkId);
   if(!c){toast('متصدی پیدا نشد',false);return;}
-  var txs=(c.transactions||[]).slice().reverse();
+  var curP = periodId ? periodById(periodId) : null;
+  var pDevIds = periodId ? periodCases(periodId).map(d=>d.id) : [];
+  var rawTxs = (c.transactions||[]);
+  if(periodId){
+    rawTxs = rawTxs.filter(function(t){
+      if(t.period_id) return t.period_id === periodId;
+      return Boolean(t.device_id && pDevIds.includes(t.device_id));
+    });
+  }
+  var txs = rawTxs.slice().reverse();
   var credSum=0, paySum=0;
   var trs=txs.map((t)=>{
     var isVoided=Boolean(t.voided_at);
@@ -10787,22 +11403,41 @@ function dlgClerkStatement(clerkId){
       +'</tr>';
   }).join('');
 
-  var netBal=Number(c.balance||0);
-  openDlg('<div style="min-width:650px"><h3>صورت‌حساب و گردش مالی متصدی: '+esc(c.name)+'</h3>'
+  var netBal = credSum - paySum;
+  var title = 'صورت‌حساب و گردش مالی متصدی: ' + esc(c.name);
+  var subtitle = periodId
+    ? '<span class="pill ok" style="margin-right:8px">محدوده: ' + esc(periodName(curP)) + '</span>'
+    : '<span class="pill n" style="margin-right:8px">گردش حساب کلی (تمام دوره‌ها)</span>';
+
+  var statementUrl = '/crm-clerk-statement?clerk_id=' + clerkId + (periodId ? '&period_id=' + periodId : '') + '&fmt=html';
+
+  openDlg('<div style="min-width:680px">'
+    +'<div class="row" style="align-items:center;margin-bottom:8px">'
+    +'<h3 style="margin:0">' + title + '</h3>'
+    + subtitle
+    +'</div>'
     +'<div class="row" style="gap:10px;margin-bottom:12px;background:var(--bg-card);padding:10px 14px;border-radius:6px;border:1px solid var(--border);flex-wrap:wrap">'
-    +'<div>مجموع بستانکاری: <b class="pmoney c">'+money(credSum)+'</b></div>'
-    +'<div>مجموع دریافتی‌ها: <b class="pmoney d">'+money(paySum)+'</b></div>'
-    +'<div>مانده حساب: '+clerkBalancePill(netBal)+'</div>'
+    +'<div>مجموع بستانکاری' + (periodId?' دوره':'') + ': <b class="pmoney c">' + money(credSum) + '</b></div>'
+    +'<div>مجموع دریافتی‌ها' + (periodId?' دوره':'') + ': <b class="pmoney d">' + money(paySum) + '</b></div>'
+    +'<div>مانده' + (periodId?' این دوره':' حساب') + ': ' + clerkBalancePill(netBal) + '</div>'
+    +(periodId ? '<div>مانده کل متصدی: ' + clerkBalancePill(c.balance) + '</div>' : '')
     +'</div>'
     +'<div class="row" style="margin-bottom:10px;gap:8px">'
-    +'<button class="btn ok" onclick="dlgClerkTx(\''+clerkId+'\',\'credit\')">'+ICONS.plus+' ثبت بستانکاری</button>'
-    +'<button class="btn primary" onclick="dlgClerkTx(\''+clerkId+'\',\'payment\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
+    +'<button type="button" class="btn ok" onclick="dlgClerkTx(\''+clerkId+'\',\'credit\',\'\',\''+(periodId||'')+'\')">'+ICONS.plus+' ثبت بستانکاری</button>'
+    +'<button type="button" class="btn primary" onclick="dlgClerkTx(\''+clerkId+'\',\'payment\',\'\',\''+(periodId||'')+'\')">'+ICONS.wallet+' ثبت دریافتی متصدی</button>'
+    +'<button type="button" class="btn" style="margin-inline-start:auto" onclick="window.open(\''+statementUrl+'\',\'_blank\')">'+ICONS.doc+' دریافت خروجی صورتحساب</button>'
     +'</div>'
     +'<div style="max-height:380px;overflow-y:auto">'
     +'<table><thead><tr><th>تاریخ و ساعت</th><th>نوع</th><th>مبلغ</th><th>دریافت‌کننده وجه</th><th>پرونده</th><th>دوره</th><th>شرح</th><th></th></tr></thead>'
-    +'<tbody>'+(trs||'<tr><td colspan="8" class="muted" style="text-align:center">تراکنشی برای این متصدی ثبت نشده است</td></tr>')+'</tbody></table>'
+    +'<tbody>'+(trs||'<tr><td colspan="8" class="muted" style="text-align:center">تراکنشی برای این متصدی در این محدوده ثبت نشده است</td></tr>')+'</tbody></table>'
     +'</div>'
-    +'<div class="row" style="margin-top:14px"><button class="btn" onclick="closeDlg()">بستن</button></div>'
+    +'<div class="row" style="margin-top:14px;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+    +'<div>'+(periodId?'<button type="button" class="btn ghost" onclick="dlgClerkStatement(\''+clerkId+'\')">مشاهده گردش حساب کلی این متصدی</button>':'')+'</div>'
+    +'<div class="row" style="gap:8px">'
+    +'<button type="button" class="btn ok" onclick="window.open(\''+statementUrl+'\',\'_blank\')">'+ICONS.doc+' دریافت خروجی صورتحساب</button>'
+    +'<button type="button" class="btn" onclick="closeDlg()">بستن</button>'
+    +'</div>'
+    +'</div>'
     +'</div>');
 }
 function dlgVoidClerkTx(clerkId, txId){
@@ -11146,6 +11781,29 @@ function settingsHtml(){
   +'<input id="stBizPhone" dir="ltr" inputmode="tel" style="width:170px" value="'+esc(settings.business_phone||'')+'"></label>'
   +'<button class="btn primary" onclick="settingsSaveBiz()">ذخیره</button></div>'
   +'<p class="muted">نام و شمارهٔ تماس کسب‌وکار در سربرگ صورت‌حساب مشتری و فاکتور چاپی درج می‌شود.</p></div>'
+  +'<div class="card"><h3>پروکسی سراسری سامانه (اینترنت آزاد)</h3>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f" style="flex:1">پروتکل پروکسی<select id="stSysProxyProto">'
+  +'<option value="socks5">SOCKS5 (پیش‌فرض)</option>'
+  +'<option value="http">HTTP</option>'
+  +'<option value="https">HTTPS</option>'
+  +'</select></label>'
+  +'<label class="f" style="flex:2">آدرس سرور پروکسی (Host)<input id="stSysProxyHost" class="ltr" placeholder="127.0.0.1 یا example.com"></label>'
+  +'<label class="f" style="width:110px">پورت<input id="stSysProxyPort" class="ltr" inputmode="numeric" placeholder="10808"></label>'
+  +'</div>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f" style="flex:1">نام کاربری پروکسی (اختیاری)<input id="stSysProxyUser" class="ltr"></label>'
+  +'<label class="f" style="flex:1">رمز عبور پروکسی (اختیاری)<input id="stSysProxyPass" class="ltr" type="password" autocomplete="off"></label>'
+  +'</div>'
+  +'<div class="row" style="margin-bottom:8px">'
+  +'<label class="f check"><input type="checkbox" id="stSysProxyEnabled"><span class="box" aria-hidden="true"></span><span class="ft">پروکسی سراسری برای بررسی بروزرسانی‌ها و ارتباطات فعال باشد</span></label>'
+  +'</div>'
+  +'<div class="row" style="gap:8px;margin-top:10px;align-items:center">'
+  +'<button type="button" class="btn primary" id="stSysProxySaveBtn" onclick="settingsSaveSystemProxy()">ذخیره تنظیمات پروکسی</button>'
+  +'<button type="button" class="btn" id="stSysProxyTestBtn" onclick="settingsTestSystemProxy()">تست اتصال پروکسی</button>'
+  +'<span id="stSysProxyStatusText" class="muted" style="font-size:12px"></span>'
+  +'</div>'
+  +'<p class="muted" style="margin-top:8px">این پروکسی برای بررسی بروزرسانی مرورگر Google Chrome، دریافت ChromeDriver و سرویس‌های نیازمند اینترنت آزاد استفاده می‌شود.</p></div>'
   +'<div class="card"><h3>اتصال و ربات تلگرام</h3>'
   +'<div class="row" style="margin-bottom:8px">'
   +'<label class="f" style="flex:1">توکن ربات تلگرام (Bot Token)'
@@ -11344,6 +12002,83 @@ function settingsTestTelegram(){
       if(btn)btn.disabled=false;
       if(st)st.textContent='خطا در ارسال درخواست';
       toast('خطا: '+e,false);
+    });
+}
+function settingsLoadSystemProxy(){
+  fetch('/api/proxy-config')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var proto=document.getElementById('stSysProxyProto');
+      var host=document.getElementById('stSysProxyHost');
+      var port=document.getElementById('stSysProxyPort');
+      var user=document.getElementById('stSysProxyUser');
+      var pass=document.getElementById('stSysProxyPass');
+      var en=document.getElementById('stSysProxyEnabled');
+      if(proto)proto.value=d.proto||'socks5';
+      if(host)host.value=d.host||'';
+      if(port)port.value=d.port||'';
+      if(user)user.value=d.user||'';
+      if(pass){
+        pass.value='';
+        pass.placeholder=d.pass_set?'(رمز ذخیره است؛ برای تغییر مقدار جدید بنویسید)':'';
+      }
+      if(en)en.checked=!!d.enabled;
+    }).catch(function(){});
+}
+function settingsSaveSystemProxy(){
+  var btn=document.getElementById('stSysProxySaveBtn');
+  if(btn)btn.disabled=true;
+  var payload={
+    proto:(document.getElementById('stSysProxyProto')||{}).value||'socks5',
+    host:(document.getElementById('stSysProxyHost')||{}).value||'',
+    port:parseInt((document.getElementById('stSysProxyPort')||{}).value||'0', 10)||0,
+    user:(document.getElementById('stSysProxyUser')||{}).value||'',
+    pass:(document.getElementById('stSysProxyPass')||{}).value||'',
+    enabled:!!(document.getElementById('stSysProxyEnabled')||{}).checked
+  };
+  fetch('/api/proxy-config',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(btn)btn.disabled=false;
+      toast('تنظیمات پروکسی سراسری ذخیره شد');
+      settingsLoadSystemProxy();
+    })
+    .catch(function(e){
+      if(btn)btn.disabled=false;
+      toast('خطا در ذخیره تنظیمات پروکسی: '+e,false);
+    });
+}
+function settingsTestSystemProxy(){
+  var btn=document.getElementById('stSysProxyTestBtn');
+  var st=document.getElementById('stSysProxyStatusText');
+  if(btn)btn.disabled=true;
+  if(st)st.textContent='در حال آزمون ارتباط با پروکسی...';
+  var payload={
+    proto:(document.getElementById('stSysProxyProto')||{}).value||'socks5',
+    host:(document.getElementById('stSysProxyHost')||{}).value||'',
+    port:parseInt((document.getElementById('stSysProxyPort')||{}).value||'0', 10)||0,
+    user:(document.getElementById('stSysProxyUser')||{}).value||'',
+    pass:(document.getElementById('stSysProxyPass')||{}).value||''
+  };
+  fetch('/api/proxy-test',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(btn)btn.disabled=false;
+      if(st)st.textContent=d.ok?'ارتباط با پروکسی برقرار است':'خطا در اتصال: '+(d.error||'');
+      toast(d.ok?'ارتباط با پروکسی با موفقیت برقرار شد':('خطا در اتصال به پروکسی: '+(d.error||'')),d.ok);
+    })
+    .catch(function(e){
+      if(btn)btn.disabled=false;
+      if(st)st.textContent='خطا در ارسال درخواست';
+      toast('خطا در ارسال درخواست تست پروکسی: '+e,false);
     });
 }
 function settingsSaveSound(){
@@ -12887,7 +13622,10 @@ function renderTabs(){
 function setTab(t){
   ibtnClearBusy();TAB=t;renderTabs();renderView();
   if(t==='cloud'&&typeof loadCloudStatus==='function')loadCloudStatus();
-  if(t==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+  if(t==='settings'){
+    if(typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+    if(typeof settingsLoadSystemProxy==='function')settingsLoadSystemProxy();
+  }
   /* v1.9: the quietest cue, because tab switching is frequent. The initial
      render reads TAB from the URL and does not come through here, so loading
      the panel does not beep. */
@@ -12922,7 +13660,10 @@ function renderView(){
       +'<div id="tabShell" data-tab="'+esc(TAB)+'">'+tabBarHtml()
       +'<div id="tabBody">'+bodyHtml()+'</div></div></div>'+aside+'</div>';
     if(TAB==='cloud')paintCloud();
-    if(TAB==='settings'&&typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+    if(TAB==='settings'){
+      if(typeof settingsLoadTelegram==='function')settingsLoadTelegram();
+      if(typeof settingsLoadSystemProxy==='function')settingsLoadSystemProxy();
+    }
   }else{
     renderBody();
     /* outerHTML, not innerHTML: the aside string carries its own
@@ -13902,6 +14643,26 @@ class Handler(BaseHTTPRequestHandler):
                         customer_id=customer_id, chunks=sent)
         self._json({"ok": True, "sent": sent})
 
+    def _crm_clerk_statement(self, query):
+        """Clerk statement and printable ledger (v1.17.0)."""
+        import crm as crm_mod
+        clerk_id = (query.get("clerk_id") or [""])[0].strip()
+        period_id = (query.get("period_id") or [""])[0].strip()
+        fmt = (query.get("fmt") or ["html"])[0].strip().lower()
+        if not clerk_id:
+            self._json({"ok": False, "errors": ["شناسه متصدی الزامی است"]}, 400)
+            return
+        data = crm_mod.store_read()
+        stmt, errors = crm_mod.clerk_statement(data, clerk_id, period_id=period_id or None)
+        if errors:
+            self._json({"ok": False, "errors": errors}, 400)
+            return
+        if fmt == "json":
+            self._json({"ok": True, "statement": stmt})
+            return
+        html_doc = crm_mod.clerk_statement_html(stmt)
+        self._send(200, html_doc.encode("utf-8"), "text/html; charset=utf-8")
+
     def _crm_invoice(self, query):
         """Per-case invoice (v1.6); device_id required, fmt=html (default) |
         pdf (Edge, HTML fallback). Mirrors the finance report's serving
@@ -13961,7 +14722,8 @@ class Handler(BaseHTTPRequestHandler):
     # served (SFX_FILES), and the route itself re-checks the name, so nothing
     # else in that folder is reachable.
     PUBLIC_GET_PATHS = ("/login", "/favicon.ico", "/fonts/Vazirmatn-var.woff2",
-                       "/fonts/Vazirmatn-Bold.woff2", "/sfx/")
+                       "/fonts/Vazirmatn-Bold.woff2", "/sfx/",
+                       "/api/check-updates", "/api/health-check")
 
     def _is_browser_navigation(self):
         """True for real browser navigations (typed URL, link, refresh).
@@ -14061,6 +14823,12 @@ class Handler(BaseHTTPRequestHandler):
             if self._csrf_rejected(_cookie_token(self.headers)):
                 self._json({"ok": False, "errors": [_CSRF_REJECT]}, 403)
                 return False
+            if route in ("/api/check-updates", "/api/update-chromedriver", "/api/health-check"):
+                client_ip = getattr(self, "client_address", ("", 0))[0]
+                if client_ip not in ("127.0.0.1", "::1", "localhost", "testclient"):
+                    self._json({"ok": False, "errors": ["دسترسی فقط از طریق لوکال مجاز است"]}, 403)
+                    return False
+                return True
         if method == "GET":
             if route == "/login":
                 self._send(200, render_login_page())
@@ -14550,6 +15318,10 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             self._crm_statement(query)
+        elif route == "/crm-clerk-statement":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            self._crm_clerk_statement(query)
         elif route == "/crm-invoice":
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
@@ -14558,6 +15330,15 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(urlsplit(self.path).query)
             self._tx_artifact(query)
+        elif route == "/api/check-updates":
+            from urllib.parse import parse_qs
+            query = parse_qs(urlsplit(self.path).query)
+            force_direct = bool((query.get("force_direct") or ["0"])[0] in ("1", "true", "yes"))
+            self._json(check_system_updates(force_direct=force_direct))
+        elif route == "/api/health-check":
+            self._json(check_services_health())
+        elif route == "/api/proxy-config":
+            self._json(public_proxy_config())
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -14855,6 +15636,24 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in ("/cloud-backup-now", "/cloud-backup"):
             resp, status = _cloud_route_guard(cloud_run_backup_now)
             self._json(resp, status)
+
+        elif self.path == "/api/check-updates":
+            data = self._read_json() if self.headers.get("Content-Length") else {}
+            force_direct = bool(data.get("force_direct"))
+            self._json(check_system_updates(force_direct=force_direct))
+        elif self.path == "/api/update-chromedriver":
+            data = self._read_json() if self.headers.get("Content-Length") else {}
+            force_direct = bool(data.get("force_direct"))
+            self._json(run_chromedriver_update(force_direct=force_direct))
+        elif self.path == "/api/health-check":
+            self._json(check_services_health())
+        elif self.path == "/api/proxy-config":
+            data = self._read_json()
+            self._json(save_system_proxy_config(data))
+        elif self.path == "/api/proxy-test":
+            data = self._read_json()
+            p_url = data.get("proxy_url")
+            self._json(test_proxy_connection(proxy_url=p_url))
 
         elif self.path == "/estelam-person":
             data = self._read_json()
@@ -15350,8 +16149,24 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 24px;
   -webkit-font-smoothing: antialiased;
 }
+.layout-wrap {
+  width: 100%; max-width: 410px; display: flex; flex-direction: column; align-items: center;
+}
+.top-nav {
+  display: flex; gap: 8px; margin-bottom: 16px; justify-content: center; flex-wrap: wrap; width: 100%;
+}
+.nav-pill {
+  width: auto; margin-top: 0; padding: 7px 14px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--line);
+  color: var(--txt); font-size: 12.5px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+  box-shadow: var(--shadow-1); cursor: pointer; transition: all .15s;
+}
+.nav-pill:hover {
+  background: var(--card2); border-color: rgba(27,32,54,.25); transform: translateY(-1px);
+}
 .card {
-  width: 100%; max-width: 392px; background: var(--card);
+  width: 100%; background: var(--card);
   border: 1px solid var(--line); border-radius: 18px;
   padding: 34px 30px 26px; box-shadow: var(--shadow-2);
 }
@@ -15371,13 +16186,13 @@ input {
 }
 input:hover { border-color: rgba(27,32,54,.30); }
 input:focus { outline: none; border-color: var(--brand); background: var(--card); box-shadow: var(--ring); }
-button {
+button.submit-btn {
   width: 100%; margin-top: 22px; padding: 12px; border: 0; border-radius: 10px;
   background: var(--brand); color: var(--on-brand); font-size: 14.5px; font-weight: 700;
   font-family: inherit; cursor: pointer; transition: background .15s, transform .15s;
 }
-button:hover { background: var(--brand-hover); }
-button:active { transform: translateY(1px); }
+button.submit-btn:hover { background: var(--brand-hover); }
+button.submit-btn:active { transform: translateY(1px); }
 button:disabled { opacity: .6; cursor: default; transform: none; }
 button:focus-visible { outline: none; box-shadow: var(--ring); }
 .err {
@@ -15391,28 +16206,141 @@ button:focus-visible { outline: none; box-shadow: var(--ring); }
   border-radius: 999px; border: 1px solid var(--line); background: var(--card2);
   font-size: 11px;
 }
+.modal-overlay {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(16,20,40,.45); backdrop-filter: blur(4px);
+  align-items: center; justify-content: center; padding: 16px;
+}
+.modal-overlay.open { display: flex; }
+.modal-card {
+  width: 100%; max-width: 520px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 18px;
+  padding: 24px; box-shadow: var(--shadow-2); max-height: 90vh; overflow-y: auto;
+  position: relative; animation: popIn .2s ease-out; text-align: right;
+}
+@keyframes popIn {
+  from { opacity: 0; transform: scale(.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px;
+}
+.modal-head h2 { font-size: 16px; font-weight: 750; margin: 0; }
+.modal-close {
+  width: 30px; height: 30px; margin: 0; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center;
+  font-size: 20px; line-height: 1;
+}
+.modal-close:hover { background: var(--card2); color: var(--txt); }
+.diag-card {
+  background: var(--card2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; margin-bottom: 10px;
+}
+.diag-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.diag-pill {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.diag-pill.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid rgba(15,157,99,.24); }
+.diag-pill.warn { background: rgba(230,138,0,.12); color: #b26a00; border: 1px solid rgba(230,138,0,.24); }
+.diag-pill.err { background: var(--danger-soft); color: #b72740; border: 1px solid rgba(217,55,82,.24); }
+.diag-pill.muted { background: rgba(92,100,132,.10); color: var(--muted); border: 1px solid var(--line); }
+.diag-banner {
+  padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.7; margin: 10px 0;
+}
+.diag-banner.warn {
+  background: rgba(230,138,0,.10); border: 1px solid rgba(230,138,0,.28); color: #8f5300;
+}
+.diag-banner.info {
+  background: var(--brand-soft); border: 1px solid rgba(68,96,227,.24); color: var(--brand);
+}
+.diag-banner.ok {
+  background: var(--ok-soft); border: 1px solid rgba(15,157,99,.24); color: var(--ok);
+}
+.btn-action {
+  width: auto; margin-top: 6px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; border-radius: 8px;
+  border: 0; cursor: pointer; font-family: inherit; transition: all .15s;
+}
+.btn-primary { background: var(--brand); color: #fff; }
+.btn-secondary { background: var(--card2); color: var(--txt); border: 1px solid var(--line); }
+.btn-success { background: var(--ok); color: #fff; }
+.btn-warning { background: #b26a00; color: #fff; }
+.ltr { direction: ltr; display: inline-block; }
 </style>
 </head>
 <body>
-<form class="card" id="f" autocomplete="off">
-  <div class="mono">R</div>
-  <h1>ورود به پنل</h1>
-  <div class="sub">برای ادامه، نام کاربری و رمز عبور خود را وارد کنید</div>
-  <label for="u">نام کاربری</label>
-  <input id="u" name="username" autofocus autocomplete="username" required>
-  <label for="p">رمز عبور</label>
-  <input id="p" name="password" type="password"
-         autocomplete="current-password" required>
-  <button type="submit" id="btn">ورود</button>
-  <div class="err" id="err"></div>
-  <div class="foot">ایریکا · سامانهٔ استعلام و ثبت سفارش</div>
-  <div class="foot irica-version">نسخه __VERSION__</div>
-</form>
+<div class="layout-wrap">
+  <div class="top-nav" role="navigation" aria-label="ابزارهای بررسی وضعیت">
+    <button type="button" class="nav-pill" onclick="openUpdatesModal()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg>
+      <span>بررسی بروزرسانی‌ها</span>
+    </button>
+    <button type="button" class="nav-pill" onclick="openHealthModal()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <span>بررسی سلامت سرویس‌ها</span>
+    </button>
+  </div>
+
+  <form class="card" id="f" autocomplete="off">
+    <div class="mono">R</div>
+    <h1>ورود به پنل</h1>
+    <div class="sub">برای ادامه، نام کاربری و رمز عبور خود را وارد کنید</div>
+    <label for="u">نام کاربری</label>
+    <input id="u" name="username" autofocus autocomplete="username" required>
+    <label for="p">رمز عبور</label>
+    <input id="p" name="password" type="password"
+           autocomplete="current-password" required>
+    <button type="submit" class="submit-btn" id="btn">ورود</button>
+    <div class="err" id="err"></div>
+    <div class="foot">ایریکا · سامانهٔ استعلام و ثبت سفارش</div>
+    <div class="foot irica-version">نسخه __VERSION__</div>
+  </form>
+</div>
+
+<!-- Modal 1: Check Updates -->
+<div class="modal-overlay" id="updatesModal" role="dialog" aria-modal="true" aria-labelledby="updTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="updTitle">بررسی بروزرسانی‌های سیستم</h2>
+      <button type="button" class="modal-close" onclick="closeUpdatesModal()" aria-label="بستن">×</button>
+    </div>
+    <div id="updatesLoading" style="text-align:center;padding:24px 0">
+      <div style="font-weight:600;margin-bottom:8px">در حال بررسی نسخه‌ها از مخازن رسمی...</div>
+      <div class="sub" style="margin:0">لطفاً شکیبا باشید (ممکن است چند ثانیه طول بکشد)</div>
+    </div>
+    <div id="updatesContent" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Modal 2: Health Check -->
+<div class="modal-overlay" id="healthModal" role="dialog" aria-modal="true" aria-labelledby="hlthTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="hlthTitle">بررسی سلامت سرویس‌ها</h2>
+      <button type="button" class="modal-close" onclick="closeHealthModal()" aria-label="بستن">×</button>
+    </div>
+    <div id="healthLoading" style="text-align:center;padding:24px 0">
+      <div style="font-weight:600;margin-bottom:8px">در حال ارزیابی ارتباط با سرور ابری، تلگرام و پروکسی...</div>
+      <div class="sub" style="margin:0">تست مرحله‌به‌مرحله سرویس‌ها در جریان است</div>
+    </div>
+    <div id="healthContent" style="display:none"></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 var f = document.getElementById("f");
 var btn = document.getElementById("btn");
 var err = document.getElementById("err");
+
+function esc(s){
+  if(s===null||s===undefined) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
 /* v1.9: the login page has no shared shell, so it carries its own cue code.
    The switch is the server setting; before login there is no session to
    read it from, so the last known choice is remembered locally and the
@@ -15455,6 +16383,259 @@ f.addEventListener("submit", function (ev) {
       fail((j.errors && j.errors[0]) || "ورود ناموفق بود");
     }, function () { fail("ورود ناموفق بود"); });
   }).catch(function () { fail("ارتباط با سرور برقرار نشد"); });
+});
+
+/* Updates modal handling */
+function openUpdatesModal(){
+  var m=document.getElementById("updatesModal");
+  if(m)m.classList.add("open");
+  runUpdatesCheck(false);
+}
+function closeUpdatesModal(){
+  var m=document.getElementById("updatesModal");
+  if(m)m.classList.remove("open");
+}
+function runUpdatesCheck(forceDirect){
+  var ld=document.getElementById("updatesLoading");
+  var ct=document.getElementById("updatesContent");
+  if(ld)ld.style.display="block";
+  if(ct)ct.style.display="none";
+  var url="/api/check-updates"+(forceDirect?"?force_direct=1":"");
+  fetch(url)
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(ld)ld.style.display="none";
+      if(ct)ct.style.display="block";
+      renderUpdatesContent(d, forceDirect);
+    })
+    .catch(function(e){
+      if(ld)ld.style.display="none";
+      if(ct)ct.style.display="block";
+      ct.innerHTML='<div class="diag-banner warn">خطا در بررسی بروزرسانی: '+esc(e.message||e)+'</div>'
+        +'<button type="button" class="btn-action btn-warning" onclick="runUpdatesCheck(true)">فیلترشکن را روشن کردم؛ مجدداً بررسی کن</button>';
+    });
+}
+
+function renderUpdatesContent(d, wasDirect){
+  var ct=document.getElementById("updatesContent");
+  if(!ct)return;
+  var h="";
+  var ch=d.chrome||{};
+  var drv=d.chromedriver||{};
+  var prx=d.proxy||{};
+  var cVer=ch.installed_version||d.chrome_version||"یافت نشد";
+  var dVer=drv.installed_version||d.installed_driver_version||"نصب نشده";
+  var lVer=drv.matched_version||drv.latest_version||d.latest_driver_version||"در دسترس نیست";
+  var needsUpd=(d.action_required==="update_driver"||d.action_required==="download_driver"||!drv.compatible||d.needs_driver_update);
+
+  if(!wasDirect && (prx.error || d.error==="connection_error")){
+    h+='<div class="diag-banner warn">'
+      +'<strong>نیاز به اینترنت آزاد:</strong> '
+      +'برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد. لطفاً پروکسی را تنظیم کنید یا فیلترشکن سیستم را روشن کنید.'
+      +'<div style="margin-top:8px"><button type="button" class="btn-action btn-warning" onclick="runUpdatesCheck(true)">فیلترشکن را روشن کردم؛ مجدداً بررسی کن</button></div>'
+      +'</div>';
+  } else if(!wasDirect && prx.configured){
+    h+='<div class="diag-banner info">'
+      +'بررسی از طریق پروکسی '+esc(prx.protocol||"")+' انجام شد.'
+      +'</div>';
+  } else if(wasDirect || prx.used_direct){
+    h+='<div class="diag-banner info">'
+      +'بررسی بدون پروکسی (اتصال مستقیم یا فیلترشکن سیستم) انجام شد.'
+      +'</div>';
+  }
+
+  if(d.notice){
+    h+='<div class="diag-banner '+(needsUpd?'warn':'ok')+'">'+esc(d.notice)+'</div>';
+  }
+
+  var chromeInstalled = !!(ch.installed_version && ch.installed_version!=="یافت نشد" && ch.installed_version!=="نامشخص");
+  h+='<div class="diag-card">'
+    +'<div class="diag-row">'
+    +'<div><strong>Google Chrome (۶۴ بیتی ویندوز)</strong><div class="sub" style="margin:2px 0 0;text-align:right">مرورگر اصلی اجرای اتوماسیون</div></div>'
+    +'<div>'+(chromeInstalled?'<span class="diag-pill ok">نصب شده</span>':'<span class="diag-pill warn">یافت نشد</span>')+'</div>'
+    +'</div>'
+    +'<div style="margin-top:8px;font-size:13px;display:flex;justify-content:space-between">'
+    +'<span class="muted">نسخهٔ نصب‌شده:</span> <span class="ltr"><b>'+esc(cVer)+'</b></span>'
+    +'</div>'
+    +'</div>';
+
+  var driverInstalled = !!(drv.installed_version && drv.installed_version!=="یافت نشد" && drv.installed_version!=="نصب نشده");
+  var driverPill="";
+  if(!driverInstalled){
+    driverPill='<span class="diag-pill warn">نصب نشده</span>';
+  } else if(needsUpd){
+    driverPill='<span class="diag-pill warn">نیاز به بروزرسانی</span>';
+  } else {
+    driverPill='<span class="diag-pill ok">سازگار و بروز</span>';
+  }
+  h+='<div class="diag-card">'
+    +'<div class="diag-row">'
+    +'<div><strong>درایور ChromeDriver</strong><div class="sub" style="margin:2px 0 0;text-align:right">واسط اتوماسیون کروم و سلنیوم</div></div>'
+    +'<div>'+driverPill+'</div>'
+    +'</div>'
+    +'<div style="margin-top:8px;font-size:13px;display:flex;justify-content:space-between">'
+    +'<span class="muted">نسخهٔ فعلی درایور:</span> <span class="ltr"><b>'+esc(dVer)+'</b></span>'
+    +'</div>'
+    +'<div style="margin-top:4px;font-size:13px;display:flex;justify-content:space-between">'
+    +'<span class="muted">آخرین نسخهٔ سازگار:</span> <span class="ltr"><b>'+esc(lVer)+'</b></span>'
+    +'</div>'
+    +'</div>';
+
+  if(needsUpd || !driverInstalled){
+    h+='<button type="button" id="btnDoUpd" class="btn-action btn-success" style="width:100%;margin-top:10px;padding:10px" onclick="doUpdateChromeDriver('+(wasDirect?'true':'false')+')">'
+      +'بروزرسانی خودکار ChromeDriver به آخرین نسخه سازگار'
+      +'</button>';
+  }
+
+  h+='<div style="display:flex;gap:8px;margin-top:12px">'
+    +'<button type="button" class="btn-action btn-primary" style="flex:1" onclick="runUpdatesCheck('+(wasDirect?'true':'false')+')">بررسی مجدد</button>'
+    +'<button type="button" class="btn-action btn-secondary" style="flex:1" onclick="closeUpdatesModal()">بستن</button>'
+    +'</div>';
+
+  ct.innerHTML=h;
+}
+
+function doUpdateChromeDriver(forceDirect){
+  var btn=document.getElementById("btnDoUpd");
+  if(btn){
+    btn.disabled=true;
+    btn.textContent="در حال دریافت و جایگزینی درایور...";
+  }
+  fetch("/api/update-chromedriver"+(forceDirect?"?force_direct=1":""), {method:"POST"})
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if(res.ok){
+        alert("بروزرسانی درایور با موفقیت انجام شد: نسخه "+res.version);
+        runUpdatesCheck(forceDirect);
+      } else {
+        alert("خطا در بروزرسانی درایور: "+(res.error||"نامشخص"));
+        if(btn){
+          btn.disabled=false;
+          btn.textContent="تلاش مجدد بروزرسانی ChromeDriver";
+        }
+      }
+    })
+    .catch(function(e){
+      alert("خطا در ارتباط با سرور جهت بروزرسانی: "+e);
+      if(btn){
+        btn.disabled=false;
+        btn.textContent="تلاش مجدد بروزرسانی ChromeDriver";
+      }
+    });
+}
+
+/* Health check modal handling */
+function openHealthModal(){
+  var m=document.getElementById("healthModal");
+  if(m)m.classList.add("open");
+  runHealthCheck();
+}
+function closeHealthModal(){
+  var m=document.getElementById("healthModal");
+  if(m)m.classList.remove("open");
+}
+function runHealthCheck(){
+  var ld=document.getElementById("healthLoading");
+  var ct=document.getElementById("healthContent");
+  if(ld)ld.style.display="block";
+  if(ct)ct.style.display="none";
+  fetch("/api/health-check")
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(ld)ld.style.display="none";
+      if(ct)ct.style.display="block";
+      renderHealthContent(d);
+    })
+    .catch(function(e){
+      if(ld)ld.style.display="none";
+      if(ct)ct.style.display="block";
+      ct.innerHTML='<div class="diag-banner warn">خطا در اجرای تست سلامت: '+esc(e.message||e)+'</div>'
+        +'<button type="button" class="btn-action btn-primary" onclick="runHealthCheck()">بررسی مجدد</button>';
+    });
+}
+
+function renderHealthContent(d){
+  var ct=document.getElementById("healthContent");
+  if(!ct)return;
+  var h="";
+  var steps=d.steps||[];
+  var stepMap={};
+  steps.forEach(function(s){ stepMap[s.id]=s; });
+
+  var cs=stepMap["cloud"]||d.cloud_server||{};
+  var tg=stepMap["telegram"]||d.telegram||{};
+  var prx=stepMap["proxy"]||d.proxy||{};
+
+  var overallOk = (d.overall==="ok" || d.overall_ok) && (cs.status==="ok" || cs.ok) && (tg.status==="ok" || tg.ok);
+  if(overallOk){
+    h+='<div class="diag-banner ok" style="margin-top:0">✓ همه سرویس‌های اساسی فعال و آماده به‌کار هستند.</div>';
+  } else {
+    h+='<div class="diag-banner warn" style="margin-top:0">برخی از سرویس‌ها نیازمند توجه، بررسی یا تنظیم هستند.</div>';
+  }
+
+  // 1. Cloud Server
+  var csOk = cs.status==="ok" || cs.ok;
+  var csPill = csOk ? '<span class="diag-pill ok">متصل</span>' : '<span class="diag-pill err">خطا در اتصال</span>';
+  h+='<div class="diag-card">'
+    +'<div class="diag-row">'
+    +'<div><strong>۱. اتصال به سرور ابری</strong><div class="sub" style="margin:2px 0 0;text-align:right">سرور پایگاه داده و همگام‌سازی مرکزی</div></div>'
+    +'<div>'+csPill+'</div>'
+    +'</div>'
+    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
+    +'وضعیت: '+esc(cs.message||(csOk?'ارتباط پایدار است':'ناموفق'))
+    +(cs.latency_ms?' ('+cs.latency_ms+' میلی‌ثانیه)':'')
+    +'</div>'
+    +'</div>';
+
+  // 2. Telegram
+  var tgOk = tg.status==="ok" || tg.ok;
+  var tgNotCfg = tg.status==="not_configured" || (!tg.configured && !tgOk);
+  var tgPill = tgOk ? '<span class="diag-pill ok">متصل</span>' : (tgNotCfg ? '<span class="diag-pill muted">تنظیم نشده</span>' : '<span class="diag-pill err">خطا در اتصال</span>');
+  h+='<div class="diag-card">'
+    +'<div class="diag-row">'
+    +'<div><strong>۲. اتصال به سرویس تلگرام</strong><div class="sub" style="margin:2px 0 0;text-align:right">پیام‌رسان اطلاع‌رسانی و ارسال عکس</div></div>'
+    +'<div>'+tgPill+'</div>'
+    +'</div>'
+    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
+    +'وضعیت: '+esc(tg.message||(tgOk?'ارتباط با تلگرام برقرار است':(tgNotCfg?'تنظیم نشده است':'ناموفق')))
+    +(tg.latency_ms?' ('+tg.latency_ms+' میلی‌ثانیه)':'')
+    +'</div>'
+    +'</div>';
+
+  // 3. Proxy
+  var prxOk = prx.status==="ok" || prx.ok;
+  var prxNotCfg = prx.status==="not_configured" || (!prx.configured && !prxOk);
+  var prxPill = prxNotCfg ? '<span class="diag-pill muted">تنظیم نشده</span>' : (prxOk ? '<span class="diag-pill ok">متصل و فعال</span>' : '<span class="diag-pill err">خطا در اتصال</span>');
+  h+='<div class="diag-card">'
+    +'<div class="diag-row">'
+    +'<div><strong>۳. اتصال به پروکسی سامانه</strong><div class="sub" style="margin:2px 0 0;text-align:right">اینترنت آزاد (HTTP / HTTPS / SOCKS)</div></div>'
+    +'<div>'+prxPill+'</div>'
+    +'</div>'
+    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
+    +'وضعیت: '+esc(prx.message||(prxNotCfg?'پروکسی تنظیم نشده است':(prxOk?'پروکسی فعال و متصل است':'خطا در اتصال به پروکسی')))
+    +'</div>'
+    +'</div>';
+
+  h+='<div style="display:flex;gap:8px;margin-top:14px">'
+    +'<button type="button" class="btn-action btn-primary" style="flex:1" onclick="runHealthCheck()">بررسی مجدد سلامت</button>'
+    +'<button type="button" class="btn-action btn-secondary" style="flex:1" onclick="closeHealthModal()">بستن</button>'
+    +'</div>';
+
+  ct.innerHTML=h;
+}
+
+// Close modals on click outside or Escape
+window.addEventListener("click", function(e){
+  var u=document.getElementById("updatesModal");
+  var h=document.getElementById("healthModal");
+  if(e.target===u) closeUpdatesModal();
+  if(e.target===h) closeHealthModal();
+});
+window.addEventListener("keydown", function(e){
+  if(e.key==="Escape"){
+    closeUpdatesModal();
+    closeHealthModal();
+  }
 });
 </script>
 </body>
