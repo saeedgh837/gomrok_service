@@ -8857,6 +8857,13 @@ CRM_PAGE = r"""<!DOCTYPE html>
   .cloud-tutorial-step { display:grid; gap:4px; font-size:12.5px; line-height:1.75; }
   .cloud-tutorial-code { direction:ltr; text-align:left; background:var(--bg); border:1px solid var(--line);
     border-radius:8px; padding:8px 12px; font-family:monospace; font-size:12px; overflow-x:auto; }
+  .cloud-tutorial-details { border:1px solid var(--line); border-radius:12px; background:var(--card2); overflow:hidden; }
+  .cloud-tutorial-details summary { padding:14px 18px; font-weight:750; font-size:13.5px; color:var(--brand); cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none; }
+  .cloud-tutorial-details summary:hover { background:var(--card); }
+  .cloud-tutorial-details[open] summary { border-bottom:1px solid var(--line); }
+  .cloud-tutorial-content { padding:16px 18px; display:grid; gap:12px; }
+  .cloud-btn.ok { background:var(--ok); color:#fff; }
+  .cloud-btn.ok:hover { background:color-mix(in srgb,var(--ok) 85%,black); }
   @media (max-width:900px){
     .cloud-facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .cloud-fields { grid-template-columns:minmax(0,1fr); }
@@ -10187,6 +10194,97 @@ function periodClose(id){
       .catch(e=>toast(e,false));
   });
 }
+function dlgPeriodEdit(id){
+  var p=periodById(id);
+  if(!p){toast('دوره پیدا نشد',false);return;}
+  openDlg('<h3>ویرایش دورهٔ کاری</h3>'
+    +'<div class="grid" style="margin-bottom:8px">'
+    +'<label class="f">عنوان یا برچسب دوره *<input id="peLabel" value="'+esc(p.label||'')+'"></label>'
+    +'</div>'
+    +(p.closed_at
+      ?'<div class="row" style="margin-bottom:8px"><label class="f" style="flex:1">دلیل یا یادداشت بستن دوره<input id="peClosedReason" value="'+esc(p.closed_reason||'')+'"></label></div>'
+       +'<div class="row" style="margin:10px 0 6px"><label class="f check"><input type="checkbox" id="peReopen"><span class="box" aria-hidden="true"></span><span class="ft">بازگشایی مجدد دوره (تبدیل به دوره فعال)</span></label></div>'
+      :'')
+    +'<div class="err" id="peErr"></div>'
+    +'<div class="row" style="margin-top:12px;gap:8px">'
+    +'<button type="button" class="btn primary" onclick="doSavePeriodEdit(\''+id+'\')">ذخیره تغییرات</button>'
+    +'<button type="button" class="btn" onclick="closeDlg()">انصراف</button>'
+    +'</div>');
+}
+function doSavePeriodEdit(id){
+  var lbl=(document.getElementById('peLabel')||{}).value;
+  lbl=lbl?lbl.trim():'';
+  if(!lbl){
+    var errEl=document.getElementById('peErr');
+    if(errEl){errEl.textContent='عنوان دوره الزامی است';errEl.style.display='block';}
+    return;
+  }
+  var reasonEl=document.getElementById('peClosedReason');
+  var reopenEl=document.getElementById('peReopen');
+  var payload={
+    period_id:id,
+    label:lbl,
+    closed_reason:reasonEl?reasonEl.value.trim():'',
+    reopen:reopenEl?Boolean(reopenEl.checked):false
+  };
+  api('/crm-period-update',payload).then(async function(r){
+    toast('دوره با موفقیت ویرایش شد');
+    await refresh();
+    if(PER.live&&String(PER.pid)===String(id)&&document.getElementById('dlg'))dlgPeriod(id,true);
+    else closeDlg();
+  }).catch(function(e){
+    var errEl=document.getElementById('peErr');
+    if(errEl){errEl.textContent=String(e);errEl.style.display='block';}
+    else toast(String(e),false);
+  });
+}
+function periodReopen(id){
+  var p=periodById(id);
+  if(!p){toast('دوره پیدا نشد',false);return;}
+  confirmDlg('بازگشایی دوره',
+    'با بازگشایی «'+esc(periodName(p))+'»، این دوره مجدداً به عنوان دورهٔ فعال جاری تعیین می‌شود و پرونده‌های بعدی در آن ثبت خواهند شد. ادامه می‌دهید؟',
+    'بازگشایی دوره',
+    function(){
+      api('/crm-period-update',{period_id:id,reopen:true}).then(async function(){
+        toast('دوره با موفقیت مجدداً باز شد');
+        await refresh();
+        if(PER.live&&String(PER.pid)===String(id))dlgPeriod(id,true);
+      }).catch(function(e){
+        toast(String(e),false);
+      });
+    }
+  );
+}
+function periodDelete(id){
+  var p=periodById(id);
+  if(!p){toast('دوره پیدا نشد',false);return;}
+  var ds=periodCases(id);
+  if(ds.length>0){
+    warnConfirmDlg('عدم امکان حذف دوره',
+      'این دوره دارای '+fa(ds.length)+' پرونده است. با توجه به قفل ایمنی سامانه، برای حذف دوره ابتدا باید پرونده‌های عضو آن را به دوره‌ای دیگر منتقل یا حذف کنید.',
+      'وجود پرونده‌های فعال در دوره مانع از حذف آن است.',
+      'متوجه شدم',
+      function(){ closeDlg(); if(PER.live&&String(PER.pid)===String(id))dlgPeriod(id,true); },
+      false
+    );
+    return;
+  }
+  warnConfirmDlg('حذف دورهٔ کاری',
+    'آیا از حذف کامل «'+esc(periodName(p))+'» اطمینان دارید؟',
+    'این عملیات غیرقابل بازگشت است و دوره از حافظه سیستم و سرور ابری حذف خواهد شد.',
+    'حذف قطعی دوره',
+    function(){
+      api('/crm-period-delete',{period_id:id}).then(async function(){
+        closeDlg();
+        toast('دوره با موفقیت حذف شد');
+        await refresh();
+      }).catch(function(e){
+        toast(String(e),false);
+      });
+    },
+    true
+  );
+}
 /* ================= periods tab (v1.8) ================= */
 /* One card per reporting period, plus a detail dialog that answers — for every
    case of that period — which customer owns it, which passenger is attached,
@@ -10314,8 +10412,14 @@ function periodCardsHtml(){
       +'<button type="button" class="ibtn" data-static="1" aria-label="گزارش مالی این دوره"'
       +' data-tip="گزارش مالی این دوره" onclick="window.open(\'/crm-finance-report?mode=period&ref='
       +p.id+'&fmt=html\',\'_blank\')">'+ICONS.wallet+'</button>'
-      +(p.closed_at?'':'<button type="button" class="ibtn warn" aria-label="بستن دوره"'
+      +'<button type="button" class="ibtn" data-static="1" aria-label="ویرایش دوره"'
+      +' data-tip="ویرایش دوره" onclick="dlgPeriodEdit(\''+p.id+'\')">'+ICONS.edit+'</button>'
+      +(p.closed_at?'<button type="button" class="ibtn ok" aria-label="بازگشایی دوره"'
+        +' data-tip="بازگشایی دوره" onclick="periodReopen(\''+p.id+'\')">'+ICONS.undo+'</button>'
+        :'<button type="button" class="ibtn warn" aria-label="بستن دوره"'
         +' data-tip="بستن دوره" onclick="periodClose(\''+p.id+'\')">'+ICONS.lock+'</button>')
+      +'<button type="button" class="ibtn danger" data-static="1" aria-label="حذف دوره"'
+      +' data-tip="حذف دوره" onclick="periodDelete(\''+p.id+'\')">'+ICONS.trash+'</button>'
       +'</div>'
       +'</div>';
   }).join('')+'</div>';
@@ -10573,11 +10677,16 @@ function dlgPeriod(pid, silent){
     +'<button type="button" data-pseg="clerks" onclick="perSeg(\'clerks\')">متصدی‌ها</button>'
     +'</div></div>'
     +'<div id="perBody"></div>'
-    +'<div class="row" style="margin-top:12px">'
+    +'<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">'
     +'<button type="button" class="btn" onclick="window.open(\'/crm-finance-report?mode=period&ref='
     +pid+'&fmt=html\',\'_blank\')">'+ICONS.wallet+' گزارش مالی این دوره</button>'
-    +(p.closed_at?'':'<button type="button" class="btn warn" onclick="periodClose(\''+pid+'\')">'
+    +'<button type="button" class="btn" onclick="dlgPeriodEdit(\''+pid+'\')">'+ICONS.edit+' ویرایش دوره</button>'
+    +(p.closed_at?'<button type="button" class="btn ok" onclick="periodReopen(\''+pid+'\')">'
+      +ICONS.undo+' بازگشایی دوره</button>'
+      :'<button type="button" class="btn warn" onclick="periodClose(\''+pid+'\')">'
       +ICONS.lock+' بستن دوره</button>')
+    +'<button type="button" class="btn danger" onclick="periodDelete(\''+pid+'\')">'
+      +ICONS.trash+' حذف دوره</button>'
     +'<button type="button" class="btn" onclick="closeDlg()">بستن</button>'
     +'</div>'
     +'<p class="muted" style="margin:10px 0 0">ارقام این پنجره تراکنش‌های '
@@ -12165,10 +12274,12 @@ var CLOUD_ENTITY_NAMES={
 
 function cloudTabHtml(){
   return '<div class="cloud-card" id="cloud-sync-section">'+
-    '<div class="card" style="display:grid;gap:12px">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'+
-        '<div><h3 style="margin:0;font-size:16px;font-weight:750">سرور ابری و پایگاه داده مشترک</h3>'+
-        '<p class="hint" style="margin:4px 0 0">داده‌های CRM (پرونده‌ها، مشتریان، مسافران، دوره‌ها و تراکنش‌ها) روی سرور ابری ذخیره می‌شوند و بین همهٔ سیستم‌های همکاران همگام‌سازی می‌گردند.</p></div>'+
+    '<div class="card" style="display:grid;gap:14px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'+
+        '<div><h3 style="margin:0;font-size:16.5px;font-weight:800;display:flex;align-items:center;gap:8px">'+
+          '<svg class="ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>'+
+          'سرور ابری و پایگاه داده همگام</h3>'+
+        '<p class="hint" style="margin:4px 0 0">داده‌های CRM (پرونده‌ها، مشتریان، مسافران، دوره‌ها و تراکنش‌ها) در سرور ابری متمرکز شده و بین همهٔ سیستم‌های همکاران بلادرنگ همگام‌سازی می‌گردند.</p></div>'+
         '<div class="cloud-state-row">'+
           '<span class="cloud-pill mute" id="cloud-pill"><span id="cloud-pill-icon">'+CLOUD_ICONS.dot+'</span><span id="cloud-pill-text">در حال بررسی…</span></span>'+
           '<span class="cloud-actor" id="cloud-actor"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>کاربر فعال:</span><b id="cloud-actor-name"></b></span>'+
@@ -12181,32 +12292,34 @@ function cloudTabHtml(){
         '<div><span class="cloud-banner-b">رمز عبور باید تغییر کند</span>'+
         '<p class="cloud-banner-p">برای ادامه، رمز عبور حساب خود در سرور را تغییر دهید.</p></div></div>'+
       '<div class="cloud-facts">'+
-        '<div class="cloud-fact"><span class="cloud-fact-l">این دستگاه</span><span class="cloud-fact-v cloud-code" id="cloud-device">ثبت‌نشده</span></div>'+
-      '<div class="cloud-fact"><span class="cloud-fact-l">آخرین همگام‌سازی موفق</span><span class="cloud-fact-v" id="cloud-last-sync">—</span></div>'+
-        '<div class="cloud-fact"><span class="cloud-fact-l">تغییرات در صف ارسال</span><span class="cloud-fact-v" id="cloud-pending">۰</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">اتصال و تاخیر (Latency)</span><span class="cloud-fact-v" id="cloud-ping-val" style="color:var(--brand)">—</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">آخرین همگام‌سازی موفق</span><span class="cloud-fact-v" id="cloud-last-sync">—</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">تغییرات در صف ارسال (Outbox)</span><span class="cloud-fact-v" id="cloud-pending">۰</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">شناسه این دستگاه</span><span class="cloud-fact-v cloud-code" id="cloud-device">ثبت‌نشده</span></div>'+
+        '<div class="cloud-fact"><span class="cloud-fact-l">حالت پایگاه داده</span><span class="cloud-fact-v" id="cloud-mode-text" style="font-size:13px">ابری (آنلاین)</span></div>'+
         '<div class="cloud-fact"><span class="cloud-fact-l">تداخل‌های نیازمند بررسی</span><span class="cloud-fact-v" id="cloud-conflicts">۰</span></div>'+
-        '<div class="cloud-fact"><span class="cloud-fact-l">کد آخرین خطا</span><span class="cloud-fact-v cloud-code" id="cloud-error-code">—</span></div>'+
       '</div>'+
       '<div class="cloud-error" id="cloud-error-line" role="alert">'+CLOUD_ICONS.alert+'<span id="cloud-error-text"></span></div>'+
       '<div class="cloud-notice" id="cloud-reconnect" role="status">'+CLOUD_ICONS.info+
         '<div><span class="cloud-banner-b">اتصال این دستگاه نیاز به بازسازی دارد</span>'+
         '<p class="cloud-banner-p" id="cloud-reconnect-text"></p></div></div>'+
+      '<div class="cloud-actions">'+
+        '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
+        '<button type="button" class="cloud-btn ok" id="cloud-test-btn" onclick="cloudTestConnection()"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="cloud-lbl">تست زنده اتصال به سرور</span></button>'+
+        '<button type="button" class="cloud-btn ghost" id="cloud-backup-btn" onclick="cloudBackupNow()"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg><span class="cloud-lbl">پشتیبان‌گیری ابری به تلگرام</span></button>'+
+        '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال و ادغام پرونده‌های محلی با سرور</span></button>'+
+        '<button type="button" class="cloud-btn ghost-danger hidden" id="cloud-logout-btn" onclick="cloudLogout()"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg><span class="cloud-lbl">خروج از حساب سرور</span></button>'+
+      '</div>'+
       '<div class="cloud-status" id="cloud-beat-line" role="status"></div>'+
       '<div class="cloud-status" id="cloud-action-status" role="status" aria-live="polite"></div>'+
-      '<div class="cloud-actions">'+
-        '<button type="button" class="cloud-btn" id="cloud-sync-btn" onclick="cloudSyncNow()" disabled><span class="cloud-lbl">همگام‌سازی اکنون</span></button>'+
-        '<button type="button" class="cloud-btn ghost hidden" id="cloud-import-btn" onclick="cloudImportPrompt()"><span class="cloud-lbl">انتقال و ادغام پرونده‌های محلی با سرور</span></button>'+
-        '<button type="button" class="cloud-btn ghost" id="cloud-backup-btn" onclick="cloudBackupNow()"><span class="cloud-lbl">پشتیبان‌گیری فوری ابری به تلگرام</span></button>'+
-        '<button type="button" class="cloud-btn ghost-danger hidden" id="cloud-logout-btn" onclick="cloudLogout()"><span class="cloud-lbl">خروج از حساب سرور</span></button>'+
-      '</div>'+
     '</div>'+
     '<div class="cloud-block">'+
-      '<strong>حالت کارکرد پایگاه داده (همکاری آنلاین همکاران)</strong>'+
-      '<p class="hint">در حالت ابری (آنلاین)، تغییرات پرونده‌ها با سرعت لحظه‌ای (۲ ثانیه) بین سیستم شما و همکاران همگام می‌شود و ربات‌های استعلام و ثبت به کار خود ادامه می‌دهند.</p>'+
+      '<strong>حالت کارکرد پایگاه داده (همکاری آنلاین و بلادرنگ همکاران)</strong>'+
+      '<p class="hint">در حالت ابری (آنلاین)، تغییرات پرونده‌ها با سرعت لحظه‌ای (۲ ثانیه) بین سیستم شما و سایر همکاران همگام می‌شود و ربات‌های استعلام و ثبت به کار خود ادامه می‌دهند.</p>'+
       '<div class="cloud-fields" style="margin-top:8px">'+
-        '<div class="cloud-field"><label for="cloud-db-mode">حالت پایگاه داده</label>'+
+        '<div class="cloud-field"><label for="cloud-db-mode">انتخاب حالت پایگاه داده</label>'+
           '<select id="cloud-db-mode" onchange="cloudSetDbMode(this.value)">'+
-            '<option value="online">ابری (آنلاین - همکاران همزمان، همگام‌سازی لحظه‌ای ۲ ثانیه)</option>'+
+            '<option value="online">ابری (آنلاین — همکاری همزمان همکاران، همگام‌سازی لحظه‌ای ۲ ثانیه)</option>'+
             '<option value="local">محلی (آفلاین با همگام‌سازی دوره‌ای)</option>'+
           '</select>'+
         '</div>'+
@@ -12217,11 +12330,11 @@ function cloudTabHtml(){
       '<p class="hint">آدرس سرور و شناسه‌ی سازمان باید روی همهٔ سیستم‌های همکاران یکسان تنظیم شود.</p>'+
       '<div class="cloud-fields">'+
         '<div class="cloud-field"><label for="cloud-api">آدرس وب‌سرویس سرور (API Base)</label>'+
-          '<input id="cloud-api" type="text" class="ltr" autocomplete="off" spellcheck="false" placeholder="https://api.example.com"></div>'+
+          '<input id="cloud-api" type="text" class="ltr" autocomplete="off" spellcheck="false" placeholder="https://api.oneserver.in"></div>'+
         '<div class="cloud-field"><label for="cloud-tenant">شناسه‌ی سازمان (Tenant ID)</label>'+
-          '<input id="cloud-tenant" type="text" class="ltr" autocomplete="off" spellcheck="false"></div>'+
+          '<input id="cloud-tenant" type="text" class="ltr" autocomplete="off" spellcheck="false" placeholder="شناسه سازمان شما در سرور"></div>'+
       '</div>'+
-      '<div style="display:flex;gap:8px">'+
+      '<div style="display:flex;gap:8px;margin-top:4px">'+
         '<button type="button" class="cloud-btn mini" id="cloud-save-btn" onclick="cloudSaveConfig()"><span class="cloud-lbl">ذخیره تنظیمات اتصال</span></button>'+
       '</div>'+
     '</div>'+
@@ -12234,32 +12347,40 @@ function cloudTabHtml(){
         '<div class="cloud-field"><label for="cloud-pass">رمز عبور در سرور</label>'+
           '<input id="cloud-pass" type="password" class="ltr" autocomplete="current-password"></div>'+
       '</div>'+
-      '<div style="display:flex;gap:8px">'+
+      '<div style="display:flex;gap:8px;margin-top:4px">'+
         '<button type="button" class="cloud-btn mini" id="cloud-login-btn" onclick="cloudLogin()"><span class="cloud-lbl">ورود و ثبت دستگاه</span></button>'+
       '</div>'+
     '</div>'+
     '<div class="cloud-conflicts" id="cloud-conflicts-view"></div>'+
-    '<div class="cloud-tutorial">'+
-      '<h4><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg> راهنمای افزودن کاربر (همکار جدید) در سرور ابری</h4>'+
-      '<div class="cloud-tutorial-step">'+
-        '<b>۱. ایجاد حساب کاربری برای همکار روی سرور:</b>'+
-        '<span>از طریق ترمینال SSH یا سرور cPanel وارد پوشهٔ پکیج سرور شوید و دستور زیر را اجرا کنید:</span>'+
-        '<div class="cloud-tutorial-code">php bin/create-user.php --username=colleague1 --password=StrongPassword123 --role=operator</div>'+
-        '<span class="hint">نکته: نقش operator برای ثبت و ویرایش پرونده‌ها توسط همکار مناسب است. نقش admin برای مدیریت سازمان و کاربران است.</span>'+
+    '<details class="cloud-tutorial-details">'+
+      '<summary>'+
+        '<span style="display:inline-flex;align-items:center;gap:8px">'+
+          '<svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'+
+          'راهنمای افزودن کاربر (همکار جدید) در سرور ابری'+
+        '</span>'+
+        '<span class="muted" style="font-size:12px;font-weight:normal">برای مشاهده کلیک کنید ▾</span>'+
+      '</summary>'+
+      '<div class="cloud-tutorial-content">'+
+        '<div class="cloud-tutorial-step">'+
+          '<b>۱. ایجاد حساب کاربری برای همکار روی سرور:</b>'+
+          '<span>از طریق ترمینال SSH یا سرور cPanel وارد پوشهٔ پکیج سرور شوید و دستور زیر را اجرا کنید:</span>'+
+          '<div class="cloud-tutorial-code">php bin/create-user.php --username=colleague1 --password=StrongPassword123 --role=operator</div>'+
+          '<span class="hint">نکته: نقش operator برای ثبت و ویرایش پرونده‌ها توسط همکار مناسب است. نقش admin برای مدیریت سازمان و کاربران است.</span>'+
+        '</div>'+
+        '<div class="cloud-tutorial-step">'+
+          '<b>۲. ارائه اطلاعات اتصال به همکار:</b>'+
+          '<span>سه مورد را در اختیار همکار قرار دهید: ۱. آدرس وب‌سرویس سرور (API Base)، ۲. شناسه‌ی سازمان (Tenant ID)، ۳. نام کاربری و رمز عبوری که ساختید.</span>'+
+        '</div>'+
+        '<div class="cloud-tutorial-step">'+
+          '<b>۳. اتصال در سیستم همکار:</b>'+
+          '<span>همکار کافیست در پنل سیستم خود به همین تب «سرور ابری» بیاید، آدرس و شناسه سازمان را ذخیره کند و سپس با نام کاربری خود وارد شود.</span>'+
+        '</div>'+
+        '<div class="cloud-tutorial-step">'+
+          '<b>۴. همگام‌سازی خودکار:</b>'+
+          '<span>به محض ورود همکار، تمام پرونده‌ها و اطلاعات CRM به صورت خودکار از سرور دریافت و همگام می‌شوند. روی سیستم همکار <b>نیازی به زدن دکمهٔ انتقال پرونده‌ها (Import) نیست</b> (انتقال پرونده‌ها فقط یکبار در سیستم اصلی که داده‌های اولیه را داشت زده می‌شود).</span>'+
+        '</div>'+
       '</div>'+
-      '<div class="cloud-tutorial-step">'+
-        '<b>۲. ارائه اطلاعات اتصال به همکار:</b>'+
-        '<span>سه مورد را در اختیار همکار قرار دهید: ۱. آدرس وب‌سرویس سرور (API Base)، ۲. شناسه‌ی سازمان (Tenant ID)، ۳. نام کاربری و رمز عبوری که ساختید.</span>'+
-      '</div>'+
-      '<div class="cloud-tutorial-step">'+
-        '<b>۳. اتصال در سیستم همکار:</b>'+
-        '<span>همکار کافیست در پنل سیستم خود به همین تب «سرور ابری» بیاید، آدرس و شناسه سازمان را ذخیره کند و سپس با نام کاربری خود وارد شود.</span>'+
-      '</div>'+
-      '<div class="cloud-tutorial-step">'+
-        '<b>۴. همگام‌سازی خودکار:</b>'+
-        '<span>به محض ورود همکار، تمام پرونده‌ها و اطلاعات CRM به صورت خودکار از سرور دریافت و همگام می‌شوند. روی سیستم همکار <b>نیازی به زدن دکمهٔ انتقال پرونده‌ها (Import) نیست</b> (انتقال پرونده‌ها فقط یکبار در سیستم اصلی که داده‌های اولیه را داشت زده می‌شود).</span>'+
-      '</div>'+
-    '</div>'+
+    '</details>'+
   '</div>';
 }
 
@@ -12308,6 +12429,12 @@ function paintCloud(){
   if(pending)pending.textContent=fa(s?Number(s.pending||0):0);
   var conflicts=document.getElementById('cloud-conflicts');
   if(conflicts)conflicts.textContent=fa(s?Number(s.conflicts||0):0);
+  var modeEl=document.getElementById('cloud-mode-text');
+  if(modeEl){
+    var isOnline=(STATE&&STATE.settings&&STATE.settings.database_mode)!=='local';
+    modeEl.textContent=isOnline?'ابری (آنلاین لحظه‌ای)':'محلی (آفلاین)';
+    modeEl.style.color=isOnline?'var(--ok)':'var(--muted)';
+  }
   var errCode=document.getElementById('cloud-error-code');
   if(errCode)errCode.textContent=(s&&s.error_code)?s.error_code:'—';
   var msg=(s&&s.error_message)?String(s.error_message):'';
@@ -12347,6 +12474,30 @@ function paintCloud(){
     dbModeEl.value=STATE.settings.database_mode;
   }
   renderCloudConflicts(document.getElementById('cloud-conflicts-view'),s);
+}
+
+function cloudTestConnection(){
+  var btn=document.getElementById('cloud-test-btn');
+  var pingVal=document.getElementById('cloud-ping-val');
+  if(btn)btn.disabled=true;
+  if(pingVal)pingVal.textContent='در حال سنجش…';
+  fetch('/cloud-test-connection',{method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      if(btn)btn.disabled=false;
+      if(d.ok){
+        if(pingVal)pingVal.textContent=fa(d.latency_ms)+' ms';
+        toast('ارتباط با سرور ابری برقرار است ('+fa(d.latency_ms)+' میلی‌ثانیه)',true);
+      }else{
+        if(pingVal)pingVal.textContent='خطا در اتصال';
+        toast('خطا در اتصال به سرور: '+(d.error||d.message||''),false);
+      }
+    })
+    .catch(e=>{
+      if(btn)btn.disabled=false;
+      if(pingVal)pingVal.textContent='خطا';
+      toast('خطا در تست اتصال: '+e,false);
+    });
 }
 
 function cloudBeatLine(s){
@@ -15636,6 +15787,32 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in ("/cloud-backup-now", "/cloud-backup"):
             resp, status = _cloud_route_guard(cloud_run_backup_now)
             self._json(resp, status)
+        elif self.path == "/cloud-test-connection":
+            import time
+            import requests
+            cfg_path = app_paths.data_path("cloud_config.json")
+            api_base = "https://api.oneserver.in"
+            if os.path.isfile(cfg_path):
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_c = json.load(f) or {}
+                    if cfg_c.get("api_base"):
+                        api_base = str(cfg_c["api_base"]).strip()
+                except Exception:
+                    pass
+            t0 = time.monotonic()
+            try:
+                r = requests.get(f"{api_base}/v1/health/live", timeout=6)
+                lat = int((time.monotonic() - t0) * 1000)
+                if r.status_code == 200:
+                    self._json({"ok": True, "latency_ms": lat, "status_code": 200,
+                                "endpoint": api_base, "message": f"ارتباط با سرور ابری برقرار است ({lat} میلی‌ثانیه)"})
+                else:
+                    self._json({"ok": False, "status_code": r.status_code, "latency_ms": lat,
+                                "endpoint": api_base, "message": f"پاسخ سرور ابری نامعتبر است (کد {r.status_code})"})
+            except Exception as exc:
+                self._json({"ok": False, "error": str(exc), "endpoint": api_base,
+                            "message": f"خطا در اتصال به سرور ابری: {exc}"})
 
         elif self.path == "/api/check-updates":
             data = self._read_json() if self.headers.get("Content-Length") else {}
@@ -15737,6 +15914,28 @@ class Handler(BaseHTTPRequestHandler):
                 period_data = summary.get("period") or {}
                 _cloud_enqueue_mutation("periods", period_data.get("id") or str(payload.get("period_id") or ""), period_data)
                 self._json({"ok": True, "summary": summary})
+
+        elif self.path == "/crm-period-update":
+            import crm as crm_mod
+            payload = self._read_json()
+            pid = str(payload.get("period_id") or payload.get("id") or "").strip()
+            period, errors = crm_mod.update_period(pid, payload, actor=self.actor)
+            if errors:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                _cloud_enqueue_mutation("periods", pid, period, kind="upsert")
+                self._json({"ok": True, "period": period})
+
+        elif self.path == "/crm-period-delete":
+            import crm as crm_mod
+            payload = self._read_json()
+            pid = str(payload.get("period_id") or payload.get("id") or "").strip()
+            ok, errors = crm_mod.delete_period(pid)
+            if not ok:
+                self._json({"ok": False, "errors": errors}, 400)
+            else:
+                _cloud_enqueue_mutation("periods", pid, kind="delete")
+                self._json({"ok": True, "deleted_id": pid})
 
         elif self.path == "/crm-periodic":
             data = self._read_json()

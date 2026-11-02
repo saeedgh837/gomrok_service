@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.18.1] - 2026-11-02
+
+### Added
+
+- **Period Edit & Reopen («امکان ویرایش و بازگشایی دوره»).**
+  - Ability to edit period title (`label`) and closure notes (`closed_reason`) via `crm.update_period` and POST `/crm-period-update`.
+  - Ability to reopen previously closed periods (when no other period is currently open).
+  - Synchronized across cloud outbox with `kind="upsert"`.
+- **Period Delete with Option C Safety Lock («امکان حذف دوره با قفل ایمنی»).**
+  - Secure deletion via `crm.delete_period` and POST `/crm-period-delete`.
+  - Strict safety lock (Option C): rejects deletion if any cases (`devices`) or clerk financial transactions exist in the period, preventing orphaned data or financial imbalances.
+  - Clears `current_period_id` in settings if active, and synchronizes deletion tombstone to cloud outbox with `kind="delete"`.
+  - Interactive UI buttons in period cards and `dlgPeriod` modal with risk warnings (`warnConfirmDlg`).
+- **Complete Cloud Sync Tab Rebuild («بازطراحی و ارتقای کامل تب سرور ابری»).**
+  - Live dashboard at the top featuring real-time connection status, server latency ping, last sync timestamp, outbox pending count, device enrollment ID, and active database mode.
+  - Quick action toolbar: «همگام‌سازی اکنون», «تست زنده اتصال به سرور» (POST `/cloud-test-connection`), «پشتیبان‌گیری ابری به تلگرام», and «خروج از حساب سرور».
+  - Redesigned modern database mode toggle (online real-time 2-second synchronization vs offline local).
+  - Compact collapsible tutorial section for onboarding new colleague accounts.
+
 ## [1.18.0] - 2026-11-01
 
 ### Added

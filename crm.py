@@ -1790,6 +1790,84 @@ def close_period(period_id, actor="", reason=""):
         }, []
 
 
+def update_period(period_id, fields, actor=""):
+    """Update period metadata (v1.18.1).
+    Allows updating label, closed_reason, or reopening an existing period.
+    Returns (period, errors).
+    """
+    with STORE_LOCK:
+        data = _store_read()
+        period = next((p for p in data.get("periods", [])
+                       if str(p.get("id")) == str(period_id)), None)
+        if not period:
+            return None, ["دوره پیدا نشد"]
+
+        if "label" in fields:
+            label = str(fields.get("label") or "").strip()
+            if not label:
+                return None, ["عنوان دوره نمی‌تواند خالی باشد"]
+            period["label"] = label
+
+        if "closed_reason" in fields:
+            period["closed_reason"] = str(fields.get("closed_reason") or "").strip()
+
+        # Reopening a closed period if requested
+        if fields.get("reopen"):
+            if not period.get("closed_at"):
+                return None, ["این دوره از قبل باز است"]
+            cur = current_period(data)
+            if cur is not None and str(cur.get("id")) != str(period_id):
+                return None, ["یک دورهٔ باز دیگر در حال حاضر وجود دارد؛ ابتدا آن را ببندید"]
+            period["closed_at"] = ""
+            period["closed_by"] = ""
+            period["closed_reason"] = ""
+            (data.setdefault("settings", {}))["current_period_id"] = str(period_id)
+
+        period["updated"] = _now()
+        _store_write(data)
+        crm_log("info", "period_updated", period_id=str(period_id), label=period.get("label", ""))
+        return period, []
+
+
+def delete_period(period_id):
+    """Delete a period (v1.18.1).
+    Safety lock (Option C): if the period has any devices or clerk transactions,
+    deletion is rejected to prevent orphaned records and accounting discrepancies.
+    Returns (ok, errors).
+    """
+    with STORE_LOCK:
+        data = _store_read()
+        period = next((p for p in data.get("periods", [])
+                       if str(p.get("id")) == str(period_id)), None)
+        if not period:
+            return False, ["دوره پیدا نشد"]
+
+        # Check for devices linked to this period
+        devices = [d for d in data.get("devices", [])
+                   if str(d.get("period_id") or "") == str(period_id)]
+        if devices:
+            return False, [f"این دوره دارای {jalali.fa_digits(len(devices))} پرونده است. برای حذف دوره، ابتدا پرونده‌ها را منتقل یا حذف کنید."]
+
+        # Check for clerk transactions linked to this period
+        clerk_txs = []
+        for c in data.get("clerks", []):
+            for t in c.get("transactions", []):
+                if str(t.get("period_id") or "").strip() == str(period_id):
+                    clerk_txs.append(t)
+        if clerk_txs:
+            return False, [f"این دوره دارای {jalali.fa_digits(len(clerk_txs))} تراکنش مالی متصدیان است. حذف آن مجاز نیست."]
+
+        data["periods"] = [p for p in data.get("periods", [])
+                           if str(p.get("id")) != str(period_id)]
+        settings = data.setdefault("settings", {})
+        if str(settings.get("current_period_id") or "") == str(period_id):
+            settings["current_period_id"] = ""
+
+        _store_write(data)
+        crm_log("info", "period_deleted", period_id=str(period_id))
+        return True, []
+
+
 def current_period(data):
     """The open period devices register into, or None when none is open
     (legacy/implicit mode: devices carry an empty period_id).
