@@ -76,7 +76,7 @@ DEVICE = {
     "code_delivered_at": "2026-09-02 12:00:00",
     "done_at": "2026-09-02 12:05:00", "last_inquiry_at": "2026-09-03 07:00:00",
     "notes": "sample case notes", "advance_attempts": 0,
-    "period_id": "aa11bb22",
+    "period_id": "aa11bb22", "clerk_id": "cl01cl01",
     "created": "2026-09-01 10:12:00", "updated": "2026-09-05 14:00:00",
     # Columns written after creation (crm stage machine / panel):
     "skipped_stages": [{"stage": "inquiry", "to": "ready_owner",
@@ -98,6 +98,20 @@ PERIOD_CLOSED = {
     "opened_at": "2026-09-01 00:00:00", "opened_by": "operator",
     "closed_at": "2026-09-06 18:00:00", "closed_by": "operator",
     "closed_reason": "sample month end",
+}
+
+CLERK_TRANSACTIONS = [
+    {"id": "tx01tx01", "at": "2026-09-02 10:00:00", "amount": 1000000,
+     "kind": "credit", "recipient_name": "Sample Clerk", "device_id": "d1d2d3d4",
+     "period_id": "aa11bb22", "note": "clerk fee", "voided_at": "",
+     "void_reason": "", "reversal_of": ""},
+]
+
+CLERK = {
+    "id": "cl01cl01", "name": "Sample Clerk", "mobile": "09120000005",
+    "notes": "sample clerk notes", "active": True,
+    "transactions": list(CLERK_TRANSACTIONS),
+    "created": "2026-09-01 10:00:00", "updated": "2026-09-05 14:00:00",
 }
 
 SETTINGS = {
@@ -126,6 +140,7 @@ def store_fixture():
         "identities": [dict(IDENTITY)],
         "devices": [dict(DEVICE)],
         "periods": [dict(PERIOD_OPEN), dict(PERIOD_CLOSED)],
+        "clerks": [dict(CLERK, transactions=list(CLERK_TRANSACTIONS))],
         "settings": dict(SETTINGS),
     }
 
@@ -399,7 +414,7 @@ class ReferenceTests(FixtureTestCase):
         rows = self.lift(CUSTOMER)
         self.assertEqual(rows[1]["image"], "sample01.png")
         self.assertEqual(mapper.REFERENCE_FIELDS["crm_devices"].keys(),
-                         {"customer_id", "owner_id", "period_id"})
+                         {"customer_id", "owner_id", "period_id", "clerk_id"})
 
     def test_an_empty_reference_becomes_null_not_empty_string(self):
         row = self.to_row("crm_devices", dict(DEVICE, owner_id=""))
@@ -939,12 +954,23 @@ class RealStoreRecordTests(FixtureTestCase):
         period, errs = crm.open_period(label="sample period",
                                        actor="operator")
         self.assertEqual(errs, [])
+        clerk, errs = crm.add_clerk({
+            "name": "Sample Clerk", "mobile": "09120000005",
+            "notes": "sample clerk notes", "active": True})
+        self.assertEqual(errs, [])
         device, errs = crm.add_device({
             "name": "sample device", "serial1": "123456789012345",
             "serial2": "543210987654321", "customer_id": customer["id"],
+            "clerk_id": clerk["id"],
             "auto_advance": True, "notes": "sample case notes"})
         self.assertEqual(errs, [])
         self.assertEqual(device["period_id"], period["id"])
+
+        _, errs = crm.add_clerk_transaction(
+            clerk["id"], 1000000, kind="credit",
+            recipient_name="Sample Clerk", device_id=device["id"],
+            period_id=period["id"], note="sample clerk fee")
+        self.assertEqual(errs, [])
 
         _, errs = crm.attach_owner(device["id"], owner["id"])
         self.assertEqual(errs, [])
@@ -1009,6 +1035,19 @@ class RealStoreRecordTests(FixtureTestCase):
                     mapper.to_row("customer_transactions", record,
                                   source_installation_id=self.INSTALL), row)
 
+        for clerk in data["clerks"]:
+            rows = mapper.lift_clerk_transactions(
+                clerk, source_installation_id=self.INSTALL)
+            self.assertEqual(
+                mapper.restore_clerk_transactions(rows, reference_index=index),
+                clerk["transactions"])
+            for row in rows:
+                record = mapper.from_row(
+                    "clerk_transactions", row, reference_index=index)
+                self.assertEqual(
+                    mapper.to_row("clerk_transactions", record,
+                                  source_installation_id=self.INSTALL), row)
+
         # v1.15 adds database_mode as an explicitly device-local setting.
         # split_store must keep it off the wire and surface the allowlist warning
         # rather than treating that intentional local key as a mapper failure.
@@ -1020,7 +1059,7 @@ class RealStoreRecordTests(FixtureTestCase):
                             for item in caught))
         merged = mapper.merge_store(rows,
                                     source_installation_id=self.INSTALL)
-        for key in ("customers", "owners", "identities", "devices", "periods"):
+        for key in ("customers", "owners", "identities", "devices", "periods", "clerks"):
             self.assertEqual(merged[key], data[key], key)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", mapper.SettingsAllowlistWarning)
@@ -1041,6 +1080,8 @@ class RealStoreRecordTests(FixtureTestCase):
             "owners", data["owners"][0]["id"]))
         self.assertEqual(row["period_id"], self.uuid(
             "periods", data["periods"][0]["id"]))
+        self.assertEqual(row["clerk_id"], self.uuid(
+            "clerks", data["clerks"][0]["id"]))
         self.assertEqual(
             mapper.from_row("crm_devices", row, reference_index=index),
             mapper.project("crm_devices", data["devices"][0]))

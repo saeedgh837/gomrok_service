@@ -1600,10 +1600,10 @@ class TestBatchOrder(ApiCase):
 
     def test_the_dependency_graph_is_read_from_the_mapper(self):
         self.assertEqual(set(REFERENCE_FIELDS),
-                         {"crm_devices", "customer_transactions", "settings"})
+                         {"crm_devices", "customer_transactions", "clerk_transactions", "settings"})
         self.assertEqual(REFERENCE_FIELDS["crm_devices"],
                          {"customer_id": "customers", "owner_id": "owners",
-                          "period_id": "periods"})
+                          "period_id": "periods", "clerk_id": "clerks"})
 
     def test_push_order_puts_every_parent_before_its_child(self):
         child_first = [

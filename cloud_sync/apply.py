@@ -289,6 +289,11 @@ def _transactions(customer):
                     f"customers[{customer.get('id')!r}].transactions")
 
 
+def _clerk_transactions(clerk):
+    return _records(clerk.get("transactions"),
+                    f"clerks[{clerk.get('id')!r}].transactions")
+
+
 def _tx_cloud_id(source_installation_id, customer_legacy_id, position):
     return legacy_to_uuid(source_installation_id, "customer_transactions",
                           transaction_legacy_id(customer_legacy_id, position))
@@ -301,8 +306,8 @@ def _tx_local_id(customer_legacy_id, position):
 def _local_index(document, source_installation_id):
     """``{(entity, cloud_id): local_id}`` for every row the document holds.
 
-    ``mapper.reference_index`` already covers the five entities that carry a
-    source id; the two synthetic ones (spec §15.2) have no row of their own in
+    ``mapper.reference_index`` already covers the entities that carry a
+    source id; the synthetic ones (spec §15.2) have no row of their own in
     the document, so they are derived here from the constant settings key and
     from each customer's nested transactions. This is the only way a tombstone
     — ``record: null``, so it carries no id of its own — can be resolved.
@@ -320,6 +325,16 @@ def _local_index(document, source_installation_id):
             index[("customer_transactions", _tx_cloud_id(
                 source_installation_id, legacy, position))] = \
                 _tx_local_id(legacy, position)
+    for clerk in _records(document.get("clerks"), "clerks"):
+        legacy = clerk.get("id")
+        if not isinstance(legacy, str) or not legacy:
+            continue
+        for tx in _clerk_transactions(clerk):
+            tx_id = tx.get("id")
+            if isinstance(tx_id, str) and tx_id:
+                cloud_id = legacy_to_uuid(
+                    source_installation_id, "clerk_transactions", tx_id)
+                index[("clerk_transactions", cloud_id)] = tx_id
     return index
 
 
@@ -505,6 +520,10 @@ def apply_snapshot(payload, *, store, source_installation_id, versions,
             document[store_key], part = _snapshot_customers(
                 merged.get(store_key), local.get(store_key), is_dirty,
                 source_installation_id, cloud_by_local)
+        elif entity == "clerks":
+            document[store_key], part = _snapshot_clerks(
+                merged.get(store_key), local.get(store_key), is_dirty,
+                source_installation_id, cloud_by_local)
         else:
             document[store_key], part = _snapshot_collection(
                 entity, merged.get(store_key), local.get(store_key), is_dirty,
@@ -626,6 +645,77 @@ def _snapshot_transactions(remote_customer, local_customer, is_dirty,
         taken.add(("customer_transactions", legacy))
         merged.append(remote_tx)
     out = dict(remote_customer)
+    out["transactions"] = merged
+    return out
+
+
+def _snapshot_clerks(merged_rows, local_rows, is_dirty,
+                     source_installation_id, cloud_by_local):
+    merged_rows = _records(merged_rows, "collections.clerks")
+    local_by_id = _records_by_id(local_rows, "store[clerks]")
+    out, taken = [], set()
+    present = set()
+    for record in merged_rows:
+        legacy = record["id"]
+        present.add(legacy)
+        cloud_id = cloud_by_local.get(
+            ("clerks", legacy)) or legacy_to_uuid(
+                source_installation_id, "clerks", legacy)
+        if legacy in local_by_id and _protected(
+                is_dirty, "clerks", cloud_id, legacy):
+            out.append(local_by_id[legacy])
+            continue
+        taken.add(("clerks", legacy))
+        out.append(_snapshot_clerk_transactions(
+            record, local_by_id.get(legacy), is_dirty, source_installation_id,
+            taken, cloud_by_local))
+    for legacy, record in local_by_id.items():
+        if legacy in present:
+            continue
+        cloud_id = cloud_by_local.get(
+            ("clerks", legacy)) or legacy_to_uuid(
+                source_installation_id, "clerks", legacy)
+        if _protected(is_dirty, "clerks", cloud_id, legacy) or any(
+                _protected(is_dirty, "clerk_transactions",
+                           cloud_by_local.get(("clerk_transactions", tx.get("id"))) or
+                           legacy_to_uuid(source_installation_id, "clerk_transactions", tx.get("id")),
+                           tx.get("id"))
+                for tx in _clerk_transactions(record) if tx.get("id")):
+            out.append(record)
+    return out, taken
+
+
+def _snapshot_clerk_transactions(remote_clerk, local_clerk, is_dirty,
+                                 source_installation_id, taken, cloud_by_local):
+    remote = _clerk_transactions(remote_clerk)
+    local = _clerk_transactions(local_clerk) if local_clerk else []
+    local_by_id = {tx.get("id"): tx for tx in local if tx.get("id")}
+    merged = []
+    seen = set()
+    for tx in remote:
+        tx_id = tx.get("id")
+        if not tx_id:
+            merged.append(tx)
+            continue
+        seen.add(tx_id)
+        cloud_id = cloud_by_local.get(
+            ("clerk_transactions", tx_id)) or legacy_to_uuid(
+                source_installation_id, "clerk_transactions", tx_id)
+        if tx_id in local_by_id and _protected(
+                is_dirty, "clerk_transactions", cloud_id, tx_id):
+            merged.append(local_by_id[tx_id])
+            continue
+        taken.add(("clerk_transactions", tx_id))
+        merged.append(tx)
+    for tx_id, tx in local_by_id.items():
+        if tx_id in seen:
+            continue
+        cloud_id = cloud_by_local.get(
+            ("clerk_transactions", tx_id)) or legacy_to_uuid(
+                source_installation_id, "clerk_transactions", tx_id)
+        if _protected(is_dirty, "clerk_transactions", cloud_id, tx_id):
+            merged.append(tx)
+    out = dict(remote_clerk)
     out["transactions"] = merged
     return out
 
@@ -775,6 +865,9 @@ def _upsert(document, entity, cloud_id, record, index, tz, prior):
     if entity == "customer_transactions":
         return _upsert_transaction(document, record, index, tz, cloud_id,
                                    prior)
+    if entity == "clerk_transactions":
+        return _upsert_clerk_transaction(document, record, index, tz, cloud_id,
+                                         prior)
     return _upsert_row(document, entity, record, index, tz, cloud_id, prior)
 
 
@@ -801,12 +894,16 @@ def _upsert_row(document, entity, record, index, tz, cloud_id, prior):
             # A customer change carries no transactions — they have their own
             # rows — so the local ledger stays exactly where it is.
             new = dict(new, transactions=_transactions(existing))
-        elif entity == "crm_devices" and "clerk_id" in existing:
+        elif entity == "clerks":
+            new = dict(new, transactions=_clerk_transactions(existing))
+        elif entity == "crm_devices" and "clerk_id" in existing and not new.get("clerk_id"):
             new["clerk_id"] = existing["clerk_id"]
         out.append(new)
         replaced = True
     if not replaced:
         if entity == "customers":
+            new = dict(new, transactions=[])
+        elif entity == "clerks":
             new = dict(new, transactions=[])
         out.append(new)
     document[store_key] = out
@@ -867,6 +964,52 @@ def _upsert_transaction(document, record, index, tz, cloud_id, prior):
     return local_id
 
 
+def _upsert_clerk_transaction(document, record, index, tz, cloud_id, prior):
+    if "clerk_id" not in record:
+        raise mapper.MissingFieldError(
+            "clerk_transactions: required field 'clerk_id' is missing")
+    clerk_uuid = record["clerk_id"]
+    if not isinstance(clerk_uuid, str) or not clerk_uuid:
+        raise mapper.FieldTypeError(
+            "clerk_transactions.clerk_id must be a non-empty string, got %r" % (clerk_uuid,))
+    clerk_legacy = index.get(("clerks", clerk_uuid))
+    if clerk_legacy is None:
+        raise mapper.UnresolvedReferenceError(
+            "clerk_transactions: no local clerks record maps to %r" % (clerk_uuid,))
+    local_id = record.get("id")
+    if not local_id:
+        raise mapper.MissingFieldError(
+            "clerk_transactions: required field 'id' is missing")
+    _guard(prior, local_id, "clerk_transactions", cloud_id)
+    source = {key: value for key, value in record.items() if key != "clerk_id"}
+    new = mapper.from_row("clerk_transactions", source, tz=tz, reference_index=index)
+    rows = _records(document.get("clerks"), "store[clerks]")
+    out = []
+    replaced = False
+    for existing in rows:
+        if existing.get("id") != clerk_legacy:
+            out.append(existing)
+            continue
+        transactions = _clerk_transactions(existing)
+        tx_out = []
+        tx_replaced = False
+        for t in transactions:
+            if t.get("id") == local_id:
+                tx_out.append(new)
+                tx_replaced = True
+            else:
+                tx_out.append(t)
+        if not tx_replaced:
+            tx_out.append(new)
+        out.append(dict(existing, transactions=tx_out))
+        replaced = True
+    if not replaced:
+        raise mapper.UnresolvedReferenceError(
+            "clerk_transactions: no local clerks record %r" % (clerk_legacy,))
+    document["clerks"] = out
+    return local_id
+
+
 def _upsert_settings(document, record, index, tz, cloud_id, prior):
     local_id = SETTINGS_LEGACY_ID
     _guard(prior, local_id, "settings", cloud_id)
@@ -892,6 +1035,8 @@ def _remove(document, entity, local_id):
         return False                         # one row per tenant, never deleted
     if entity == "customer_transactions":
         return _remove_transaction(document, local_id)
+    if entity == "clerk_transactions":
+        return _remove_clerk_transaction(document, local_id)
     store_key = _STORE_KEYS[entity]
     rows = _records(document.get(store_key), f"store[{store_key}]")
     out = [row for row in rows if row.get("id") != local_id]
@@ -899,6 +1044,21 @@ def _remove(document, entity, local_id):
         return False
     document[store_key] = out
     return True
+
+
+def _remove_clerk_transaction(document, local_id):
+    rows = _records(document.get("clerks"), "store[clerks]")
+    out = []
+    removed = False
+    for existing in rows:
+        transactions = _clerk_transactions(existing)
+        filtered = [t for t in transactions if t.get("id") != local_id]
+        if len(filtered) != len(transactions):
+            removed = True
+        out.append(dict(existing, transactions=filtered))
+    if removed:
+        document["clerks"] = out
+    return removed
 
 
 def _remove_transaction(document, local_id):

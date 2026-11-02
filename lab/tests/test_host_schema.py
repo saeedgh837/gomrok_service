@@ -79,6 +79,10 @@ CRITICAL_FKS = (
     ("customer_transactions", "customer_id", "customers", "id"),
     ("customer_transactions", "device_id", "crm_devices", "id"),
     ("settings", "current_period_id", "periods", "id"),
+    ("crm_devices", "clerk_id", "clerks", "id"),
+    ("clerk_transactions", "clerk_id", "clerks", "id"),
+    ("clerk_transactions", "device_id", "crm_devices", "id"),
+    ("clerk_transactions", "period_id", "periods", "id"),
     ("memberships", "user_id", "users", "id"),
     ("memberships", "tenant_id", "tenants", "id"),
     ("auth_sessions", "sync_device_id", "sync_devices", "id"),
@@ -86,8 +90,8 @@ CRITICAL_FKS = (
     ("tenant_state", "tenant_id", "tenants", "id"),
 )
 
-EXPECTED_TABLES = 18
-EXPECTED_COLUMNS = 237
+EXPECTED_TABLES = 20
+EXPECTED_COLUMNS = 270
 
 _scratch = []          # temp directories to remove at the end
 _passwords = set()     # secrets that must never appear in any assertion text

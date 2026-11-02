@@ -28,6 +28,8 @@ ENTITIES = (
     "crm_devices",
     "periods",
     "settings",
+    "clerks",
+    "clerk_transactions",
 )
 
 

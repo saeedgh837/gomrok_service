@@ -702,8 +702,9 @@ final class Sync
     {
         $rank = [
             'periods' => 0, 'customers' => 1, 'owners' => 2,
-            'identities' => 3, 'crm_devices' => 4,
-            'customer_transactions' => 5, 'settings' => 6,
+            'identities' => 3, 'clerks' => 4, 'crm_devices' => 5,
+            'customer_transactions' => 6, 'clerk_transactions' => 7,
+            'settings' => 8,
         ];
         $indexed = [];
         foreach ($prepared as $index => $op) {

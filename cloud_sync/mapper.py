@@ -76,6 +76,7 @@ __all__ = [
     "to_row", "from_row", "project",
     "map_reference", "reference_index", "transaction_legacy_id",
     "lift_transactions", "restore_transactions",
+    "lift_clerk_transactions", "restore_clerk_transactions",
     "split_settings", "merge_settings",
     "split_store", "merge_store", "envelope",
 ]
@@ -239,6 +240,7 @@ FIELD_TYPES = {
         "registered_at": _TIME, "payment_confirmed_at": _TIME,
         "code_delivered_at": _TIME, "done_at": _TIME, "last_inquiry_at": _TIME,
         "notes": _STR, "advance_attempts": _INT, "period_id": _STR,
+        "clerk_id": _STR,
         "created": _TIME, "updated": _TIME,
         # Added after creation, so a young record simply lacks them:
         "skipped_stages": _SKIPS, "closed_at": _TIME, "closed_reason": _STR,
@@ -248,6 +250,16 @@ FIELD_TYPES = {
         "id": _STR, "number": _INT, "label": _STR, "opened_at": _TIME,
         "opened_by": _STR, "closed_at": _TIME, "closed_by": _STR,
         "closed_reason": _STR,
+    },
+    "clerks": {
+        "id": _STR, "name": _STR, "mobile": _STR, "notes": _STR,
+        "active": _BOOL, "created": _TIME, "updated": _TIME,
+    },
+    "clerk_transactions": {
+        "id": _STR, "clerk_id": _STR, "at": _TIME, "amount": _INT,
+        "kind": _STR, "recipient_name": _STR, "device_id": _STR,
+        "period_id": _STR, "note": _STR, "voided_at": _TIME,
+        "void_reason": _STR, "reversal_of": _STR,
     },
     "settings": {
         # MINTED by to_row (spec §15.2), dropped by from_row.
@@ -288,9 +300,11 @@ SYNTHETIC_ID_ENTITIES = frozenset({"customer_transactions", "settings"})
 #   crm_devices.profile_id, customer_transactions.image
 REFERENCE_FIELDS = {
     "crm_devices": {"customer_id": "customers", "owner_id": "owners",
-                    "period_id": "periods"},
+                    "period_id": "periods", "clerk_id": "clerks"},
     "customer_transactions": {"customer_id": "customers",
                                "device_id": "crm_devices"},
+    "clerk_transactions": {"clerk_id": "clerks", "device_id": "crm_devices",
+                           "period_id": "periods"},
     "settings": {"current_period_id": "periods"},
 }
 
@@ -298,8 +312,9 @@ REFERENCE_FIELDS = {
 # Dangling legacy references on these columns sanitize to empty / NULL rather
 # than crashing the entire sync.
 NULLABLE_REFERENCE_FIELDS = {
-    "crm_devices": frozenset({"customer_id", "owner_id", "period_id"}),
+    "crm_devices": frozenset({"customer_id", "owner_id", "period_id", "clerk_id"}),
     "customer_transactions": frozenset({"device_id"}),
+    "clerk_transactions": frozenset({"device_id", "period_id"}),
     "settings": frozenset({"current_period_id"}),
 }
 
@@ -307,7 +322,7 @@ NULLABLE_REFERENCE_FIELDS = {
 # into their own table instead, or managed locally.
 LIFTED_OUT_FIELDS = {
     "customers": frozenset({"transactions"}),
-    "crm_devices": frozenset({"clerk_id"}),
+    "clerks": frozenset({"transactions"}),
 }
 
 # Fields whose value is required (and must be a non-empty string).
@@ -319,6 +334,8 @@ REQUIRED_FIELDS = {
     "identities": ("id",),
     "crm_devices": ("id",),
     "periods": ("id",),
+    "clerks": ("id",),
+    "clerk_transactions": ("id",),
     "customer_transactions": (),
     "settings": (),
 }
@@ -330,6 +347,7 @@ STORE_COLLECTIONS = (
     ("identities", "identities"),
     ("devices", "crm_devices"),
     ("periods", "periods"),
+    ("clerks", "clerks"),
 )
 
 # Entities that carry a source id and can therefore appear in a reference
@@ -757,6 +775,52 @@ def restore_transactions(rows, *, tz=IRAN_TZ, reference_index=None):
             for _seq, _index, row in ordered]
 
 
+def lift_clerk_transactions(clerk, *, tz=IRAN_TZ, source_installation_id):
+    """``clerks.transactions[]`` → ``clerk_transactions`` rows.
+
+    Each row gets ``clerk_id`` rewritten to the clerk's UUID, and its own
+    stable 8-hex ``id``.
+    """
+    _require_mapping("clerks", clerk, "record")
+    _require_fields("clerks", clerk)
+    raw = clerk.get("transactions", [])
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise FieldTypeError(
+            f"clerks.transactions must be a list, got {type(raw).__name__}")
+    rows = []
+    for seq, tx in enumerate(raw):
+        if not isinstance(tx, dict):
+            raise FieldTypeError(
+                f"clerks.transactions[{seq}] must be a dict, got {type(tx).__name__}")
+        source = dict(tx)
+        source["clerk_id"] = clerk["id"]
+        if not source.get("id"):
+            source["id"] = f"{clerk['id']}_{seq}"
+        rows.append(to_row("clerk_transactions", source, tz=tz,
+                           source_installation_id=source_installation_id))
+    return rows
+
+
+def restore_clerk_transactions(rows, *, tz=IRAN_TZ, reference_index=None):
+    """``clerk_transactions`` rows → the nested list."""
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise FieldTypeError(
+            f"clerk_transactions must be a list, got {type(rows).__name__}")
+    ordered = []
+    for index, row in enumerate(rows):
+        _require_mapping("clerk_transactions", row, "row")
+        ordered.append((row.get("at") or "", row.get("id") or "", index, row))
+    ordered.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [from_row("clerk_transactions",
+                     {k: v for k, v in row.items() if k != "clerk_id"},
+                     tz=tz, reference_index=reference_index)
+            for _at, _id, _index, row in ordered]
+
+
 # --------------------------------------------------------------------------
 # Settings allowlist (spec §3)
 # --------------------------------------------------------------------------
@@ -835,6 +899,9 @@ def split_store(store, *, tz=IRAN_TZ, source_installation_id):
             if entity == "customers":
                 out["customer_transactions"].extend(lift_transactions(
                     record, tz=tz, source_installation_id=source_installation_id))
+            elif entity == "clerks":
+                out["clerk_transactions"].extend(lift_clerk_transactions(
+                    record, tz=tz, source_installation_id=source_installation_id))
     out["settings"] = to_row(
         "settings", store.get("settings") or {}, tz=tz,
         source_installation_id=source_installation_id)
@@ -845,9 +912,9 @@ def merge_store(rows, *, tz=IRAN_TZ, source_installation_id):
     """Inverse of :func:`split_store`.
 
     The reference index is rebuilt from the batch itself — every row of the
-    five entities still carries its legacy id under ``id`` — so foreign keys
+    six entities still carries its legacy id under ``id`` — so foreign keys
     resolve without any extra input. Transactions are re-nested into their
-    customer and restored in ``seq`` order. Every customer gets a
+    customer and clerk and restored in order. Every customer and clerk gets a
     ``transactions`` list (the store always writes one), so a hand-trimmed
     record without the key gains ``[]``.
     """
@@ -883,6 +950,28 @@ def merge_store(rows, *, tz=IRAN_TZ, source_installation_id):
             f"{len(grouped)} customer_transactions row(s) reference a "
             "customer that is not in the batch")
 
+    clerk_rows = rows.get("clerks") or []
+    grouped_clerk_tx = {}
+    for row in rows.get("clerk_transactions") or []:
+        _require_mapping("clerk_transactions", row, "row")
+        clerk_id = row.get("clerk_id")
+        if not isinstance(clerk_id, str) or not clerk_id:
+            raise MissingFieldError(
+                "clerk_transactions: required field 'clerk_id' is missing")
+        grouped_clerk_tx.setdefault(clerk_id, []).append(row)
+
+    clerks = []
+    for row in clerk_rows:
+        record = from_row("clerks", row, tz=tz, reference_index=index)
+        uuid = legacy_to_uuid(source_installation_id, "clerks", record["id"])
+        record["transactions"] = restore_clerk_transactions(
+            grouped_clerk_tx.pop(uuid, []), tz=tz, reference_index=index)
+        clerks.append(record)
+    if grouped_clerk_tx:
+        raise MappingError(
+            f"{len(grouped_clerk_tx)} clerk_transactions row(s) reference a "
+            "clerk that is not in the batch")
+
     def _records(entity):
         return [from_row(entity, row, tz=tz, reference_index=index)
                 for row in (rows.get(entity) or [])]
@@ -893,6 +982,7 @@ def merge_store(rows, *, tz=IRAN_TZ, source_installation_id):
         "identities": _records("identities"),
         "devices": _records("crm_devices"),
         "periods": _records("periods"),
+        "clerks": clerks,
         "settings": from_row("settings", rows.get("settings") or {}, tz=tz,
                              reference_index=index),
     }

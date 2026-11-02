@@ -2728,13 +2728,17 @@ def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert", trans
                 "identities" if entity in ("identity", "identities") else \
                 "periods" if entity in ("period", "periods") else \
                 "settings" if entity == "settings" else \
-                "customer_transactions" if entity == "customer_transactions" else entity
+                "customer_transactions" if entity == "customer_transactions" else \
+                "clerks" if entity in ("clerk", "clerks") else \
+                "clerk_transactions" if entity in ("clerk_transaction", "clerk_transactions") else entity
 
         cloud_id = mapper.legacy_to_uuid(inst, canon, str(legacy_id)) if legacy_id else None
         if canon == "settings":
             cloud_id = mapper.legacy_to_uuid(inst, "settings", mapper.SETTINGS_LEGACY_KEY)
         elif canon == "customer_transactions" and isinstance(record, dict) and "id" in record:
             cloud_id = record["id"]
+        elif canon == "clerk_transactions" and legacy_id:
+            cloud_id = mapper.legacy_to_uuid(inst, "clerk_transactions", str(legacy_id))
 
         runtime = _cloud_runtime()
         outbox = runtime.get("outbox")
@@ -2749,11 +2753,11 @@ def _cloud_enqueue_mutation(entity, legacy_id, record=None, kind="upsert", trans
             clean_rec = record
             if canon == "settings" and isinstance(record, dict) and "database_mode" in record:
                 clean_rec = {k: v for k, v in record.items() if k != "database_mode"}
-            elif canon == "crm_devices" and isinstance(record, dict) and "clerk_id" in record:
-                clean_rec = {k: v for k, v in record.items() if k != "clerk_id"}
             wire_record = mapper.to_row(canon, clean_rec, source_installation_id=inst)
             if canon == "customer_transactions":
                 cloud_id = wire_record["id"]
+            elif canon == "clerk_transactions" and not cloud_id:
+                cloud_id = mapper.legacy_to_uuid(inst, "clerk_transactions", wire_record["id"])
 
         op = {
             "kind": kind,
@@ -14414,6 +14418,30 @@ class Handler(BaseHTTPRequestHandler):
                     _cloud_enqueue_mutation("crm_devices", record.get("id"), record)
                 elif action == "delete":
                     _cloud_enqueue_mutation("crm_devices", record_id, kind="delete")
+            elif entity == "clerk":
+                if action in ("add", "update") and isinstance(record, dict):
+                    _cloud_enqueue_mutation("clerks", record.get("id"), record)
+                elif action == "delete":
+                    c_data = crm_mod.store_read()
+                    clerk_rec = next((c for c in c_data.get("clerks", []) if c.get("id") == record_id), None)
+                    if clerk_rec:
+                        _cloud_enqueue_mutation("clerks", record_id, clerk_rec)
+                    else:
+                        _cloud_enqueue_mutation("clerks", record_id, kind="delete")
+                elif action == "tx" and isinstance(record, dict):
+                    tx_rec = {**record, "clerk_id": record_id}
+                    _cloud_enqueue_mutation("clerk_transactions", record.get("id"), tx_rec)
+                elif action == "void_tx" and isinstance(record, dict):
+                    rev_rec = {**record, "clerk_id": record_id}
+                    _cloud_enqueue_mutation("clerk_transactions", record.get("id"), rev_rec)
+                    orig_id = record.get("reversal_of")
+                    if orig_id:
+                        c_data = crm_mod.store_read()
+                        clerk_obj = next((c for c in c_data.get("clerks", []) if c.get("id") == record_id), None)
+                        if clerk_obj:
+                            orig_tx = next((t for t in clerk_obj.get("transactions", []) if t.get("id") == orig_id), None)
+                            if orig_tx:
+                                _cloud_enqueue_mutation("clerk_transactions", orig_id, {**orig_tx, "clerk_id": record_id})
         except Exception:
             pass
         payload = {"ok": True, "record": record}

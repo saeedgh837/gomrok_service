@@ -19,8 +19,8 @@ declare(strict_types=1);
 final class LegacyApply
 {
     private const ORDER = [
-        'periods', 'customers', 'owners', 'identities', 'crm_devices',
-        'customer_transactions', 'settings',
+        'periods', 'customers', 'owners', 'identities', 'clerks', 'crm_devices',
+        'customer_transactions', 'clerk_transactions', 'settings',
     ];
 
     /** @param array<string, mixed> $cfg */

@@ -27,8 +27,8 @@ final class Import
 {
     /** Insertion order that satisfies every foreign key in the schema. */
     private const ORDER = [
-        'periods', 'customers', 'owners', 'identities', 'crm_devices',
-        'customer_transactions', 'settings',
+        'periods', 'customers', 'owners', 'identities', 'clerks', 'crm_devices',
+        'customer_transactions', 'clerk_transactions', 'settings',
     ];
 
     /**

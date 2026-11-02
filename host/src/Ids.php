@@ -22,10 +22,10 @@ final class Ids
     /** Synthetic legacy id of the single settings row (spec §15.2). */
     public const SETTINGS_LEGACY_ID = 'settings/settings';
 
-    /** The seven spec §3 entities, in the order the client emits them. */
+    /** The spec §3 entities, in the order the client emits them. */
     public const ENTITIES = [
         'customers', 'customer_transactions', 'owners', 'identities',
-        'crm_devices', 'periods', 'settings',
+        'crm_devices', 'periods', 'settings', 'clerks', 'clerk_transactions',
     ];
 
     /** Entities whose `id` is minted by the client, so they carry no legacy id. */

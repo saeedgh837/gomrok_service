@@ -77,7 +77,7 @@ DEVICE = {
     "handed_at": "2026-09-02 09:00:00", "registered_at": "",
     "payment_confirmed_at": "", "code_delivered_at": "", "done_at": "",
     "last_inquiry_at": "", "notes": "sample case notes",
-    "advance_attempts": 0, "period_id": "aa11bb22",
+    "advance_attempts": 0, "period_id": "aa11bb22", "clerk_id": "cl01cl01",
     "created": "2026-09-01 10:12:00", "updated": "2026-09-05 14:00:00",
     "skipped_stages": [{"stage": "inquiry", "to": "ready_owner",
                         "at": "2026-09-01 11:00:00"}],
@@ -97,6 +97,20 @@ PERIOD_CLOSED = {
     "opened_at": "2026-09-01 00:00:00", "opened_by": "operator",
     "closed_at": "2026-09-06 18:00:00", "closed_by": "operator",
     "closed_reason": "sample month end",
+}
+
+CLERK_TRANSACTIONS = [
+    {"id": "tx01tx01", "at": "2026-09-02 10:00:00", "amount": 1000000,
+     "kind": "credit", "recipient_name": "Sample Clerk", "device_id": "d1d2d3d4",
+     "period_id": "aa11bb22", "note": "clerk fee", "voided_at": "",
+     "void_reason": "", "reversal_of": ""},
+]
+
+CLERK = {
+    "id": "cl01cl01", "name": "Sample Clerk", "mobile": "09120000005",
+    "notes": "sample clerk notes", "active": True,
+    "transactions": list(CLERK_TRANSACTIONS),
+    "created": "2026-09-01 10:00:00", "updated": "2026-09-05 14:00:00",
 }
 
 SETTINGS = {
@@ -126,6 +140,7 @@ def store_fixture():
         "identities": [dict(IDENTITY)],
         "devices": [dict(DEVICE)],
         "periods": [dict(PERIOD_OPEN), dict(PERIOD_CLOSED)],
+        "clerks": [dict(CLERK, transactions=copy.deepcopy(CLERK_TRANSACTIONS))],
         "settings": dict(SETTINGS),
     }
 
@@ -747,6 +762,43 @@ class IncrementalTests(ApplyCase):
         document = self.read_store()
         self.assertEqual(document["customers"][1]["id"], "11223344")
         self.assertEqual(len(document["customers"][1]["transactions"]), 1)
+
+    def test_clerk_and_clerk_transaction_can_be_upserted_and_removed(self):
+        clerk_rec = {
+            "id": "cl99cl99", "name": "New Clerk", "mobile": "09121112233",
+            "notes": "notes", "active": True,
+            "created": "2026-09-01 10:00:00", "updated": "2026-09-01 10:00:00",
+        }
+        wire_clerk = wire("clerks", clerk_rec)
+        report = self.changes(
+            change("clerks", "cl99cl99", wire_clerk, seq=100, row_version=1))
+        self.assertEqual(report.applied, 1)
+        store = self.read_store()
+        clerk = next((c for c in store.get("clerks", []) if c.get("id") == "cl99cl99"), None)
+        self.assertIsNotNone(clerk)
+        self.assertEqual(clerk["name"], "New Clerk")
+
+        tx_rec = {
+            "id": "tx99tx99", "clerk_id": "cl99cl99", "at": "2026-09-02 10:00:00",
+            "amount": 2500000, "kind": "payment", "recipient_name": "New Clerk",
+            "device_id": "", "period_id": "", "note": "payment 1",
+            "voided_at": "", "void_reason": "", "reversal_of": "",
+        }
+        wire_tx = wire("clerk_transactions", tx_rec)
+        report = self.changes(
+            change("clerk_transactions", "tx99tx99", wire_tx, seq=101, row_version=1))
+        self.assertEqual(report.applied, 1)
+        store = self.read_store()
+        clerk = next((c for c in store.get("clerks", []) if c.get("id") == "cl99cl99"), None)
+        self.assertEqual(len(clerk["transactions"]), 1)
+        self.assertEqual(clerk["transactions"][0]["amount"], 2500000)
+
+        report = self.changes(
+            change("clerk_transactions", "tx99tx99", None, seq=102, row_version=2, tombstone=True))
+        self.assertEqual(report.removed, 1)
+        store = self.read_store()
+        clerk = next((c for c in store.get("clerks", []) if c.get("id") == "cl99cl99"), None)
+        self.assertEqual(len(clerk["transactions"]), 0)
 
     def test_a_child_before_its_parent_is_rejected(self):
         tx_record = wire("customer_transactions",

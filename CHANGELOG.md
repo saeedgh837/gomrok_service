@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.18.3] - 2026-11-03
+
+### Fixed & Added
+
+- **Full Cloud Database Synchronization for Registration Clerks («همگام‌سازی کامل دیتابیس ابری برای متصدیان ثبت»).**
+  - Added `clerks` and `clerk_transactions` to client sync entity vocabulary (`cloud_sync.ids.ENTITIES`).
+  - Added MySQL migration `host/migrations/007_clerks.sql` creating `clerks`, `clerk_transactions`, and `crm_devices.clerk_id` foreign key.
+  - Updated server Schema (`host/src/Schema.php`), entity registry (`host/src/Ids.php`), dependency order (`host/src/Sync.php`), and import order (`host/src/Import.php`, `host/src/LegacyApply.php`).
+  - Added deterministic wire mapping and unnesting (`lift_clerk_transactions` / `restore_clerk_transactions`) in `cloud_sync/mapper.py`.
+  - Added snapshot materialization and incremental upsert/tombstone handling for clerks and clerk transactions in `cloud_sync/apply.py`.
+  - Wired all clerk mutations (`add`, `update`, `delete`, `tx`, `void_tx`) in `panel.py` into the cloud outbox queue.
+  - Enabled device `clerk_id` binding on cloud mutations and sync pulls so clerk assignments propagate across multiple connected desktops.
+
 ## [1.18.2] - 2026-11-02
 
 ### Changed
