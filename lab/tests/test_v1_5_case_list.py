@@ -45,7 +45,7 @@ def fn_body(js, name):
 
 
 TABLE_HEADERS = ("ردیف", "دستگاه", "مشتری", "مسافر", "سریال",
-                 "گام فعلی", "وضعیت", "شناسه پرونده", "تاریخ ایجاد")
+                 "گام فعلی", "وضعیت", "متصدی", "تاریخ ایجاد")
 
 
 class CaseListSourceTests(unittest.TestCase):

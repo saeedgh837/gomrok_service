@@ -9215,7 +9215,7 @@ function confirmYes(){var cb=_confirmCb;_confirmCb=null;DLG_BACK='';closeDlg();i
 function warnConfirmDlg(title,text,warningText,okLabel,cb,isDanger){
   _confirmCb=cb;
   openDlg('<h3>'+esc(title)+'</h3>'
-    +(warningText?'<div style="background:var(--card,#fff3cd);border:1px solid var(--border-warn,#ffeeba);color:var(--text-warn,#856404);padding:10px 14px;border-radius:6px;margin:10px 0 14px;font-size:13px;line-height:1.8">⚠️ <b>هشدار مهم:</b> '+esc(warningText)+'</div>':'')
+    +(warningText?'<div style="background:var(--card,#fff3cd);border:1px solid var(--border-warn,#ffeeba);color:var(--text-warn,#856404);padding:10px 14px;border-radius:6px;margin:10px 0 14px;font-size:13px;line-height:1.8">'+(ICONS.warn||'')+' <b>هشدار مهم:</b> '+esc(warningText)+'</div>':'')
     +'<p style="margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:1.9">'+esc(text)+'</p>'
     +'<div class="row" style="margin-top:10px"><button class="btn '+(isDanger!==false?'danger':'primary')+'" onclick="confirmYes()">'+esc(okLabel||'تأیید')+'</button>'
     +'<button class="btn" onclick="closeDlg()">انصراف</button></div>');
@@ -9305,8 +9305,10 @@ function crmWSync(){
 /* ================= lookups ================= */
 function findCustomer(id){return (STATE&&STATE.customers||[]).find(c=>c.id===id)||null;}
 function findOwner(id){return (STATE&&STATE.owners||[]).find(o=>o.id===id)||null;}
+function findClerk(id){return (STATE&&STATE.clerks||[]).find(c=>c.id===id)||null;}
 function custName(id){var c=findCustomer(id);return c?c.full_name:'—';}
 function ownerName(id){var o=findOwner(id);return o?(o.first_name+' '+o.last_name):'—';}
+function clerkName(id){var c=findClerk(id);return c?c.name:'—';}
 /* v1.6: voided transactions and their 'void' reversal rows never count
    toward any balance — the same skip predicate the server applies to its
    aggregates; every balance surface (table pills, KPIs, debtor rail) flows
@@ -9869,7 +9871,7 @@ function searchActive(){
 /* Search haystack shared by every device-based list: id, name, serials,
    passenger and customer names. */
 function devHay(d){
-  return [d.id,d.name,d.serial1,d.serial2,ownerName(d.owner_id),custName(d.customer_id)].join(' ');
+  return [d.id,d.name,d.serial1,d.serial2,ownerName(d.owner_id),custName(d.customer_id),clerkName(d.clerk_id)].join(' ');
 }
 /* devices tab: stage-chip filter + query over the period base set. The period
    rule is applied here too, so any caller that hands in a raw list still gets
@@ -10815,6 +10817,7 @@ function devicesHtml(){
     var est=d.estelam||{};
     var cust=custName(d.customer_id);
     var owner=ownerName(d.owner_id);
+    var clk=clerkName(d.clerk_id);
     return '<tr id="devcard-'+d.id+'" style="cursor:pointer" onclick="caseDetail(\''+d.id+'\')">'
       +'<td class="kbd">'+fa(i+1)+'</td>'
       +'<td><b>'+esc(d.name)+'</b></td>'
@@ -10825,7 +10828,7 @@ function devicesHtml(){
       +'<td><span class="pill '+((d.stage==='inquiry'&&est.status==='advanced')?'bad':(EST_PILL[est.status]||'n'))+'">'
         +((d.stage==='inquiry'&&est.status==='advanced')?'ثبت‌شده در گمرک — خطر!':(EST_FA[est.status]||esc(est.status||'—')))+'</span>'
         +(est.hamta_status?'<span class="pill '+(HAMTA_PILL[est.hamta_status]||'n')+'">همتا: '+(HAMTA_FA_CARD[est.hamta_status]||esc(est.hamta_status))+'</span>':'')+'</td>'
-      +'<td class="kbd" dir="ltr">'+esc(d.id)+'</td>'
+      +'<td>'+(clk&&clk!=='—'?'<span class="pill n">'+esc(clk)+'</span>':'<span class="muted">—</span>')+'</td>'
       +'<td class="kbd">'+esc(faDate(d.created))+'</td>'
       +'<td><div class="ibacts">'+caseShotBtn(d,'hamta')+caseShotBtn(d,'gomrok')+
         '<button type="button" class="ibtn" data-static="1" aria-label="جزئیات پرونده" data-tip="جزئیات پرونده" onclick="event.stopPropagation();caseDetail(\''+d.id+'\')">'+ICONS.eye+'</button></div></td></tr>';
@@ -10849,7 +10852,7 @@ function devicesHtml(){
       +(p ? '<button type="button" class="btn mini ghost" onclick="dlgPeriod(\''+p.id+'\')">'+ICONS.eye+' جزئیات دوره</button>' : '')
       +'</div></div>'
       +'<div class="tbl-wrap"><table class="casetbl">'
-      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
+      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>متصدی</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
       +rowsHtml+'</tbody></table></div></div>';
   }
 
@@ -10903,7 +10906,7 @@ function devicesHtml(){
       return toolbarHtml + periodGroupCardHtml(targetPeriod, rows, ds.length, colorIdx);
     }
     return toolbarHtml + '<div class="card tblcard"><div class="tbl-wrap"><table class="casetbl">'
-      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>شناسه پرونده</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
+      +'<thead><tr><th>ردیف</th><th>دستگاه</th><th>مشتری</th><th>مسافر</th><th>سریال</th><th>گام فعلی</th><th>وضعیت</th><th>متصدی</th><th>تاریخ ایجاد</th><th></th></tr></thead><tbody>'
       +rows+'</tbody></table></div></div>';
   }
 }

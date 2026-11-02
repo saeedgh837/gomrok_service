@@ -1,0 +1,2 @@
+03ddf4467a1b48823f6ccdc2a6b8c3cf7bc890fc230f7dced12493f51dab1d46  irica-v1.18.2-win64.zip
+89cba9d0616891491208f2d89c81af5a8388b3d805efd1775fd972bfe6beabfe  IRICA-Setup-v1.18.2.exe

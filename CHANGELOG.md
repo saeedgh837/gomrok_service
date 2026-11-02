@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.18.2] - 2026-11-02
+
+### Changed
+
+- **Devices List Column: Clerk Replaces Case ID («نمایش نام متصدی به‌جای شناسه پرونده در جدول دستگاه‌ها»).**
+  - Replaced the case ID («شناسه پرونده») column in the main devices table (`devicesHtml`) with the registration clerk («متصدی») pill badge.
+  - Added fast lookups `findClerk(id)` and `clerkName(id)`.
+  - Added clerk name to `devHay` search haystack so operators can search devices by clerk name directly from the search bar.
+  - Preserved case ID inside case detail dialog modal (`caseDetail`).
+
 ## [1.18.1] - 2026-11-02
 
 ### Added
