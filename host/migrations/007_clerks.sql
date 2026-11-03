@@ -14,7 +14,7 @@
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 
-CREATE TABLE clerks (
+CREATE TABLE IF NOT EXISTS clerks (
   id          CHAR(36)     NOT NULL,
   tenant_id   CHAR(36)     NOT NULL,
   legacy_id   VARCHAR(64)  NULL,
@@ -26,8 +26,7 @@ CREATE TABLE clerks (
   name        VARCHAR(80)  NOT NULL,
   mobile      VARCHAR(11)  NOT NULL DEFAULT '',
   notes       VARCHAR(500) NOT NULL DEFAULT '',
-  active      TINYINT(1)   NOT NULL DEFAULT 1
-              CHECK (active IN (0, 1)),
+  active      TINYINT(1)   NOT NULL DEFAULT 1,
   created     DATETIME     NULL,
   updated     DATETIME     NULL,
   PRIMARY KEY (id),
@@ -35,7 +34,7 @@ CREATE TABLE clerks (
   KEY ix_clerks_tenant_active (tenant_id, active),
   CONSTRAINT fk_clerks_tenant FOREIGN KEY (tenant_id) REFERENCES tenants (id),
   CONSTRAINT fk_clerks_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id),
-  CHECK (legacy_id IS NULL OR legacy_id <> '')
+  CONSTRAINT ck_clerks_legacy CHECK (legacy_id IS NULL OR legacy_id <> '')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE crm_devices
@@ -44,7 +43,7 @@ ALTER TABLE crm_devices
   ADD KEY ix_crm_devices_clerk (clerk_id),
   ADD CONSTRAINT fk_crm_devices_clerk FOREIGN KEY (clerk_id) REFERENCES clerks (id);
 
-CREATE TABLE clerk_transactions (
+CREATE TABLE IF NOT EXISTS clerk_transactions (
   id             CHAR(36)      NOT NULL,
   tenant_id      CHAR(36)      NOT NULL,
   legacy_id      VARCHAR(64)   NULL,
@@ -74,5 +73,5 @@ CREATE TABLE clerk_transactions (
   CONSTRAINT fk_clerk_tx_device FOREIGN KEY (device_id) REFERENCES crm_devices (id),
   CONSTRAINT fk_clerk_tx_period FOREIGN KEY (period_id) REFERENCES periods (id),
   CONSTRAINT fk_clerk_tx_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id),
-  CHECK (legacy_id IS NULL OR legacy_id <> '')
+  CONSTRAINT ck_clerk_tx_legacy CHECK (legacy_id IS NULL OR legacy_id <> '')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
