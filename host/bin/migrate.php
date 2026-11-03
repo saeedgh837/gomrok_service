@@ -150,14 +150,20 @@ foreach ($pending as $entry) {
                 . 'cannot be rolled back: drop the database and re-run.');
         }
     }
-    $db->insert('schema_migrations', [
+    $cols = (array) $db->query('SHOW COLUMNS FROM schema_migrations');
+    $colNames = array_column($cols, 'Field');
+    $trackerRow = [
         'version' => $entry['version'],
-        'description' => basename($entry['file']),
         'checksum' => $entry['checksum'],
         'applied_at' => gmdate('Y-m-d H:i:s'),
-        'applied_by' => substr((string) $db->queryValue('SELECT CURRENT_USER()'),
-            0, 64),
-    ]);
+    ];
+    if (in_array('description', $colNames, true)) {
+        $trackerRow['description'] = basename($entry['file']);
+    }
+    if (in_array('applied_by', $colNames, true)) {
+        $trackerRow['applied_by'] = substr((string) $db->queryValue('SELECT CURRENT_USER()'), 0, 64);
+    }
+    $db->insert('schema_migrations', $trackerRow);
     out('OK    ' . $entry['version'] . ' (' . count($statements)
         . ' statements)', $quiet);
 }

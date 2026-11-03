@@ -153,11 +153,20 @@ function setupMigrate(array $cfg): string
         foreach (setupSplitStatements($source) as $statement) {
             $db->pdo()->exec($statement);
         }
-        // Migration 001 creates the complete CLI-compatible tracker itself.
-        $db->insert('schema_migrations', ['version' => $entry['version'],
-            'description' => basename($entry['file']), 'checksum' => $entry['checksum'],
+        $cols = (array) $db->query('SHOW COLUMNS FROM schema_migrations');
+        $colNames = array_column($cols, 'Field');
+        $trackerRow = [
+            'version' => $entry['version'],
+            'checksum' => $entry['checksum'],
             'applied_at' => gmdate('Y-m-d H:i:s'),
-            'applied_by' => substr((string) $db->queryValue('SELECT CURRENT_USER()'), 0, 64)]);
+        ];
+        if (in_array('description', $colNames, true)) {
+            $trackerRow['description'] = basename($entry['file']);
+        }
+        if (in_array('applied_by', $colNames, true)) {
+            $trackerRow['applied_by'] = substr((string) $db->queryValue('SELECT CURRENT_USER()'), 0, 64);
+        }
+        $db->insert('schema_migrations', $trackerRow);
         $lines[] = 'APPLY ' . $entry['version'];
     }
     return implode("\n", $lines);
