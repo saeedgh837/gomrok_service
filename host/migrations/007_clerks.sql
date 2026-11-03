@@ -33,8 +33,7 @@ CREATE TABLE IF NOT EXISTS clerks (
   UNIQUE KEY uq_clerks_tenant_legacy (tenant_id, legacy_id),
   KEY ix_clerks_tenant_active (tenant_id, active),
   CONSTRAINT fk_clerks_tenant FOREIGN KEY (tenant_id) REFERENCES tenants (id),
-  CONSTRAINT fk_clerks_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id),
-  CONSTRAINT ck_clerks_legacy CHECK (legacy_id IS NULL OR legacy_id <> '')
+  CONSTRAINT fk_clerks_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE crm_devices
@@ -72,6 +71,5 @@ CREATE TABLE IF NOT EXISTS clerk_transactions (
   CONSTRAINT fk_clerk_tx_clerk FOREIGN KEY (clerk_id) REFERENCES clerks (id),
   CONSTRAINT fk_clerk_tx_device FOREIGN KEY (device_id) REFERENCES crm_devices (id),
   CONSTRAINT fk_clerk_tx_period FOREIGN KEY (period_id) REFERENCES periods (id),
-  CONSTRAINT fk_clerk_tx_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id),
-  CONSTRAINT ck_clerk_tx_legacy CHECK (legacy_id IS NULL OR legacy_id <> '')
+  CONSTRAINT fk_clerk_tx_deleted_by FOREIGN KEY (deleted_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
