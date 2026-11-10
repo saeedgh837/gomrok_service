@@ -268,7 +268,16 @@ class MigrationKeepsAccountsTests(unittest.TestCase):
 from test_v1_2_0_login_gate import _GateHarness  # noqa: E402
 
 
-class RequestAuthenticityTests(_GateHarness):
+class _AuthGateHarness(_GateHarness):
+    def setUp(self):
+        import panel
+        schedule = patch.object(panel, "_schedule_login_maintenance_check", return_value=None)
+        schedule.start()
+        self.addCleanup(schedule.stop)
+        super().setUp()
+
+
+class RequestAuthenticityTests(_AuthGateHarness):
     """A browser POST from anywhere but this panel must not land."""
 
     def _own_origin(self):
@@ -396,7 +405,7 @@ class RequestAuthenticityTests(_GateHarness):
         self.assertIn(status, (401, 302))
 
 
-class SessionCookieTests(_GateHarness):
+class SessionCookieTests(_AuthGateHarness):
     def test_session_cookie_is_httponly_and_strict(self):
         self.login()
         by_name = {c.split("=", 1)[0]: c for c in self.set_cookies}

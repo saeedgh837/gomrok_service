@@ -207,15 +207,76 @@ class TestSolverBridge(unittest.TestCase):
         if os.path.exists(checkpoint):
             self.assertGreater(os.path.getsize(checkpoint), 0, checkpoint)
 
-    def test_read_pil_on_real_captcha(self):
-        shot = os.path.join(_ROOT, "lab", "final", "hamta_cap_element.png")
-        if not os.path.exists(shot):
-            self.skipTest("aks-e recon nist")
-        from PIL import Image
-        solver = H.load_solver()
-        r = solver.read_pil(Image.open(shot))
-        self.assertIsInstance(r["number"], int)
-        self.assertGreaterEqual(r["confidence"], 0.0)
+    def test_read_pil_on_synthetic_captcha_inference_fixture(self):
+        # Exercise the real bridge, preprocessing and decoding without opening
+        # recon/customer screenshots or installed weights. Model accuracy is a
+        # separate artifact check; only inference is deterministic here.
+        import shutil
+        from types import ModuleType, SimpleNamespace
+        from unittest.mock import Mock, patch
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="hamta-inference-fixture-") as directory:
+            for name in ("live_solve", "onnx_solve", "config", "preprocess", "vocab", "utils", "number_decode"):
+                shutil.copyfile(os.path.join(_ROOT, "Hamta-solver", name + ".py"),
+                                os.path.join(directory, name + ".py"))
+            checkpoint = os.path.join(directory, "checkpoints")
+            os.makedirs(checkpoint)
+            model = os.path.join(checkpoint, "best.onnx")
+            with open(model, "wb") as handle:
+                handle.write(b"synthetic inference fixture, never parsed")
+            image = Image.new("RGB", (160, 60), "white")
+            ImageDraw.Draw(image).rectangle((20, 12, 140, 45), fill="black")
+            feeds = []
+
+            class InferenceFixture:
+                def __init__(self, *_args, **_kwargs):
+                    vocab = sys.modules["vocab"].VOCAB
+                    expected = vocab.normalize(sys.modules["number_decode"].spell(1234))
+                    self.log_probs = np.full((2 * len(expected) + 1, 1, len(vocab)), -12.0,
+                                             dtype=np.float32)
+                    self.log_probs[:, 0, vocab.blank_idx] = 0.0
+                    for index, char in enumerate(expected):
+                        self.log_probs[2 * index + 1, 0, vocab.blank_idx] = -12.0
+                        self.log_probs[2 * index + 1, 0, vocab.stoi[char]] = 0.0
+
+                def get_inputs(self):
+                    return [SimpleNamespace(name="synthetic-input")]
+
+                def get_outputs(self):
+                    return [SimpleNamespace(name="synthetic-output")]
+
+                def run(self, outputs, inputs):
+                    feeds.append((outputs, inputs))
+                    return [self.log_probs]
+
+            # Stub only the model-inference dependency before its package-level
+            # platform probes can spawn external utilities. Selection/bridge and
+            # read_pil/preprocessing/decoder code remain real trusted sources.
+            runtime = ModuleType("onnxruntime")
+            inference = Mock(side_effect=InferenceFixture)
+            runtime.InferenceSession = inference
+            absent = object()
+            previous = sys.modules.get("onnxruntime", absent)
+            sys.modules["onnxruntime"] = runtime
+            try:
+                with patch.object(H, "_SOLVER_DIR", directory):
+                    solver = H.load_solver()
+                    result = solver.read_pil(image)
+            finally:
+                if previous is absent:
+                    sys.modules.pop("onnxruntime", None)
+                else:
+                    sys.modules["onnxruntime"] = previous
+            inference.assert_called_once_with(model, providers=["CPUExecutionProvider"])
+            self.assertEqual(result["number"], 1234)
+            self.assertGreaterEqual(result["confidence"], 0.99)
+            self.assertEqual(result["snap_distance"], 0)
+            self.assertEqual(feeds[0][0], ["synthetic-output"])
+            tensor = feeds[0][1]["synthetic-input"]
+            self.assertEqual(tensor.shape, (1, 1, 48, 512))
+            self.assertEqual(tensor.dtype, np.float32)
 
 
 if __name__ == "__main__":

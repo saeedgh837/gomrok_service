@@ -88,42 +88,61 @@ class ExtractPaymentLinkTests(unittest.TestCase):
 
 
 class HandleAlreadyRegisteredTests(unittest.TestCase):
-    MESSAGE = "قبلاً این پروفایل لینک پرداخت گرفته است"
+    MESSAGE = "Existing prepayment output accepted for the current attempt"
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="already-reg-")
-        self._shots = gomrok._SCREENSHOTS_DIR
-        gomrok._SCREENSHOTS_DIR = self.tmp
-
-    def tearDown(self):
-        gomrok._SCREENSHOTS_DIR = self._shots
+        temporary = tempfile.TemporaryDirectory(prefix="already-reg-")
+        self.tmp = temporary.name
+        self.addCleanup(temporary.cleanup)
+        paths = patch.multiple(panel,
+            PROFILES_PATH=os.path.join(self.tmp, "profiles.json"),
+            INPUTS_PATH=os.path.join(self.tmp, "inputs.json"),
+            _STORE_LOCK_PATH=os.path.join(self.tmp, "profiles.json.lock"))
+        paths.start()
+        self.addCleanup(paths.stop)
+        shots = patch.object(gomrok, "_SCREENSHOTS_DIR", self.tmp)
+        shots.start()
+        self.addCleanup(shots.stop)
+        panel._LAST_GOOD_STORE.clear()
+        panel.save_store({"active_id": "p1", "profiles": [{
+            "id": "p1", "title": "Synthetic passenger", "national": "0012345679",
+            "birth": "1375/04/29", "mobile": "09121234567", "passport": "PP0000001",
+            "imeis": ["352506099000001"], "registration_status": "pending",
+        }]})
 
     def _run(self, screenshot_ok=True, profile_id="p1", record_ok=True):
         self.logged = []
         self.delivered = []
         self.outputs = []
-        self.success_marks = []
+        self.claim = panel.claim_profile("p1") if profile_id else None
+        if profile_id:
+            self.assertIsNotNone(self.claim)
+        runner = self.claim["runner_id"] if self.claim else ""
+        fingerprint = self.claim["claimed_identity_fingerprint"] if self.claim else ""
 
         def fake_shot(_driver, path):
             if screenshot_ok:
-                with open(path, "wb") as f:
-                    f.write(b"\x89PNG\r\n\x1a\n")
+                with open(path, "wb") as handle:
+                    handle.write(bytes((137, 80, 78, 71, 13, 10, 26, 10)))
             return screenshot_ok
 
         driver = FakeDriver([gomrok.WP_PARDAKHT], onclick=ONCLICK)
         with patch.object(gomrok, "_full_screenshot", side_effect=fake_shot), \
-             patch.object(gomrok, "log_event",
-                          side_effect=lambda *a, **k: self.logged.append((a, k))), \
-             patch.object(gomrok, "_telegram_deliver",
-                          side_effect=lambda kind, **k: self.delivered.append((kind, k)) or True), \
-             patch.object(gomrok, "_record_panel_output",
-                          side_effect=lambda *a, **k: self.outputs.append((a, k)) or record_ok), \
-             patch.object(panel, "mark_profile_success",
-                          side_effect=lambda *a, **k: self.success_marks.append((a, k)) or True), \
-             patch.object(gomrok, "_CLAIMED_PROFILE_ID", profile_id), \
-             patch.object(gomrok, "_CLAIMED_RUNNER_ID", "r1"):
-            link = gomrok.handle_already_registered(
-                driver, title="Ali", national="0012345678", imei="352506099000001")
+                patch.object(gomrok, "log_event",
+                             side_effect=lambda *a, **k: self.logged.append((a, k))), \
+                patch.object(gomrok, "_telegram_deliver",
+                             side_effect=lambda kind, **k: self.delivered.append((kind, k)) or True), \
+                patch.object(panel, "publish_profile_result", wraps=panel.publish_profile_result) as publish, \
+                patch.object(gomrok, "_CLAIMED_PROFILE_ID", profile_id), \
+                patch.object(gomrok, "_CLAIMED_RUNNER_ID", runner), \
+                patch.object(gomrok, "_CLAIMED_FINGERPRINT", fingerprint if record_ok else "wrong-fingerprint"), \
+                patch.object(gomrok, "_CLAIMED_CRM_DEVICE_ID", ""), \
+                patch.object(gomrok, "_CLAIMED_IDENTITY_VERIFIED", False):
+            try:
+                link = gomrok.handle_already_registered(
+                    driver, title="Ali", national="0012345679", imei="352506099000001")
+            finally:
+                self.outputs = list(publish.call_args_list)
         return link, driver
 
     def test_returns_and_persists_the_payment_link(self):
@@ -136,46 +155,49 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
 
     def test_saves_an_invoice_screenshot(self):
         self._run()
-        shots = [n for n in os.listdir(self.tmp) if n.endswith("_already_paid.png")]
+        shots = [n for n in os.listdir(self.tmp) if n.endswith("_existing_prepayment.png")]
         self.assertEqual(len(shots), 1)
 
-    def test_logs_a_success_row_with_the_persian_message(self):
+    def test_logs_success_only_after_current_publication_is_accepted(self):
         self._run()
         self.assertEqual(len(self.logged), 1)
         args, kwargs = self.logged[0]
         self.assertEqual(args[0], "success")          # NOT "error" — user's decision
         self.assertIn(self.MESSAGE, args[1])
-        self.assertIn(PAY_LINK, args[1])
+        self.assertNotIn(PAY_LINK, args[1])
         self.assertEqual(kwargs["imei"], "352506099000001")
         self.assertEqual(kwargs["title"], "Ali")
-        self.assertIn("faktor", kwargs["step"])
+        self.assertEqual(kwargs["step"], "prepayment")
 
     def test_sends_a_telegram_photo_with_the_message_and_link(self):
         self._run()
         self.assertEqual(len(self.delivered), 1)
         kind, kwargs = self.delivered[0]
         self.assertEqual(kind, "photo")
-        self.assertIn(self.MESSAGE, kwargs["caption"])
+        self.assertIn("Current registration prepayment", kwargs["caption"])
         self.assertIn(PAY_LINK, kwargs["caption"])
-        self.assertTrue(kwargs["photo_path"].endswith("_already_paid.png"))
+        self.assertTrue(kwargs["photo_path"].endswith("_existing_prepayment.png"))
 
     def test_falls_back_to_a_text_message_when_the_screenshot_fails(self):
         self._run(screenshot_ok=False)
         kind, kwargs = self.delivered[0]
         self.assertEqual(kind, "text")
-        self.assertIn(self.MESSAGE, kwargs["text"])
+        self.assertIn("Current registration prepayment", kwargs["text"])
 
-    def test_marks_the_profile_success_via_record_output(self):
+    def test_marks_the_profile_success_via_exact_publication(self):
         self._run()
         self.assertEqual(len(self.outputs), 1)
-        args, _kwargs = self.outputs[0]
-        # _record_panel_output(profile_id, runner_id, receipt, payment, link)
-        self.assertEqual(args[0], "p1")
-        self.assertEqual(args[1], "r1")
-        self.assertTrue(str(args[2]).endswith("_already_paid.png"))   # receipt
-        self.assertEqual(args[4], PAY_LINK)                            # link
-        # success path must never block the profile
-        self.assertEqual(self.success_marks, [])
+        args = self.outputs[0].args
+        self.assertEqual(args[:3], ("p1", self.claim["runner_id"],
+                                   self.claim["claimed_identity_fingerprint"]))
+        result = args[3]
+        self.assertTrue(result["receipt"].endswith("_existing_prepayment.png"))
+        self.assertEqual(result["link"], PAY_LINK)
+        self.assertTrue(result["existing_prepayment"])
+        profile = panel.load_store()["profiles"][0]
+        self.assertEqual(profile["registration_status"], "success")
+        self.assertEqual(profile["payment_link"], PAY_LINK)
+        self.assertFalse(hasattr(panel, "mark_profile_success"))
 
     def test_does_not_block_the_profile(self):
         """This must NOT call mark_profile_unusable — user wants SUCCESS, not blocked."""
@@ -185,19 +207,22 @@ class HandleAlreadyRegisteredTests(unittest.TestCase):
         self.assertIsNone(re.search(r"mark_profile_unusable\s*\(", code))
         self.assertIsNone(re.search(r"_mark_panel_profile_unusable\s*\(", code))
 
-    def test_falls_back_to_mark_success_when_record_output_rejects(self):
-        self._run(record_ok=False)
-        self.assertEqual(len(self.outputs), 1)          # tried record first
-        self.assertEqual(len(self.success_marks), 1)    # then fell back
-        args, _kwargs = self.success_marks[0]
-        self.assertEqual(args[3], PAY_LINK)             # payment_link forwarded
+    def test_rejected_publication_has_no_legacy_fallback_or_success_notice(self):
+        with self.assertRaises(panel.ProfileIdentityStopped):
+            self._run(record_ok=False)
+        self.assertEqual(len(self.outputs), 1)
+        self.assertEqual(self.outputs[0].args[2], "wrong-fingerprint")
+        self.assertEqual(self.logged, [])
+        self.assertEqual(self.delivered, [])
+        self.assertEqual(panel.load_store()["profiles"][0]["payment_link"], "")
+        self.assertFalse(hasattr(panel, "mark_profile_success"))
 
-    def test_works_without_a_claimed_profile(self):
-        link, _ = self._run(profile_id="")
-        self.assertEqual(link, PAY_LINK)
+    def test_unclaimed_output_is_not_published_or_announced(self):
+        with self.assertRaises(panel.ProfileIdentityStopped):
+            self._run(profile_id="")
         self.assertEqual(self.outputs, [])
-        self.assertEqual(self.success_marks, [])
-        self.assertEqual(len(self.logged), 1)
+        self.assertEqual(self.logged, [])
+        self.assertEqual(self.delivered, [])
 
 
 class PanelMarksSuccessTests(unittest.TestCase):
@@ -212,17 +237,23 @@ class PanelMarksSuccessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):
             panel._LAST_GOOD_STORE.clear()
             panel.save_store({"active_id": "p1", "profiles": [{
-                "id": "p1", "title": "Ali", "run_status": "busy",
-                "runner_id": "r1", "runner_pid": 4242,
+                "id": "p1", "title": "Ali", "national": "0012345679",
+                "birth": "1375/04/29", "mobile": "09121234567", "passport": "PP0000001",
+                "imeis": ["352506099000001"], "registration_status": "pending",
             }]})
-            ok = panel.record_profile_output("p1", "r1",
-                                             receipt="C:\\shots\\inv.png",
-                                             payment="", link=PAY_LINK)
+            claimed = panel.claim_profile("p1")
+            self.assertIsNotNone(claimed)
+            receipt = os.path.join(tmp, "inv.png")
+            ok = panel.record_profile_output(
+                "p1", claimed["runner_id"], receipt=receipt, payment="", link=PAY_LINK,
+                expected_fingerprint=claimed["claimed_identity_fingerprint"])
             self.assertTrue(ok)
             profile = panel.load_store()["profiles"][0]
             self.assertEqual(profile["registration_status"], "success")
             self.assertEqual(profile["payment_link"], PAY_LINK)
-            self.assertEqual(profile["receipt_screenshot"], "C:\\shots\\inv.png")
+            self.assertEqual(profile["receipt_screenshot"], receipt)
+            self.assertTrue(panel.release_profile("p1", claimed["runner_id"]))
+            self.assertEqual(panel.load_store()["profiles"][0]["run_status"], "idle")
 
     def test_a_success_profile_cannot_be_started_again(self):
         with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):

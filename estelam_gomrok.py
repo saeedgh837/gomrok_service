@@ -775,4 +775,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    from maintenance_gate import run_job
+    sys.exit(run_job(main) or 0)

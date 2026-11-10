@@ -1,9 +1,7 @@
-"""Tests for the auto-update hook in captcha_collector.
+"""Read-only compatibility hooks and explicitly confirmed manual updates.
 
-The hook decides WHICH driver copy to refresh, and must never let a failed
-repair break a robot launch. All offline: the updater itself is patched, the
-cooldown marker is redirected to a temp file, and nothing touches the live
-data dir or the network.
+All updater calls are patched, marker/lock files are temporary, and no test
+starts a real driver, proxy or external connection.
 """
 import json
 import os
@@ -14,39 +12,30 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import captcha_collector as cc
 import chromedriver_updater
 
 
-# A separate interpreter that holds the byte-range lock exactly the way the hook
-# does. In a subprocess so the test proves real cross-process exclusion rather
-# than asserting against a mock of it. It announces itself with a sentinel file
-# and not with stdout: a child's stdout reaches the parent only when the child
-# exits, so a pipe handshake would return after the holder's sleep, by which
-# time the lock is already released and the assertion proves nothing.
-_LOCK_HOLDER = """
-import os, sys, time, msvcrt
-fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)
-msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-with open(sys.argv[3], "w", encoding="utf-8") as ready:
-    ready.write("locked")
-time.sleep(float(sys.argv[2]))
-os.close(fd)
-"""
-
-
-def _hold_lock_in_another_process(test, seconds=30):
-    """Start a second process that holds the lock, and return only once that
-    process is demonstrably holding it; the caller kills it."""
-    ready = os.path.join(test.tmp, "holder_ready")
+# This fixed scratch-only fixture runs the public updater with a synthetic
+# blocked download, proving cross-process exclusion without installing a driver.
+def _hold_lock_in_another_process(test, primary=None, extras=()):
+    primary = primary or test.target
+    ready = os.path.join(test.tmp, "holder_ready_" + str(time.monotonic_ns()))
+    manifest = ready + ".json"
+    data_root = os.path.join(test.tmp, "other_data_root")
+    os.makedirs(data_root, exist_ok=True)
+    with open(manifest, "w", encoding="utf-8") as stream:
+        json.dump({"primary": primary, "extras": list(extras),
+                   "data_root": data_root}, stream)
     child = subprocess.Popen(
-        [sys.executable, "-u", "-c", _LOCK_HOLDER,
-         cc._driver_update_lock_path(), str(seconds), ready],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        [sys.executable, "-I", "-B", os.path.abspath(__file__),
+         "--driver-lock-worker", "hold", manifest, ready],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True)
     test.addCleanup(child.kill)
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 10
     while not os.path.exists(ready):
         if child.poll() is not None:
             test.fail("the holder process exited before taking the lock: "
@@ -103,47 +92,34 @@ class HookTests(unittest.TestCase):
         self._patch_marker.start()
         self.addCleanup(self._patch_marker.stop)
 
-    def test_attempt_is_latched_to_one_per_process(self):
-        calls = []
+    def test_read_only_checks_never_consume_the_process_latch(self):
+        with patch.object(cc, "_read_major_version", return_value=153), \
+                patch.object(chromedriver_updater, "update_chromedriver") as upd:
+            first = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+            second = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+        self.assertEqual(first["status"], "consent-required")
+        self.assertEqual(second["status"], "consent-required")
+        self.assertFalse(cc._DRIVER_UPDATE_LATCH["done"])
+        upd.assert_not_called()
 
-        def fake_update(**kwargs):
-            calls.append(kwargs)
-            return {"status": "failed", "detail": "nope", "target": "t",
-                    "version": ""}
-
-        with patch.object(chromedriver_updater, "update_chromedriver",
-                          side_effect=fake_update):
-            cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-            cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        self.assertEqual(len(calls), 1)
-
-    def test_cooldown_blocks_a_later_attempt(self):
+    def test_cooldown_does_not_hide_the_consent_requirement(self):
         with open(self.marker, "w", encoding="utf-8") as handle:
             handle.write('{"at": %f}' % time.time())
         self.assertTrue(cc._driver_update_cooling_down())
         with patch.object(chromedriver_updater, "update_chromedriver") as upd:
-            self.assertIsNone(
-                cc.maybe_update_chromedriver("/x/chromedriver.exe", 154))
+            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+        self.assertEqual(result["status"], "consent-required")
         upd.assert_not_called()
 
-    def test_a_cooling_down_process_keeps_its_one_attempt(self):
-        """Cooling down is not an attempt. If it consumed the per-process latch
-        a long-lived caller would never repair the driver once the cooldown
-        expired, which is the exact case the latch exists to allow."""
-        with open(self.marker, "w", encoding="utf-8") as handle:
-            handle.write('{"at": %f}' % time.time())
-        self.assertIsNone(cc.maybe_update_chromedriver("/x/chromedriver.exe", 154))
-        self.assertFalse(cc._DRIVER_UPDATE_LATCH["done"])
-
-        with open(self.marker, "w", encoding="utf-8") as handle:
-            handle.write('{"at": %f}'
-                         % (time.time() - cc.DRIVER_UPDATE_COOLDOWN_SECONDS - 10))
-        with patch.object(chromedriver_updater, "update_chromedriver",
-                          return_value={"status": "up-to-date", "detail": "",
-                                        "target": "t", "version": "154"}) as upd:
-            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        upd.assert_called_once()
-        self.assertEqual(result["status"], "up-to-date")
+    def test_cooldown_expiry_never_authorizes_a_later_install(self):
+        with patch.object(chromedriver_updater, "update_chromedriver") as upd:
+            for age in (0, cc.DRIVER_UPDATE_COOLDOWN_SECONDS + 10):
+                with open(self.marker, "w", encoding="utf-8") as handle:
+                    handle.write('{"at": %f}' % (time.time() - age))
+                result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+                self.assertEqual(result["status"], "consent-required")
+                self.assertFalse(cc._DRIVER_UPDATE_LATCH["done"])
+        upd.assert_not_called()
 
     def test_stale_marker_does_not_cool_down(self):
         with open(self.marker, "w", encoding="utf-8") as handle:
@@ -151,58 +127,38 @@ class HookTests(unittest.TestCase):
                          % (time.time() - cc.DRIVER_UPDATE_COOLDOWN_SECONDS - 10))
         self.assertFalse(cc._driver_update_cooling_down())
 
-    def test_no_attempt_without_a_path_or_a_major(self):
-        with patch.object(chromedriver_updater, "update_chromedriver") as upd:
-            self.assertIsNone(cc.maybe_update_chromedriver("", 154))
-            self.assertIsNone(cc.maybe_update_chromedriver("/x/chromedriver.exe", None))
+    def test_no_install_without_a_path_or_a_major(self):
+        with patch.object(chromedriver_updater, "update_chromedriver") as upd, \
+                patch.object(cc, "_read_major_version", return_value=154):
+            missing = cc.maybe_update_chromedriver("", 154)
+            unknown = cc.maybe_update_chromedriver("/x/chromedriver.exe", None)
+        self.assertEqual(missing["status"], "consent-required")
+        self.assertEqual(unknown["status"], "no-browser-version")
         upd.assert_not_called()
 
-    def test_a_raising_updater_is_reported_not_propagated(self):
+    def test_a_raising_updater_is_never_called_from_the_hook(self):
         with patch.object(chromedriver_updater, "update_chromedriver",
-                          side_effect=RuntimeError("boom")):
+                          side_effect=RuntimeError("boom")) as upd:
             result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("boom", result["detail"])
+        self.assertEqual(result["status"], "consent-required")
+        upd.assert_not_called()
 
-    def test_a_missing_updater_module_burns_no_cooldown_and_says_so(self):
-        """A bundle shipped without chromedriver_updater imports the panel fine
-        and only fails here, the first time a robot launch needs the driver
-        refreshed. Recording the attempt before the import would have silenced
-        the repair for the whole cooldown window with nothing in the log to
-        explain it: the operator would just see launches fail on a version
-        mismatch they have no way to connect to a missing file."""
-        # None in sys.modules is how a failed `import x` is simulated: it makes
-        # the statement raise ImportError rather than return the loaded module.
+    def test_a_missing_updater_module_does_not_affect_read_only_checks(self):
         with patch.dict(sys.modules, {"chromedriver_updater": None}):
-            with patch("builtins.print") as printed:
-                result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        self.assertIsNone(result)
-        # No attempt was recorded, so no cooldown started: the next process is
-        # free to repair the driver rather than waiting out a window that was
-        # never used.
+            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+        self.assertEqual(result["status"], "consent-required")
+        self.assertIn("confirm", result["detail"].lower())
         self.assertFalse(os.path.exists(self.marker))
         self.assertFalse(cc._driver_update_cooling_down())
-        said = " ".join(str(a) for call in printed.call_args_list
-                        for a in call.args)
-        self.assertIn("ChromeDriver auto-update is unavailable", said)
 
-    def test_the_automatic_attempt_gets_a_tight_budget(self):
-        """The hook runs on the launch path: it must ask the updater for a
-        budget well under the updater's own default, or a slow tunnel would
-        hold the robot start."""
-        calls = []
-
-        def fake_update(**kwargs):
-            calls.append(kwargs)
-            return {"status": "failed", "detail": "no", "target": "t",
-                    "version": ""}
-
-        with patch.object(chromedriver_updater, "update_chromedriver",
-                          side_effect=fake_update):
-            cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        budget = calls[0]["total"]
-        self.assertEqual(budget, cc.DRIVER_UPDATE_AUTO_BUDGET_SECONDS)
-        self.assertLess(budget, chromedriver_updater.RETRY_TOTAL_SECONDS)
+    def test_the_launch_hook_never_spends_a_download_budget(self):
+        with patch.object(chromedriver_updater, "update_chromedriver") as upd, \
+                patch.object(chromedriver_updater, "_spawn_proxy_process") as spawn:
+            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+        self.assertEqual(result["status"], "consent-required")
+        upd.assert_not_called()
+        spawn.assert_not_called()
+        self.assertEqual(os.listdir(self.tmp), [])
 
     def test_the_marker_is_written_atomically(self):
         cc._mark_driver_update_attempt()
@@ -261,19 +217,18 @@ class CheckCompatIntegrationTests(unittest.TestCase):
     def setUp(self):
         cc._DRIVER_UPDATE_LATCH["done"] = False
 
-    def test_warning_is_cleared_when_the_update_succeeds(self):
-        majors = iter([153, 154])  # before the swap, then after
-
+    def test_warning_cannot_be_cleared_by_an_unapproved_update(self):
         with patch.object(cc, "_chrome_major_from_registry_or_path",
                           return_value=154), \
-                patch.object(cc, "_read_major_version",
-                             side_effect=lambda _p: next(majors)), \
-                patch.object(cc, "maybe_update_chromedriver",
-                             return_value={"status": "updated",
-                                           "detail": "installed 154",
-                                           "target": "t", "version": "154"}):
+                patch.object(cc, "_read_major_version", return_value=153) as read, \
+                patch.object(chromedriver_updater, "update_chromedriver") as upd:
             problem = cc.check_driver_compat("/x/chromedriver.exe")
-        self.assertEqual(problem, "")
+        self.assertIn("153", problem)
+        self.assertIn("154", problem)
+        self.assertIn("confirm", problem.lower())
+        self.assertTrue(problem.isascii())
+        upd.assert_not_called()
+        self.assertLessEqual(read.call_count, 2)
 
     def test_warning_stands_when_the_update_fails(self):
         with patch.object(cc, "_chrome_major_from_registry_or_path",
@@ -298,11 +253,9 @@ class CheckCompatIntegrationTests(unittest.TestCase):
 
 
 class ManualUpdateTests(unittest.TestCase):
-    """update_chromedriver_now: the launch page's button, not the launch path.
+    """The confirmed manual action ignores obsolete automatic cooldown/latches.
 
-    A person clicked it and is waiting, so it must not be latched or cooled
-    down the way an automatic attempt is, and it must not consume the cooldown
-    a later robot start needs.
+    Each call carries its own explicit consent and shares one installation lock.
     """
 
     def setUp(self):
@@ -314,16 +267,19 @@ class ManualUpdateTests(unittest.TestCase):
             cc, "_driver_update_marker_path", return_value=self.marker)
         self._patch_marker.start()
         self.addCleanup(self._patch_marker.stop)
+        self.target = os.path.join(self.tmp, "chromedriver.exe")
         for name, value in (("_chrome_major_from_registry_or_path", 154),
-                            ("resolve_chromedriver", "/x/chromedriver.exe")):
-            item = patch.object(cc, name, return_value=value)
+                            ("resolve_chromedriver", self.target),
+                            ("HERE", self.tmp)):
+            item = (patch.object(cc, name, value) if name == "HERE"
+                    else patch.object(cc, name, return_value=value))
             item.start()
             self.addCleanup(item.stop)
 
     def _call(self, **kwargs):
         with patch.object(chromedriver_updater, "update_chromedriver",
                           **kwargs) as upd:
-            result = cc.update_chromedriver_now()
+            result = cc.update_chromedriver_now(consent=True)
         return result, upd
 
     def test_manual_update_ignores_the_process_latch(self):
@@ -395,7 +351,7 @@ class ManualUpdateTests(unittest.TestCase):
                                         "target": "t", "version": ""}), \
                 patch.object(chromedriver_updater, "read_exe_version",
                              return_value="154.0.8037.92"):
-            result = cc.update_chromedriver_now()
+            result = cc.update_chromedriver_now(consent=True)
         self.assertEqual(result["status"], "up-to-date")
         self.assertEqual(result["version"], "154.0.8037.92")
 
@@ -407,7 +363,7 @@ class ManualUpdateTests(unittest.TestCase):
         child = _hold_lock_in_another_process(self)
         try:
             with patch.object(chromedriver_updater, "update_chromedriver") as upd:
-                result = cc.update_chromedriver_now()
+                result = cc.update_chromedriver_now(consent=True)
             upd.assert_not_called()
             self.assertEqual(result["status"], "busy")
             self.assertFalse(cc._DRIVER_UPDATE_BUSY.locked())
@@ -431,11 +387,11 @@ class ManualUpdateTests(unittest.TestCase):
         with patch.object(chromedriver_updater, "update_chromedriver",
                           side_effect=slow_update):
             worker = threading.Thread(
-                target=lambda: finished.update(cc.update_chromedriver_now()))
+                target=lambda: finished.update(cc.update_chromedriver_now(consent=True)))
             worker.start()
             try:
                 self.assertTrue(running.wait(10), "the first update never ran")
-                second = cc.update_chromedriver_now()
+                second = cc.update_chromedriver_now(consent=True)
             finally:
                 release.set()
                 worker.join(10)
@@ -445,71 +401,165 @@ class ManualUpdateTests(unittest.TestCase):
 
 
 class CrossProcessLockTests(unittest.TestCase):
-    """The cooldown marker makes two simultaneous attempts unlikely; this lock
-    makes them impossible. It is an OS-held byte range, released the instant the
-    holder exits, so a robot killed mid-update can never leave the updater
-    wedged the way a lock file with a staleness rule could."""
+    """Resource-scoped kernel exclusion spans independent application data roots."""
 
     def setUp(self):
         cc._DRIVER_UPDATE_LATCH["done"] = False
         self.tmp = tempfile.mkdtemp(prefix="driver_lock_")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.marker = os.path.join(self.tmp, "driver_update_last.json")
-        self._patch_marker = patch.object(
-            cc, "_driver_update_marker_path", return_value=self.marker)
-        self._patch_marker.start()
-        self.addCleanup(self._patch_marker.stop)
+        self.target = os.path.join(self.tmp, "chromedriver.exe")
+        self.extra = os.path.join(self.tmp, "shared_chromedriver.exe")
+        data_root = os.path.join(self.tmp, "parent_data_root")
+        os.makedirs(data_root)
+        environment = patch.dict(os.environ, {"IRICA_DATA_DIR": data_root})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.marker = os.path.join(data_root, "driver_update_last.json")
+        for name, options in (
+                ("_driver_update_marker_path", {"return_value": self.marker}),
+                ("_chrome_major_from_registry_or_path", {"return_value": 154}),
+                ("resolve_chromedriver", {"return_value": self.target})):
+            item = patch.object(cc, name, **options)
+            item.start()
+            self.addCleanup(item.stop)
+        item = patch.object(cc, "HERE", self.tmp)
+        item.start()
+        self.addCleanup(item.stop)
 
-    def test_the_lock_file_lives_beside_the_marker(self):
-        """Deriving the lock from the marker path is what keeps a test run from
-        creating a lock in the live data directory: redirect the marker and the
-        lock follows it."""
-        self.assertEqual(cc._driver_update_lock_path(),
-                         os.path.join(self.tmp, cc.DRIVER_UPDATE_LOCK))
+    def test_lock_names_are_canonical_deduplicated_and_ordered(self):
+        alias = os.path.join(self.tmp, ".", "CHROMEDRIVER.EXE")
+        first = cc._driver_update_mutex_names(self.target, (self.extra, alias))
+        second = cc._driver_update_mutex_names(self.extra, (self.target,))
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(first, tuple(sorted(first)))
+        self.assertTrue(all(name.startswith("Local\\IRICA_ChromeDriver_") for name in first))
+        self.assertNotIn(self.tmp, " ".join(first))
 
-    @unittest.skipUnless(os.name == "nt", "the lock is an msvcrt byte range")
-    def test_a_process_holding_the_lock_blocks_the_attempt(self):
+    @unittest.skipUnless(os.name == "nt", "Windows named-mutex test")
+    def test_a_process_in_another_data_root_blocks_the_same_target(self):
         child = _hold_lock_in_another_process(self)
         try:
             with patch.object(chromedriver_updater, "update_chromedriver") as upd:
-                result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+                result = cc.update_chromedriver_now(self.target, consent=True)
             upd.assert_not_called()
-            self.assertIsNone(result)
-            # losing the race is not an attempt, so the latch stays free
+            self.assertEqual(result["status"], "busy")
             self.assertFalse(cc._DRIVER_UPDATE_LATCH["done"])
+            self.assertFalse(cc._DRIVER_UPDATE_BUSY.locked())
         finally:
             child.kill()
+            child.wait(10)
 
-    @unittest.skipUnless(os.name == "nt", "the lock is an msvcrt byte range")
+    @unittest.skipUnless(os.name == "nt", "Windows named-mutex test")
+    def test_a_shared_secondary_target_blocks_another_primary(self):
+        other = os.path.join(self.tmp, "other_primary.exe")
+        child = _hold_lock_in_another_process(self, other, (self.extra,))
+        try:
+            with patch.object(cc, "_driver_update_targets",
+                              return_value=(self.target, (self.extra,))), \
+                    patch.object(chromedriver_updater, "update_chromedriver") as upd:
+                result = cc.update_chromedriver_now(self.target, consent=True)
+            upd.assert_not_called()
+            self.assertEqual(result["status"], "busy")
+        finally:
+            child.kill()
+            child.wait(10)
+        # Refusal after acquiring a primary must release that partial lock set.
+        with patch.object(chromedriver_updater, "update_chromedriver", return_value={
+                "status": "updated", "detail": "synthetic", "version": "154.0.1.2",
+                "target": self.target}) as upd:
+            result = cc.update_chromedriver_now(self.target, consent=True)
+        upd.assert_called_once()
+        self.assertEqual(result["status"], "updated")
+
+    @unittest.skipUnless(os.name == "nt", "Windows named-mutex test")
     def test_the_lock_is_released_when_the_holder_is_killed(self):
-        """A robot killed mid-update must not wedge the updater, which is why
-        this is a kernel-held byte range rather than a lock file with a
-        staleness rule."""
         child = _hold_lock_in_another_process(self)
         child.kill()
         child.wait(10)
         with patch.object(chromedriver_updater, "update_chromedriver",
                           return_value={"status": "up-to-date", "detail": "",
                                         "target": "t", "version": "154"}) as upd:
-            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
+            result = cc.update_chromedriver_now(self.target, consent=True)
         upd.assert_called_once()
         self.assertEqual(result["status"], "up-to-date")
 
-    def test_an_unopenable_lock_file_still_allows_the_attempt(self):
-        """An unopenable lock file means no process can hold it. Refusing would
-        permanently disable self-repair on a machine whose data directory is
-        read-only, and concurrency is safe anyway because every install is
-        verified and atomically replaced."""
-        unopenable = os.path.join(self.tmp, "no_such_dir", "driver_update.lock")
-        with patch.object(cc, "_driver_update_lock_path",
-                          return_value=unopenable), \
-                patch.object(chromedriver_updater, "update_chromedriver",
-                             return_value={"status": "up-to-date", "detail": "",
-                                           "target": "t", "version": "154"}) as upd:
-            result = cc.maybe_update_chromedriver("/x/chromedriver.exe", 154)
-        upd.assert_called_once()
-        self.assertEqual(result["status"], "up-to-date")
+    def test_unavailable_kernel_lock_refuses_the_confirmed_install(self):
+        with patch.object(cc, "_driver_update_mutex_api", side_effect=OSError("denied")), \
+                patch.object(chromedriver_updater, "update_chromedriver") as upd:
+            result = cc.update_chromedriver_now(self.target, consent=True)
+        upd.assert_not_called()
+        self.assertEqual(result["status"], "busy")
+        self.assertFalse(cc._DRIVER_UPDATE_BUSY.locked())
+
+    def test_partial_acquisition_failure_releases_every_handle(self):
+        api = Mock()
+        api.CreateMutexW.side_effect = [101, 202]
+        api.WaitForSingleObject.side_effect = [0, 0x102]
+        with patch.object(cc, "_driver_update_mutex_api", return_value=api):
+            with cc._driver_update_single_flight(self.target, (self.extra,)) as acquired:
+                self.assertFalse(acquired)
+        api.ReleaseMutex.assert_called_once_with(101)
+        self.assertEqual([call.args[0] for call in api.CloseHandle.call_args_list], [202, 101])
+
+    def test_a_fixed_target_snapshot_is_used_for_locking_and_installation(self):
+        targets = (self.target, (self.extra,))
+        with patch.object(cc, "_driver_update_targets", return_value=targets) as resolve, \
+                patch.object(cc, "_driver_update_single_flight") as lock, \
+                patch.object(chromedriver_updater, "update_chromedriver", return_value={
+                    "status": "updated", "detail": "synthetic", "version": "154.0.1.2",
+                    "target": self.target}) as upd:
+            lock.return_value.__enter__.return_value = True
+            result = cc.update_chromedriver_now(self.target, consent=True)
+        self.assertEqual(result["status"], "updated")
+        resolve.assert_called_once_with(self.target)
+        lock.assert_called_once_with(*targets)
+        self.assertEqual(upd.call_args.kwargs["target_exe"], targets[0])
+        self.assertEqual(upd.call_args.kwargs["extra_targets"], targets[1])
+
+
+def _driver_lock_worker():
+    """A fixed isolated fixture: no network, executable launch or installation."""
+    if len(sys.argv) != 5 or sys.argv[2] != "hold":
+        raise SystemExit("Invalid driver-lock fixture arguments")
+    manifest_path, ready = map(os.path.abspath, sys.argv[3:5])
+    scratch = os.path.dirname(manifest_path)
+
+    def fixture_path(path):
+        path = os.path.abspath(path)
+        if os.path.commonpath((scratch, path)) != scratch:
+            raise SystemExit("Driver-lock fixtures must remain in their scratch directory")
+        return path
+
+    ready = fixture_path(ready)
+    with open(manifest_path, encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    primary = fixture_path(manifest["primary"])
+    extras = tuple(fixture_path(path) for path in manifest["extras"])
+    data_root = fixture_path(manifest["data_root"])
+    if len(extras) > 2:
+        raise SystemExit("Too many driver-lock fixture targets")
+
+    def hold(**kwargs):
+        with open(ready, "w", encoding="utf-8") as stream:
+            stream.write("locked")
+        sys.stdin.read(1)
+        return {"status": "updated", "detail": "synthetic", "target": primary,
+                "version": "154.0.1.2"}
+
+    with patch.dict(os.environ, {"IRICA_DATA_DIR": data_root}), \
+            patch.object(cc, "_driver_update_marker_path",
+                         return_value=os.path.join(data_root, "driver_update_last.json")), \
+            patch.object(cc, "_chrome_major_from_registry_or_path", return_value=154), \
+            patch.object(cc, "_driver_update_targets", return_value=(primary, extras)), \
+            patch.object(chromedriver_updater, "update_chromedriver", side_effect=hold):
+        result = cc.update_chromedriver_now(primary, consent=True)
+    if result["status"] != "updated":
+        raise SystemExit("The synthetic driver update did not acquire its resource locks")
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--driver-lock-worker":
+        _driver_lock_worker()
+    else:
+        unittest.main()

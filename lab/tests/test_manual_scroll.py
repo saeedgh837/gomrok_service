@@ -104,6 +104,7 @@ class ManualScrollInstallTests(unittest.TestCase):
     def test_hamta_build_driver_installs_manual_scroll(self):
         driver = MagicMock()
         with patch.object(eh.webdriver, "Chrome", return_value=driver), \
+                patch.object(cc, "require_compatible_chromedriver", return_value="synthetic-compatible-driver"), \
                 patch.object(eh, "install_manual_scroll",
                              side_effect=lambda d: d) as install:
             self.assertIs(eh.build_driver(), driver)
@@ -123,7 +124,8 @@ class DriverOptionsTests(unittest.TestCase):
             return MagicMock()
 
         with patch.object(cc.webdriver, "Chrome", side_effect=fake_chrome), \
-                patch.object(eh.webdriver, "Chrome", side_effect=fake_chrome):
+                patch.object(eh.webdriver, "Chrome", side_effect=fake_chrome), \
+                patch.object(cc, "require_compatible_chromedriver", return_value="synthetic-compatible-driver"):
             build(**kwargs)
         return captured
 

@@ -36,8 +36,8 @@ class PageWidthTests(unittest.TestCase):
         self.js = crm_js()
         self.src = open(panel.__file__, encoding="utf-8").read()
 
-    def test_wrap_uses_the_variable_capped_by_viewport(self):
-        self.assertIn(".wrap{width:min(var(--crm-w,1240px),98vw);margin:0 auto",
+    def test_wrap_uses_the_variable_capped_by_its_padded_container(self):
+        self.assertIn(".wrap{width:min(var(--crm-w,1240px),100%);margin:0 auto",
                       self.src)
 
     def test_state_and_clamp(self):

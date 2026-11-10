@@ -16,7 +16,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST = ROOT / "host"
-MYSQL_CANDIDATE = (ROOT.parents[2] / ".tools" / "mysql" /
+MYSQL_CANDIDATE = (ROOT / ".tools" / "mysql" /
                    "mariadb-11.4.4-winx64" / "bin" / "mariadb.exe")
 
 

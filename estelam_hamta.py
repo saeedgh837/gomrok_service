@@ -412,26 +412,28 @@ def _safe_capture(driver, serial, device_id=""):
 
 # --- driver -----------------------------------------------------------------
 def build_driver():
+    from captcha_collector import (require_compatible_chromedriver,
+                                   require_local_edgedriver)
     if USE_EDGE:
+        from selenium.webdriver.edge.service import Service as EdgeService
+        driver_path = require_local_edgedriver()
         o = EdgeOptions()
         o.add_argument("--disable-gpu")
         o.add_experimental_option("mobileEmulation",
                                   {"deviceMetrics": MOBILE_METRICS, "userAgent": UA})
         o.add_argument(window_size_arg())
-        return install_manual_scroll(webdriver.Edge(options=o))
+        return install_manual_scroll(
+            webdriver.Edge(service=EdgeService(executable_path=driver_path), options=o))
     o = Options()
     o.add_argument("--disable-gpu")
     o.add_experimental_option("mobileEmulation",
                               {"deviceMetrics": MOBILE_METRICS, "userAgent": UA})
     o.add_argument(window_size_arg())
-    # Shared resolver: C:\chromedriver.exe override -> bundled .tools copy ->
-    # Selenium Manager. Same order as captcha_collector.build_chrome.
-    driver_path = cc_resolve_chromedriver()
-    if driver_path:
-        return install_manual_scroll(
-            webdriver.Chrome(service=ChromeService(executable_path=driver_path),
-                             options=o))
-    return install_manual_scroll(webdriver.Chrome(options=o))
+    # Validate the selected local driver before Selenium can auto-fetch one.
+    driver_path = require_compatible_chromedriver(cc_resolve_chromedriver())
+    return install_manual_scroll(
+        webdriver.Chrome(service=ChromeService(executable_path=driver_path),
+                         options=o))
 
 
 # --- captcha ----------------------------------------------------------------
@@ -861,4 +863,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    from maintenance_gate import run_job
+    sys.exit(run_job(main) or 0)

@@ -13,7 +13,7 @@ data directory):
 
 * :class:`PreFixSnapshotReproTests` characterises the bug on the IMMUTABLE
   pre-fix snapshot (``PRE_FIX_COMMIT`` / ``PRE_FIX_BLOB`` / ``PRE_FIX_SHA256``,
-  loaded with ``git cat-file blob``). A hash mismatch is a hard error, never a
+  read from a fixed test-data fixture). A hash mismatch is a hard error, never a
   skip; the same assertions stay green before and after the fix, because the
   snapshot never changes.
 * :class:`WorkingTreeFanoutBudgetTests` pins the fixed per-destination budget
@@ -48,7 +48,6 @@ import importlib.util
 import io
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -86,28 +85,11 @@ _PRE_FIX_TARGETS = ("pre_fix", "pre-fix", "prefix", "snapshot")
 _PRE_FIX_MODULE = None
 
 
-def _git_bytes(args):
-    """Stdout of a git command, or a loud AssertionError (never a skip, never
-    a silent fallback). A missing git is exactly as fatal as a bad hash."""
-    try:
-        completed = subprocess.run(args, cwd=ROOT, capture_output=True)
-    except OSError as exc:
-        raise AssertionError(
-            "the pre-fix snapshot needs the git command line: %r" % (exc,)) from exc
-    if completed.returncode != 0 or not completed.stdout:
-        raise AssertionError(
-            "could not read the pre-fix snapshot from this repository: %s -> %s"
-            % (" ".join(args), completed.stderr.decode("utf-8", "replace").strip()))
-    return completed.stdout
-
-
 def pre_fix_source_bytes():
-    """The pre-fix telegram_notify.py, LF-normalized, hash-checked."""
-    try:
-        raw = _git_bytes(["git", "cat-file", "blob", PRE_FIX_BLOB])
-    except AssertionError:
-        raw = _git_bytes(["git", "show", "%s:telegram_notify.py" % PRE_FIX_COMMIT])
-    source = raw.replace(b"\r\n", b"\n")
+    """The fixed pre-fix data fixture, LF-normalized and hash-checked."""
+    path = os.path.join(HERE, "fixtures", "telegram_notify_prefanout.py")
+    with open(path, "rb") as handle:
+        source = handle.read().replace(b"\r\n", b"\n")
     digest = hashlib.sha256(source).hexdigest()
     if digest != PRE_FIX_SHA256:
         raise AssertionError(
@@ -256,7 +238,8 @@ class PreFixSnapshotReproTests(_FanoutTestCase):
         """Without the slow first destination the same harness reaches both."""
         fake = self.fake_server()
         self.point_notifier_at(fake, ["A", "B"])
-        result, stdout, error = self.send_receipt(timeout=self.CALLER_BUDGET_SEC)
+        # This is a reachability control, not a subsecond scheduling benchmark.
+        result, stdout, error = self.send_receipt(timeout=5.0)
         self.assertIsNone(error, "a healthy pair must not raise: %r" % (error,))
         self.assertTrue(result, "both destinations took the message: %r" % (result,))
         self.assertEqual(fake.counts(), {"A": 1, "B": 1},

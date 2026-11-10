@@ -1,24 +1,22 @@
-"""Automatic ChromeDriver updater.
+"""Consent-gated ChromeDriver updater.
 
-When Chrome auto-updates, the bundled ChromeDriver goes stale by one major and
-every robot dies with SessionNotCreatedException. This module fetches the
-driver that matches the installed Chrome from the Chrome-for-Testing (CfT)
-catalogue and installs it atomically.
+Read-only calls check compatibility without network or proxy activity. After
+current explicit user confirmation, this module resolves the latest matching
+Chrome-for-Testing patch (or validates an exact requested build) and installs
+it atomically without downgrading a known local version.
 
-Why the Cloudflare proxy is mandatory
--------------------------------------
+Why the Cloudflare proxy is the default
+---------------------------------------
 The CfT hosts (googlechromelabs.github.io, storage.googleapis.com) are not
 reliably reachable from Iran. This project already runs a local HTTP CONNECT
-proxy (``cloudflare_http_proxy.py``, 127.0.0.1:18081) for the Telegram service,
-so every download here goes through it. There is deliberately **no** fallback
-to a direct connection: a silent direct attempt would either hang or fail in a
-way that looks like "no driver available", which is exactly the confusion this
-module exists to remove. A missing proxy is a reported error, never a
-downgrade.
+proxy (``cloudflare_http_proxy.py``, 127.0.0.1:18081) for Telegram. Downloads
+use that route unless the current confirmed request explicitly selects another
+proxy or direct access. A missing proxy never silently enables direct access.
 
 Safety rules enforced here
 --------------------------
-* Nothing is downloaded without a proxy.
+* Every installation requires ``consent=True`` for the current call.
+* Downloads use the proxy unless direct mode was explicitly selected.
 * Downloads are bounded by one wall-clock budget for the whole attempt, a hard
   attempt limit with jittered exponential backoff, and a per-read stall
   timeout. ``requests``' timeout is a per-read stall allowance, not a total
@@ -139,6 +137,13 @@ def version_of(text):
     return match.group(1) if match else None
 
 
+def _version_key(version):
+    """Strict numeric four-part version for comparisons and safe URL paths."""
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", version):
+        return None
+    return tuple(int(part) for part in version.split("."))
+
+
 def _version_output(exe_path):
     """Raw ``--version`` output of a driver, or "" when it cannot be read."""
     if not exe_path or not os.path.isfile(exe_path):
@@ -168,8 +173,8 @@ def read_exe_version(exe_path):
 def cft_zip_url(version, platform=DEFAULT_PLATFORM):
     """Deterministic CfT download URL for a driver version."""
     version = str(version or "").strip()
-    if not version:
-        raise ValueError("version is required")
+    if _version_key(version) is None:
+        raise ValueError("a four-part version is required")
     return f"{CFT_STORAGE_BASE}/{version}/{platform}/chromedriver-{platform}.zip"
 
 
@@ -181,7 +186,7 @@ def pick_from_last_known_good(payload, major):
     channels = (payload or {}).get("channels") or {}
     stable = channels.get("Stable") or {}
     version = stable.get("version")
-    if version and major_of(version) == major:
+    if _version_key(version) is not None and major_of(version) == major:
         return version
     return None
 
@@ -200,7 +205,7 @@ def pick_from_milestones(payload, major):
     if not isinstance(entry, dict):
         return None
     version = entry.get("version")
-    return version if version and major_of(version) == major else None
+    return version if _version_key(version) is not None and major_of(version) == major else None
 
 
 # --------------------------------------------------------------------------
@@ -301,15 +306,14 @@ def http_get_bytes(url, proxy, timeout=HTTP_TIMEOUT, deadline=None, allow_direct
     import requests
 
     session = requests.Session()
-    if allow_direct and not str(proxy or "").strip():
-        session.trust_env = True
-        proxies = None
-    else:
-        session.trust_env = False  # ignore ambient HTTP(S)_PROXY, never widen scope
-        proxies = {"http": proxy, "https": proxy}
+    # Confirmed routing and TLS policy must not inherit proxies, CA overrides
+    # or .netrc credentials from the process environment, including direct mode.
+    session.trust_env = False
+    proxies = ({"http": proxy, "https": proxy}
+               if str(proxy or "").strip() else {})
     response = None
     try:
-        response = session.get(url, proxies=proxies,
+        response = session.get(url, proxies=proxies, verify=True,
                                timeout=timeout, stream=True)
         if response.status_code != 200:
             raise DriverUpdateError(
@@ -596,24 +600,25 @@ def _loads(raw):
         raise DriverUpdateError(f"catalogue response was not JSON: {exc}") from exc
 
 
-def update_chromedriver(target_exe, expected_major, *, read_major=None,
+def update_chromedriver(target_exe, expected_major, *, consent=False,
+                        desired_version=None, read_major=None,
                         read_version=None, fetcher=None, probe=None,
                         spawn_proxy=None, env=None, extra_targets=(),
                         timeout=HTTP_TIMEOUT, attempts=ATTEMPTS, backoff=BACKOFF,
                         total=RETRY_TOTAL_SECONDS, log=None,
                         proxy_override=None, allow_direct=False):
-    """Bring the driver at ``target_exe`` (and any ``extra_targets``) up to
-    major ``expected_major``.
+    """Check locally by default; install only with current ``consent=True``.
 
-    Never raises: the caller is a robot start-up path and must not be taken
-    down by a failed update. Returns a result dict with a ``status`` of
-    ``disabled`` | ``no-browser-version`` | ``up-to-date`` | ``updated`` |
-    ``driver-in-use`` | ``failed``.
+    With consent, ``desired_version=None`` resolves and compares the latest CfT
+    patch, including same-major updates. An exact four-part desired version
+    skips catalogue resolution. Wrong-major versions and known downgrades are
+    refused before downloading. Old files remain intact on failed validation.
 
-    ``total`` is the whole attempt's wall-clock budget: a caller on the launch
-    path passes a small one so a slow tunnel cannot stall a robot start, while
-    the panel's manual button — a person waiting on purpose — can afford the
-    default."""
+    Return {status, detail, target, version}; status is disabled,
+    no-browser-version, consent-required, up-to-date, updated, driver-in-use or
+    failed. Proxy startup, catalogue requests and the download share one bounded
+    wall-clock budget. No approval is saved for any subsequent call.
+    """
     env = os.environ if env is None else env
     read_major = read_major or read_exe_major
     read_version = read_version or read_exe_version
@@ -630,12 +635,47 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
         return finish("disabled", f"{KILL_SWITCH_ENV} is set")
 
     if not expected_major:
-        return finish("no-browser-version", "installed Chrome major unknown")
+        return finish("no-browser-version", "Installed Chrome major is unknown.")
+    try:
+        expected_major = int(expected_major)
+        if expected_major <= 0:
+            raise ValueError("major must be positive")
+        target_exe = os.path.abspath(target_exe)
+        current = read_major(target_exe) if os.path.isfile(target_exe) else None
+    except (OSError, TypeError, ValueError) as exc:
+        return finish("failed", f"Could not inspect the local driver: {exc}")
 
-    target_exe = os.path.abspath(target_exe)
-    current = read_major(target_exe) if os.path.isfile(target_exe) else None
-    if current == expected_major:
-        return finish("up-to-date")
+    desired_key = _version_key(desired_version)
+    if desired_version is not None and (
+            desired_key is None or desired_key[0] != expected_major):
+        return finish("failed", "The desired driver version must be an exact "
+                      f"four-part version for Chrome {expected_major}.")
+
+    # Robot starts perform only compatibility checks; no catalogue, proxy or
+    # download may be touched without this request's boolean True approval.
+    if consent is not True and desired_version is None:
+        if current == expected_major:
+            return finish("up-to-date", "The local ChromeDriver major matches Chrome.")
+        return finish("consent-required", "ChromeDriver update required. Confirm "
+                      "the driver update in the panel before installation.")
+
+    current_version = read_version(target_exe) if current is not None else None
+    current_key = _version_key(current_version)
+    if current_key is not None and current_key[0] != current:
+        current_key = None
+    if consent is not True:
+        if current == expected_major and current_key == desired_key:
+            result["version"] = current_version
+            return finish("up-to-date")
+        return finish("consent-required", "Confirm the ChromeDriver update before installation.")
+    if current is not None and current > expected_major:
+        return finish("failed", "Refusing to downgrade the installed ChromeDriver major.")
+    if desired_key is not None and current_key is not None:
+        if desired_key < current_key:
+            return finish("failed", "Refusing to downgrade the installed ChromeDriver version.")
+        if desired_key == current_key:
+            result["version"] = current_version
+            return finish("up-to-date")
 
     # One budget for the whole attempt, started here so that starting the proxy
     # and every request after it spend the same allowance. Resolving a version
@@ -674,19 +714,25 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
 
     fetch = fetcher or (lambda u, p, t, **kw: http_get_bytes(u, p, timeout=t, allow_direct=allow_direct, **kw))
     try:
-        version = _resolve_version(fetch, proxy, expected_major, timeout,
-                                   attempts, backoff, total=total,
-                                   deadline=deadline)
+        version = desired_version or _resolve_version(
+            fetch, proxy, expected_major, timeout, attempts, backoff,
+            total=total, deadline=deadline)
     except DriverUpdateError as exc:
         return finish("failed", f"could not resolve a driver version: {exc}")
 
-    if not version:
+    version_key = _version_key(version)
+    if version_key is None or version_key[0] != expected_major:
         return finish("failed",
-                      f"Chrome-for-Testing has no build for Chrome "
-                      f"{expected_major}")
+                      f"Chrome-for-Testing has no valid build for Chrome {expected_major}.")
+    if current_key is not None:
+        if version_key < current_key:
+            return finish("failed", "Refusing to downgrade the installed ChromeDriver version.")
+        if version_key == current_key:
+            result["version"] = current_version
+            return finish("up-to-date")
 
     url = cft_zip_url(version)
-    zip_path = None
+    download_dir = None
     try:
         try:
             body = retrying_fetch(fetch, url, proxy, DOWNLOAD_TIMEOUT, attempts,
@@ -696,9 +742,11 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
             # blaming the install would point the operator and the log at a step
             # that was never reached.
             return finish("failed", f"could not download {version}: {exc}")
-        handle, zip_path = tempfile.mkstemp(prefix="cd_dl_", suffix=".zip")
-        with os.fdopen(handle, "wb") as stream:
+        download_dir = tempfile.mkdtemp(prefix="cd_dl_")
+        zip_path = os.path.join(download_dir, "chromedriver.zip")
+        with open(zip_path, "wb") as stream:
             stream.write(body)
+        had_driver = os.path.isfile(target_exe)
         try:
             install_from_zip(zip_path, target_exe, expected_major, read_major,
                              expected_version=version, read_version=read_version)
@@ -719,16 +767,31 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
     except OSError as exc:
         return finish("failed", f"could not write the download: {exc}")
     finally:
-        if zip_path and os.path.isfile(zip_path):
-            try:
-                os.remove(zip_path)
-            except OSError:
-                pass
+        if download_dir:
+            shutil.rmtree(download_dir, ignore_errors=True)
 
-    installed = read_major(target_exe)
-    if installed != expected_major:
-        return finish("failed",
-                      f"after install the driver still reports {installed}")
+    verification_problem = ""
+    try:
+        installed = read_major(target_exe)
+        installed_version = read_version(target_exe)
+        if installed != expected_major or installed_version != version:
+            verification_problem = (
+                f"After install the driver reports {installed_version or installed}, "
+                f"expected {version}.")
+    except Exception as exc:
+        verification_problem = f"Could not verify the installed driver: {exc}"
+    if verification_problem:
+        try:
+            if had_driver:
+                os.replace(target_exe + ".bak", target_exe)
+                recovery = " The previous driver was restored."
+            else:
+                os.remove(target_exe)
+                recovery = " The unverified new driver was removed."
+        except OSError as exc:
+            return finish("failed", verification_problem +
+                          f" Rollback failed: {exc}; retain the backup for manual recovery.")
+        return finish("failed", verification_problem + recovery)
 
     # Refresh any secondary copies (e.g. the bundled .tools driver an installer
     # would ship) so a reinstall does not resurrect the stale one. A failure
@@ -738,19 +801,21 @@ def update_chromedriver(target_exe, expected_major, *, read_major=None,
             extra = os.path.abspath(extra)
             if extra == target_exe:
                 continue
-            if os.path.isfile(extra) and read_major(extra) == expected_major:
-                continue
-            handle, tmp_zip = tempfile.mkstemp(prefix="cd_dl_", suffix=".zip")
-            os.close(handle)
-            try:
+            if os.path.isfile(extra):
+                extra_version = _version_key(read_version(extra))
+                extra_major = read_major(extra)
+                if extra_major is not None and extra_major > expected_major:
+                    continue
+                if extra_version is not None and extra_version >= version_key:
+                    continue
+            # Each downloaded archive stays in its own fresh directory.
+            with tempfile.TemporaryDirectory(prefix="cd_dl_") as extra_download:
+                tmp_zip = os.path.join(extra_download, "chromedriver.zip")
                 with open(tmp_zip, "wb") as stream:
                     stream.write(body)
                 install_from_zip(tmp_zip, extra, expected_major, read_major,
                                  expected_version=version,
                                  read_version=read_version)
-            finally:
-                if os.path.isfile(tmp_zip):
-                    os.remove(tmp_zip)
         except (DriverUpdateError, OSError) as exc:
             log(f"driver update: secondary target {extra} failed: {exc}")
 

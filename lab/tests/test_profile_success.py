@@ -21,7 +21,7 @@ class FakeDriver:
 
 
 class ProfileSuccessTests(unittest.TestCase):
-    def test_mark_profile_success_persists_payment_status(self):
+    def test_exact_claimed_attempt_persists_payment_status_and_rejects_other_owners(self):
         with tempfile.TemporaryDirectory() as tmp:
             profiles_path = os.path.join(tmp, "profiles.json")
             inputs_path = os.path.join(tmp, "inputs.json")
@@ -29,19 +29,37 @@ class ProfileSuccessTests(unittest.TestCase):
                 json.dump({
                     "active_id": "p1",
                     "profiles": [{
-                        "id": "p1", "title": "Ali", "national": "0012345678",
-                        "imeis": ["111111111111111"],
+                        "id": "p1", "title": "Ali", "national": "0012345679",
+                        "birth": "1375/04/29", "mobile": "09121234567",
+                        "passport": "PP0000001", "imeis": ["111111111111111"],
                     }],
                 }, f)
 
             with patch.object(panel, "PROFILES_PATH", profiles_path), \
-                    patch.object(panel, "INPUTS_PATH", inputs_path):
-                changed = panel.mark_profile_success(
-                    title="Ali", national="0012345678",
-                    imei="111111111111111", payment_link="https://pay.test/1")
+                    patch.object(panel, "INPUTS_PATH", inputs_path), \
+                    patch.object(panel, "_STORE_LOCK_PATH", profiles_path + ".lock"):
+                claimed = panel.claim_profile("p1")
+                self.assertIsNotNone(claimed)
+                runner_id = claimed["runner_id"]
+                fingerprint = claimed["claimed_identity_fingerprint"]
+                self.assertTrue(runner_id)
+                self.assertTrue(fingerprint)
+                evidence = {"link": "https://pay.test/1"}
+                before = panel.load_store()
+                for profile_id, runner, expected in (
+                        ("missing", runner_id, fingerprint),
+                        ("p1", "unrelated-runner", fingerprint),
+                        ("p1", runner_id, "unrelated-fingerprint")):
+                    with self.subTest(profile_id=profile_id, runner=runner, fingerprint=expected):
+                        rejected = panel.publish_profile_result(profile_id, runner, expected, evidence)
+                        self.assertFalse(rejected["ok"])
+                        self.assertEqual(panel.load_store(), before)
+                self.assertFalse(hasattr(panel, "mark_profile_success"))
+                self.assertEqual(panel.load_store(), before)
+                published = panel.publish_profile_result("p1", runner_id, fingerprint, evidence)
                 store = panel.load_store()
 
-            self.assertTrue(changed)
+            self.assertTrue(published["ok"], published)
             profile = store["profiles"][0]
             self.assertEqual(profile["registration_status"], "success")
             self.assertEqual(profile["payment_link"], "https://pay.test/1")

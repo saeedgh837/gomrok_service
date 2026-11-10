@@ -324,15 +324,22 @@ class DeliveryFixTestCase(unittest.TestCase):
         deadline wording) must survive whatever redacts it.
         """
         token = "7777777:AAzzSECRETzz"
+        import socket
+        import run_isolated_tests
+        fixture = socket.socket()
+        fixture.bind(("127.0.0.1", 0))
+        address = fixture.getsockname()
+        fixture.close()
         cfg_path = os.path.join(self.tmp, "telegram_config_refused.json")
         with open(cfg_path, "w", encoding="utf-8") as handle:
-            # loopback port 9: refused at once, nothing leaves this machine
-            json.dump({"api_base": "http://127.0.0.1:9", "bot_token": token,
+            json.dump({"api_base": "http://127.0.0.1:" + str(address[1]), "bot_token": token,
                        "chat_ids": [FIRST]}, handle)
         self.addCleanup(_telegram_fake.use_config(telegram_notify, cfg_path))
 
         buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
+        # Exact provenance-checked refusal happens before an OS connection.
+        with run_isolated_tests._POLICY.expect_closed_fixture_probe(address), \
+                contextlib.redirect_stdout(buffer):
             with self.assertRaises(Exception) as caught:
                 telegram_notify.send_message("hi", timeout=1)
         self.assertIsInstance(caught.exception, (RuntimeError, TimeoutError))
@@ -526,6 +533,284 @@ class DeliveryFixTestCase(unittest.TestCase):
         self.assertTrue(watcher.seen, "the temp copy was never created")
         self.assertEqual(os.listdir(temp_root), [], "the temp copy was left")
         self.assertTrue(os.path.isfile(big_photo()), "the source went missing")
+
+
+class FixtureLifecycleTests(unittest.TestCase):
+    def test_stop_has_one_bounded_deadline_when_shutdown_cannot_finish(self):
+        fake = _telegram_fake.FakeTelegram().start()
+        server, accept_thread = fake._server, fake._thread
+        shutdown_entered, release_shutdown = threading.Event(), threading.Event()
+        helpers = set()
+        original_shutdown = server.shutdown
+
+        def blocked_shutdown():
+            helpers.add(threading.current_thread())
+            shutdown_entered.set()
+            release_shutdown.wait(timeout=7)
+            return original_shutdown()
+
+        with patch.object(server, "shutdown", side_effect=blocked_shutdown):
+            try:
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError):
+                    fake.stop()
+                self.assertTrue(shutdown_entered.is_set())
+                self.assertLess(time.monotonic() - started, 6,
+                                "Fixture stop exceeded its existing five-second total deadline")
+            finally:
+                release_shutdown.set()
+                fake.stop()
+                for helper in helpers:
+                    if helper is not threading.current_thread():
+                        helper.join(timeout=2)
+                accept_thread.join(timeout=2)
+                self.assertFalse(accept_thread.is_alive(), "Regression cleanup leaked its accept loop")
+                self.assertFalse(any(helper.is_alive() for helper in helpers
+                                     if helper is not threading.current_thread()))
+
+    def test_stop_rejects_an_accepted_request_paused_before_worker_admission(self):
+        import socket
+
+        fake = _telegram_fake.FakeTelegram().start()
+        server = fake._server
+        admitted = threading.Event()
+        release_admission = threading.Event()
+        shutdown_entered = threading.Event()
+        handler_entered = threading.Event()
+        stopped = threading.Event()
+        accepted, workers, failures = set(), set(), []
+        client = stopper = None
+        original_process = server.process_request
+        original_shutdown = server.shutdown
+        original_request = _telegram_fake._FakeHandler.handle_one_request
+
+        def pause_admission(connection, address):
+            accepted.add(connection)
+            admitted.set()
+            if not release_admission.wait(timeout=5):
+                raise AssertionError("The regression admission barrier was not released")
+            return original_process(connection, address)
+
+        def observe_shutdown():
+            shutdown_entered.set()
+            return original_shutdown()
+
+        def observe_request(handler):
+            if handler.server is server:
+                workers.add(threading.current_thread())
+                handler_entered.set()
+            return original_request(handler)
+
+        def stop_fixture():
+            try:
+                fake.stop()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                stopped.set()
+
+        with patch.object(server, "process_request", side_effect=pause_admission), \
+                patch.object(server, "shutdown", side_effect=observe_shutdown), \
+                patch.object(_telegram_fake._FakeHandler, "handle_one_request", observe_request):
+            try:
+                client = socket.create_connection(("127.0.0.1", fake.port), timeout=2)
+                self.assertTrue(admitted.wait(timeout=2), "No real connection reached admission")
+                stopper = threading.Thread(target=stop_fixture, daemon=True)
+                stopper.start()
+                self.assertTrue(shutdown_entered.wait(timeout=2), "stop() did not begin shutdown")
+                release_admission.set()
+                self.assertTrue(stopped.wait(timeout=6), "Fixture stop did not finish")
+                stopper.join(timeout=2)
+                if failures:
+                    raise failures[0]
+                self.assertFalse(handler_entered.wait(timeout=2),
+                                 "An accepted request started a worker after stopping began")
+                self.assertFalse(any(worker.is_alive() for worker in workers))
+            finally:
+                release_admission.set()
+                if client is not None:
+                    try:
+                        client.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    client.close()
+                for connection in accepted:
+                    try:
+                        connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    connection.close()
+                if stopper is not None:
+                    stopper.join(timeout=5)
+                    self.assertFalse(stopper.is_alive(), "Regression cleanup leaked its stop thread")
+                fake.stop()
+                for worker in workers:
+                    worker.join(timeout=2)
+                    self.assertFalse(worker.is_alive(), "Regression cleanup leaked its request worker")
+
+    def test_stop_joins_a_partial_upload_reader_without_stopping_another_fixture(self):
+        import requests
+        import socket
+
+        target, other = _telegram_fake.FakeTelegram(), _telegram_fake.FakeTelegram()
+        client = requests.Session()
+        partial = None
+        owned = {}
+        target_state = other_state = None
+        read_entered = threading.Event()
+        release_read = threading.Event()
+        diagnostics = io.StringIO()
+        cancellations = []
+        original_request = _telegram_fake._FakeHandler.handle_one_request
+        original_prefix = _telegram_fake._FakeHandler._read_prefix
+
+        class ReadBarrier:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def read(self, size=-1):
+                # No bytes are fabricated: the real buffered socket read waits
+                # for the deliberately incomplete Content-Length below.
+                read_entered.set()
+                if not release_read.wait(timeout=5):
+                    raise AssertionError("The real upload read was not released")
+                return self.stream.read(size)
+
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+
+        def observe_request(handler):
+            state = owned.get(handler.server)
+            if state is not None:
+                worker = threading.current_thread()
+                state["workers"].add(worker)
+                state["sockets"].add(handler.connection)
+                state["calls"][worker] = state["calls"].get(worker, 0) + 1
+                if state["calls"][worker] >= 2:
+                    state["waiting"].set()
+            return original_request(handler)
+
+        def observe_prefix(handler, content_type, length):
+            if handler.server is not target._server:
+                return original_prefix(handler, content_type, length)
+            stream = handler.rfile
+            handler.rfile = ReadBarrier(stream)
+            try:
+                return original_prefix(handler, content_type, length)
+            finally:
+                handler.rfile = stream
+
+        with patch.object(_telegram_fake._FakeHandler, "handle_one_request", observe_request), \
+                patch.object(_telegram_fake._FakeHandler, "_read_prefix", observe_prefix):
+            try:
+                for fake in (target, other):
+                    fake.start()
+                    owned[fake._server] = {"workers": set(), "sockets": set(),
+                                           "calls": {}, "waiting": threading.Event()}
+                target_state, other_state = owned[target._server], owned[other._server]
+                partial = socket.create_connection(("127.0.0.1", target.port), timeout=2)
+                partial.sendall(
+                    b"POST /botTEST:token/sendMessage HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+                    b"Content-Length: 4096\r\nConnection: keep-alive\r\n\r\n"
+                    b"chat_id=111111&text=unfinished")
+                self.assertTrue(read_entered.wait(timeout=2), "The real upload read was not reached")
+                response = client.post(other.api_base + "/botTEST:token/sendMessage",
+                                       data={"chat_id": "222222", "text": "control"}, timeout=2)
+                try:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.json()["ok"])
+                finally:
+                    response.close()
+                    response = None
+                self.assertTrue(other_state["waiting"].wait(timeout=2),
+                                "The other real keep-alive worker did not reach its next read")
+                target_worker, = target_state["workers"]
+                other_worker, = other_state["workers"]
+                self.assertTrue(target_worker.is_alive())
+                server = target._server
+                original_interrupt, original_error = server._interrupt, server.handle_error
+
+                def interrupt_and_release(request, deadline=None):
+                    try:
+                        return original_interrupt(request, deadline)
+                    finally:
+                        release_read.set()
+
+                def observe_error(request, address):
+                    server._lock_cleanup_until(time.monotonic() + 5)
+                    try:
+                        cancellations.append(request in getattr(
+                            server, "_stop_interrupted_requests", set()))
+                    finally:
+                        server._cleanup_lock.release()
+                    return original_error(request, address)
+
+                with patch.object(server, "_interrupt", side_effect=interrupt_and_release), \
+                        patch.object(server, "handle_error", side_effect=observe_error), \
+                        contextlib.redirect_stderr(diagnostics):
+                    target.stop()
+
+                self.assertTrue(other_worker.is_alive(), "stop() affected another fixture's worker")
+                response = client.post(other.api_base + "/botTEST:token/sendMessage",
+                                       data={"chat_id": "222222", "text": "still-running"}, timeout=2,
+                                       headers={"Connection": "close"})
+                try:
+                    self.assertEqual(response.status_code, 200)
+                finally:
+                    response.close()
+                    response = None
+                self.assertEqual(other_state["workers"], {other_worker})
+                other_worker.join(timeout=2)
+                self.assertFalse(other_worker.is_alive(), "Connection:close did not finish the control worker")
+                self.assertFalse(target_worker.is_alive(),
+                                 "stop() returned while its accepted upload reader was blocked")
+                self.assertEqual(diagnostics.getvalue(), "",
+                                 "Owned partial-read cancellation printed a socketserver traceback")
+                self.assertEqual(cancellations, [True], "The exact interrupted request was not marked")
+                self.assertEqual(server._stop_interrupted_requests, set(),
+                                 "A finished request retained its cancellation marker")
+            finally:
+                release_read.set()
+                cleanup_errors, shutdown_errnos = [], []
+                if (other._server is not None and other_state is not None
+                        and any(worker.is_alive() for worker in other_state["workers"])):
+                    try:
+                        response = client.post(other.api_base + "/botTEST:token/sendMessage",
+                                               data={"chat_id": "222222", "text": "cleanup"}, timeout=2,
+                                               headers={"Connection": "close"})
+                        response.content
+                        response.close()
+                        response = None
+                    except requests.RequestException as error:
+                        cleanup_errors.append(type(error).__name__)
+                for fake in (target, other):
+                    try:
+                        fake.stop()
+                    except Exception as error:
+                        cleanup_errors.append(type(error).__name__)
+                if partial is not None:
+                    try:
+                        partial.shutdown(socket.SHUT_RDWR)
+                    except OSError as error:
+                        shutdown_errnos.append(error.errno)
+                    partial.close()
+                for state in owned.values():
+                    for connection in tuple(state["sockets"]):
+                        if connection.fileno() >= 0:
+                            try:
+                                connection.shutdown(socket.SHUT_RDWR)
+                            except OSError as error:
+                                shutdown_errnos.append(error.errno)
+                        connection.close()
+                client.close()
+                captured = {worker for state in owned.values() for worker in state["workers"]}
+                for worker in captured:
+                    worker.join(timeout=2)
+                live = [worker.name for worker in captured if worker.is_alive()]
+                self.assertFalse(live, "Regression cleanup leaked workers %r; shutdown errno %r" %
+                                 (live, shutdown_errnos))
+                self.assertEqual(cleanup_errors, [], "Regression fixture cleanup failed")
 
 
 def tearDownModule():

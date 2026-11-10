@@ -99,8 +99,7 @@ class HandoffHttpHarness(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _post(self, path, payload):
@@ -421,8 +420,8 @@ class TestSourceMarkers(unittest.TestCase):
         src = self._src()
         start = src.index('self.path == "/activate"')
         chunk = src[start:src.index('self.path == "/toggle"')]
-        self.assertIn("print(", chunk)                     # kept as diagnostic
-        self.assertIn("except UnicodeEncodeError", chunk)  # but guarded
+        self.assertIn('update_profile_collection("activate", self._read_json())', chunk)
+        self.assertNotIn("print(", chunk)
 
     # -- B10 wiring -------------------------------------------------------
     def test_handoff_stages_tuple_matches_spec(self):

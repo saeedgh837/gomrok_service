@@ -16,23 +16,27 @@ Three independent contracts are pinned here:
 3. Backend selection: a solver only takes its torch path when the torch-only
    modules are actually importable, so a stray torch install cannot break it.
 
-Run:
-    "C:/Program Files/Python310/python.exe" lab/scripts/run_panel_tests.py test_robot_interpreter
+Run through lab/scripts/run_isolated_tests.py using the bundled interpreter.
+Launcher bootstrap checks execute trusted source copies in scratch with import
+state restored; no repository probe or raw subprocess authority is required.
 """
 import contextlib
+import io
 import os
+from pathlib import Path
+import runpy
+import shutil
 import subprocess
 import sys
+import tempfile
+import traceback
+import types
 import unittest
 from unittest.mock import Mock, patch
 
 import panel
 
 ROOT = os.path.dirname(os.path.abspath(panel.__file__))
-LAUNCHER = os.path.join(ROOT, "robot_launcher.py")
-# `_tmp_*` is one of the patterns panel.clean_project_root() removes, so a
-# leftover fixture can never become a permanent file in the project root.
-PROBE = os.path.join(ROOT, "_tmp_launcher_probe.py")
 PROBE_SOURCE = (
     "import system_debug\n"
     "import panel\n"
@@ -92,78 +96,118 @@ class RobotInterpreterTests(unittest.TestCase):
 
 
 class LauncherBootstrapTests(unittest.TestCase):
-    """robot_launcher.py must survive the bundle's isolated interpreter."""
+    """Exercise real copied sources with clean isolated/nonisolated import paths."""
 
     def setUp(self):
-        with open(PROBE, "w", encoding="utf-8") as handle:
-            handle.write(PROBE_SOURCE)
+        self.tmp = tempfile.TemporaryDirectory(prefix="launcher-source-fixture-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        # Copy trusted source only. No installed binaries, configs or live data.
+        for name in ("robot_launcher.py", "system_debug.py", "panel.py", "panel_auth.py",
+                     "maintenance_gate.py", "maintenance_ui.py", "exitban.py"):
+            shutil.copyfile(Path(ROOT) / name, self.root / name)
+        self.probe = self.root / "launcher_probe.py"
+        self.probe.write_text(PROBE_SOURCE, encoding="utf-8")
 
-    def tearDown(self):
+    @contextlib.contextmanager
+    def _fresh_project_imports(self, *, isolated):
+        saved_path = list(sys.path)
+        saved_modules = dict(sys.modules)
+        saved_argv = list(sys.argv)
+        original_cwd = os.getcwd()
+        roots = (Path(ROOT).resolve(), self.root.resolve())
+
+        def project_path(value):
+            if not value:
+                return False
+            path = Path(value).resolve()
+            return any(path == root or root in path.parents for root in roots)
+
+        # app_paths must retain the runner's disabled bootstrap. All modules
+        # whose lookup is under test are removed so cached imports cannot pass.
+        keep = {"app_paths", "__main__", "run_isolated_tests", __name__}
+        for name, module in list(sys.modules.items()):
+            if name not in keep and project_path(getattr(module, "__file__", None)):
+                sys.modules.pop(name, None)
+        sys.path[:] = [value for value in saved_path if value and not project_path(value)]
+        if not isolated:
+            sys.path.insert(0, str(self.root))
+        os.chdir(self.root)
         try:
-            os.remove(PROBE)
-        except OSError:
-            pass
+            self.assertNotIn("panel", sys.modules)
+            self.assertNotIn("system_debug", sys.modules)
+            self.assertNotIn("exitban", sys.modules)
+            yield
+        finally:
+            os.chdir(original_cwd)
+            sys.path[:] = saved_path
+            sys.argv[:] = saved_argv
+            # Restore project imports only: unloading freshly imported native
+            # extension modules can corrupt their next import in this process.
+            for name, module in list(sys.modules.items()):
+                if name not in keep and project_path(getattr(module, "__file__", None)):
+                    sys.modules.pop(name, None)
+            for name, module in saved_modules.items():
+                if project_path(getattr(module, "__file__", None)):
+                    sys.modules[name] = module
 
-    def _run(self, *flags):
-        return subprocess.run([sys.executable, *flags, LAUNCHER, PROBE],
-                              cwd=ROOT, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, timeout=120)
+    def _execute(self, script, *, args=(), isolated=True):
+        output = io.StringIO()
+        with self._fresh_project_imports(isolated=isolated), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            sys.argv[:] = [str(script), *map(str, args)]
+            try:
+                runpy.run_path(str(script), run_name="__main__")
+            except SystemExit as error:
+                code = 0 if error.code is None else error.code
+            except Exception:
+                traceback.print_exc()
+                code = 1
+            else:
+                code = 0
+        return subprocess.CompletedProcess([str(script), *map(str, args)], code, output.getvalue())
 
     def test_launcher_imports_project_modules_under_isolated_interpreter(self):
-        """`-I` mirrors the shipped embedded python: no script dir on sys.path."""
-        result = self._run("-I")
-        self.assertEqual(result.returncode, 0, result.stdout[-800:])
+        result = self._execute(self.root / "robot_launcher.py", args=(self.probe,))
+        self.assertEqual(result.returncode, 0, result.stdout[-1200:])
         self.assertIn("PROBE_OK", result.stdout)
 
     def test_launcher_still_works_on_a_normal_interpreter(self):
-        result = self._run()
-        self.assertEqual(result.returncode, 0, result.stdout[-800:])
+        result = self._execute(self.root / "robot_launcher.py", args=(self.probe,), isolated=False)
+        self.assertEqual(result.returncode, 0, result.stdout[-1200:])
         self.assertIn("PROBE_OK", result.stdout)
 
     def test_launcher_bootstraps_before_importing_project_code(self):
-        source = open(LAUNCHER, encoding="utf-8").read()
+        source = (self.root / "robot_launcher.py").read_text(encoding="utf-8")
         self.assertLess(source.index("sys.path"), source.index("import system_debug"),
                         "sys.path must be repaired before the first project import")
+        # A real import without the launcher's bootstrap must fail even though
+        # the outer test process imported panel before entering this fixture.
+        control = self.root / "control_system_debug.py"
+        control.write_text("import system_debug\nprint('CONTROL_OK')\n", encoding="utf-8")
+        result = self._execute(control)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ModuleNotFoundError", result.stdout)
+        self.assertNotIn("CONTROL_OK", result.stdout)
 
     def test_panel_lazy_imports_survive_an_isolated_interpreter(self):
-        """`import exitban` inside /exitban-inquiry runs at REQUEST time.
-
-        run_panel.bat starts panel.py DIRECTLY (not through the launcher), so
-        panel.py's own module body must repair sys.path -- otherwise that route
-        500s on the user's machine while every unit test passes.
-
-        The probe executes panel.py exactly as a script (`runpy.run_path`, so
-        main() does not start the server) and then performs the lazy import. A
-        control probe without that step proves the check can actually go red.
-        """
-        control = ("import exitban\n" "print('CONTROL_OK')\n")
-        probe = ("import runpy\n"
-                 f"runpy.run_path({os.path.join(ROOT, 'panel.py')!r}, run_name='panel_probe')\n"
-                 "import exitban\n"
-                 "print('LAZY_OK', bool(exitban.missing_identity_fields({})))\n")
-        script = os.path.join(ROOT, "_tmp_panel_lazy_probe.py")
-
-        def run(source):
-            with open(script, "w", encoding="utf-8") as handle:
-                handle.write(source)
-            try:
-                return subprocess.run([sys.executable, "-I", script], cwd=ROOT,
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      text=True, timeout=120)
-            finally:
-                try:
-                    os.remove(script)
-                except OSError:
-                    pass
-
-        blank = run(control)
+        control = self.root / "control_exitban.py"
+        control.write_text("import exitban\nprint('CONTROL_OK')\n", encoding="utf-8")
+        blank = self._execute(control)
         self.assertNotEqual(blank.returncode, 0,
-                            "isolated interpreter should not find project modules")
+                            "isolated import path must not find project modules")
         self.assertIn("ModuleNotFoundError", blank.stdout)
-
-        result = run(probe)
-        self.assertEqual(result.returncode, 0, result.stdout[-800:])
-        self.assertIn("LAZY_OK", result.stdout)
+        self.assertNotIn("CONTROL_OK", blank.stdout)
+        probe = self.root / "panel_lazy_probe.py"
+        probe.write_text(
+            "import runpy\n"
+            f"runpy.run_path({str(self.root / 'panel.py')!r}, run_name='panel_probe')\n"
+            "import exitban\n"
+            "print('LAZY_OK', bool(exitban.missing_identity_fields({})))\n",
+            encoding="utf-8")
+        result = self._execute(probe)
+        self.assertEqual(result.returncode, 0, result.stdout[-1200:])
+        self.assertIn("LAZY_OK True", result.stdout)
 
 
 class ChildSpawnTests(unittest.TestCase):
@@ -196,30 +240,43 @@ class SolverBackendSelectionTests(unittest.TestCase):
     """A solver may only take its torch path when that path can actually load."""
 
     @contextlib.contextmanager
-    def _live(self, package):
-        """Import a solver package's live_solve with its directory on sys.path.
+    def _live(self, package, *, torch_available=True, backend_modules=True):
+        """Run real backend detection over isolated source/dependency fixtures.
 
-        The directory stays on `sys.path` for the whole block, mirroring
-        `estelam_hamta.load_solver()` / `gomrok` at runtime: they insert the
-        solver directory, call into it, and only restore the path afterwards.
-        Sibling modules (`model`, `predict`, `onnx_solve`) are therefore
-        resolvable exactly as they are in production.
+        Training config creates checkpoints at import, so trusted .py sources
+        are copied to scratch rather than permitting writes into the checkout.
+        Torch presence is synthetic; selection functions are never mocked.
         """
         import importlib
 
         names = ("live_solve", "config", "vocab", "preprocess", "utils",
                  "onnx_solve", "number_decode", "model", "predict")
-        directory = os.path.join(ROOT, package)
+        absent = "model" if package == "Hamta-solver" else "predict"
         saved_path = list(sys.path)
         saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
-        sys.path.insert(0, directory)
-        try:
-            yield importlib.import_module("live_solve")
-        finally:
-            for name in names:
-                sys.modules.pop(name, None)
-            sys.modules.update(saved)
-            sys.path[:] = saved_path
+        torch_missing = object()
+        saved_torch = sys.modules.get("torch", torch_missing)
+        torch_fixture = types.ModuleType("torch") if torch_available else None
+        if torch_fixture is not None:
+            torch_fixture.no_grad = lambda: (lambda function: function)
+        with tempfile.TemporaryDirectory(prefix="solver-source-fixture-") as directory:
+            try:
+                for name in names:
+                    source = Path(ROOT) / package / (name + ".py")
+                    if source.is_file() and (backend_modules or name != absent):
+                        shutil.copyfile(source, Path(directory) / source.name)
+                sys.path.insert(0, directory)
+                sys.modules["torch"] = torch_fixture
+                yield importlib.import_module("live_solve")
+            finally:
+                if saved_torch is torch_missing:
+                    sys.modules.pop("torch", None)
+                else:
+                    sys.modules["torch"] = saved_torch
+                for name in names:
+                    sys.modules.pop(name, None)
+                sys.modules.update(saved)
+                sys.path[:] = saved_path
 
     def test_hamta_solver_reports_its_torch_backend_availability(self):
         with self._live("Hamta-solver") as live:
@@ -234,7 +291,7 @@ class SolverBackendSelectionTests(unittest.TestCase):
     def test_backend_falls_back_to_onnx_when_torch_modules_are_absent(self):
         """The release ships no predict.py/model.py; that must select ONNX."""
         for package, marker in (("Hamta-solver", "OnnxHamtaSolver"), ("solver", "OnnxSolver")):
-            with self.subTest(package=package), self._live(package) as live:
+            with self.subTest(package=package), self._live(package, backend_modules=False) as live:
                 # This test is about backend selection, not loading external
                 # model artifacts. The packaged release verifies the real ONNX
                 # weights separately, while clean source checkouts intentionally
@@ -245,19 +302,21 @@ class SolverBackendSelectionTests(unittest.TestCase):
                 })
                 setattr(fake_module, marker, fake_solver)
                 with patch.dict(sys.modules, {"onnx_solve": fake_module}):
-                    with patch.object(live, "_torch_backend_available",
-                                      return_value=False):
-                        solver = live.load_solver(device="cpu")
+                    self.assertFalse(live._torch_backend_available())
+                    solver = live.load_solver(device="cpu")
                 self.assertEqual(type(solver).__name__, marker)
 
     def test_torch_alone_does_not_select_the_torch_backend(self):
         """Exactly the v1.0.3 failure: torch present, backend modules absent."""
         for package, module in (("Hamta-solver", "model"), ("solver", "predict")):
-            with self.subTest(package=package), self._live(package) as live:
-                self.assertTrue(live._module_importable(module), "dev tree must have it")
-                with patch.object(live, "_module_importable",
-                                  side_effect=lambda name, m=module: name != m):
-                    self.assertFalse(live._torch_backend_available())
+            with self.subTest(package=package), self._live(package, backend_modules=False) as live:
+                self.assertFalse(live._module_importable(module))
+                self.assertFalse(live._torch_backend_available())
+
+    def test_missing_torch_rejects_backend_even_when_backend_sources_exist(self):
+        for package in ("Hamta-solver", "solver"):
+            with self.subTest(package=package), self._live(package, torch_available=False) as live:
+                self.assertFalse(live._torch_backend_available())
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ makes its function-style tests visible to unittest discovery.)
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -160,19 +161,22 @@ def test_estelam_page_renders_and_js_valid():
                    "مدیریت اجرای استعلام", "توقف و بستن مرورگر",
                    "راه‌اندازی مجدد", "لاگ اجراهای اخیر", "log-box", "logbox"):
         assert needle in html, needle
-    js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
-                                     encoding="utf-8") as f:
-        f.write(js)
-        js_path = f.name
-    try:
-        proc = subprocess.run(["node", "--check", js_path],
-                              capture_output=True, text=True)
-        assert proc.returncode == 0, proc.stderr
-    except FileNotFoundError:
-        pass
-    finally:
-        os.unlink(js_path)
+    import re
+    scripts = re.findall(r"<script\b[^>]*>([\s\S]*?)</script>", html, re.IGNORECASE)
+    assert scripts, "Rendered inquiry page must contain JavaScript"
+    node = shutil.which("node")
+    assert node, "Node.js is required for JavaScript syntax verification"
+    for index, js in enumerate(scripts):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as f:
+            f.write(js)
+            js_path = f.name
+        try:
+            proc = subprocess.run([node, "--check", js_path],
+                                  capture_output=True, text=True, timeout=15)
+            assert proc.returncode == 0, "script %s: %s" % (index, proc.stderr)
+        finally:
+            os.unlink(js_path)
 
 
 def test_estelam_logs_roundtrip():
@@ -197,84 +201,97 @@ def test_estelam_logs_roundtrip():
 
 
 def test_runtime_and_stop_lifecycle():
-    """runtime/stop ba yek process-e vaghe'i-ye zende (bedun-e robot)."""
-    import subprocess as sp
-    import time as t
+    """Exercise inquiry lifecycle with owned, inert worker processes."""
     from unittest.mock import patch
     with tempfile.TemporaryDirectory() as d:
         import panel
-        old_store, old_logs = panel.ESTELAM_PATH, panel.ESTELAM_LOGS_PATH
-        panel.ESTELAM_PATH = os.path.join(d, "s.json")
-        panel.ESTELAM_LOGS_PATH = os.path.join(d, "l.jsonl")
-        proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        try:
-            panel.estelam_save_person({"national": "0012345678",
-                                       "birth": "1375/04/29",
-                                       "mobile": "09121234567"})
-            rec = panel.estelam_add_device({"serial1": "356938035643809"})
-            data = panel.estelam_load()
-            data["run_pid"] = proc.pid
-            data["run_started"] = "2026-01-01 00:00:00"
-            data["runs"] = [{"pid": proc.pid, "device_id": rec["id"],
-                             "service": "gomrok",
-                             "started": "2026-01-01 00:00:00"}]
-            # fill the concurrency cap with placeholder live pids
-            fillers = []
-            for i in range(panel.ESTELAM_MAX_CONCURRENT - 1):
-                filler = sp.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-                fillers.append(filler)
-                data["runs"].append({"pid": filler.pid, "device_id": "",
-                                     "service": "gomrok",
-                                     "started": "2026-01-01 00:00:00"})
-            panel.estelam_save(data)
-            panel.estelam_set_device(rec["id"], status="running")
+        workers = {}
 
-            rt = panel.estelam_runtime()
-            assert rt["running"] is True and rt["pid"] == proc.pid
-            assert rt["counts"] == {"running": 1}
-            assert panel.estelam_is_running() is True
+        def start_owned_worker():
+            worker = os.path.join(os.path.dirname(__file__), "test_maintenance_gate.py")
+            command = [sys.executable, "-I", "-B", worker, "--gate-worker", "wait",
+                       d, os.path.join(d, "jobs.json")]
+            child = subprocess.Popen(command, stdin=subprocess.PIPE)
+            workers[child.pid] = child
+            return child
 
-            # parallel start UNDER the cap succeeds (v1.1.4)
-            panel.estelam_add_device({"serial1": "356938035643810"})  # pending
-            data = panel.estelam_load()
-            data["runs"] = data["runs"][:1]          # drop fillers
-            panel.estelam_save(data)
-            with patch.object(panel, "start_estelam_process",
-                              return_value={"pid": proc.pid + 5000}):
-                parallel = panel.estelam_start()
-            assert parallel["ok"] is True, parallel
+        def terminate_owned_worker(args, **kwargs):
+            pid = int(args[2])
+            assert args == ["taskkill", "/PID", str(pid), "/T", "/F"]
+            assert kwargs.get("check") is False
+            child = workers[pid]
+            assert child.poll() is None
+            # Substitute only the OS adapter, retaining this child's process handle.
+            child.terminate()
+            child.wait(timeout=5)
+            assert child.poll() is not None
+            return subprocess.CompletedProcess(args, 0)
 
-            # cap reached -> refused (live pids: fillers + main proc)
-            data = panel.estelam_load()
-            data["runs"] = [{"pid": f.pid, "device_id": "", "service": "gomrok",
-                             "started": ""} for f in fillers]
-            data["runs"].append({"pid": proc.pid, "device_id": "",
-                                 "service": "gomrok", "started": ""})
-            panel.estelam_save(data)
-            blocked = panel.estelam_start()
-            assert blocked["ok"] is False
-            assert "سقف" in blocked["errors"][0]
-
-            res = panel.estelam_stop()
-            assert res["stopped"] is True
-            assert res["runtime"]["running"] is False
-            t.sleep(0.5)
-            assert proc.poll() is not None, "process koshte nashod"
-            after = panel.estelam_load()
-            assert after["devices"][0]["status"] == "pending"
-            assert "توقف دستی" in after["devices"][0]["result"]
-            assert any("متوقف" in x["message"] for x in panel.load_estelam_logs())
-        finally:
+        with patch.multiple(panel, ESTELAM_PATH=os.path.join(d, "s.json"),
+                            ESTELAM_LOGS_PATH=os.path.join(d, "l.jsonl")):
             try:
-                proc.kill()
-            except OSError:
-                pass
-            for filler in fillers:
-                try:
-                    filler.kill()
-                except (OSError, NameError):
-                    pass
-            panel.ESTELAM_PATH, panel.ESTELAM_LOGS_PATH = old_store, old_logs
+                proc = start_owned_worker()
+                panel.estelam_save_person({"national": "0012345678",
+                                           "birth": "1375/04/29",
+                                           "mobile": "09121234567"})
+                rec = panel.estelam_add_device({"serial1": "356938035643809"})
+                data = panel.estelam_load()
+                data["run_pid"] = proc.pid
+                data["run_started"] = "2026-01-01 00:00:00"
+                data["runs"] = [{"pid": proc.pid, "device_id": rec["id"],
+                                 "service": "gomrok",
+                                 "started": "2026-01-01 00:00:00"}]
+                fillers = []
+                for _ in range(panel.ESTELAM_MAX_CONCURRENT - 1):
+                    filler = start_owned_worker()
+                    fillers.append(filler)
+                    data["runs"].append({"pid": filler.pid, "device_id": "",
+                                         "service": "gomrok",
+                                         "started": "2026-01-01 00:00:00"})
+                panel.estelam_save(data)
+                panel.estelam_set_device(rec["id"], status="running")
+
+                rt = panel.estelam_runtime()
+                assert rt["running"] is True and rt["pid"] == proc.pid
+                assert rt["counts"] == {"running": 1}
+                assert panel.estelam_is_running() is True
+
+                panel.estelam_add_device({"serial1": "356938035643810"})
+                data = panel.estelam_load()
+                data["runs"] = data["runs"][:1]
+                panel.estelam_save(data)
+                with patch.object(panel, "start_estelam_process",
+                                  return_value={"pid": proc.pid + 5000}):
+                    parallel = panel.estelam_start()
+                assert parallel["ok"] is True, parallel
+
+                data = panel.estelam_load()
+                data["runs"] = [{"pid": f.pid, "device_id": "", "service": "gomrok",
+                                 "started": ""} for f in fillers]
+                data["runs"].append({"pid": proc.pid, "device_id": "",
+                                     "service": "gomrok", "started": ""})
+                panel.estelam_save(data)
+                blocked = panel.estelam_start()
+                assert blocked["ok"] is False
+                assert "سقف" in blocked["errors"][0]
+
+                with patch.object(panel.subprocess, "run",
+                                  side_effect=terminate_owned_worker) as stop:
+                    res = panel.estelam_stop()
+                assert res["stopped"] is True
+                assert res["runtime"]["running"] is False
+                assert stop.call_count == len(workers)
+                assert all(child.poll() is not None for child in workers.values())
+                after = panel.estelam_load()
+                assert after["devices"][0]["status"] == "pending"
+                assert "توقف دستی" in after["devices"][0]["result"]
+                assert any("متوقف" in x["message"] for x in panel.load_estelam_logs())
+            finally:
+                for child in workers.values():
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=5)
+                    child.stdin.close()
 
 
 def test_robot_writes_estelam_logs():

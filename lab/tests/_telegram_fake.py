@@ -58,10 +58,12 @@ Typical test module:
         restore()
         fake.stop()
 """
+import errno
 import http.server
 import json
 import os
 import random
+import socket
 import sys
 import tempfile
 import threading
@@ -167,6 +169,152 @@ class _FakeServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def __init__(self, *args, **kwargs):
+        self._ownership_lock = threading.Lock()
+        self._cleanup_lock = threading.RLock()
+        self._stopping = False
+        self._requests = set()
+        self._stop_interrupted_requests = set()
+        self._workers = set()
+        self._shutdown_thread = None
+        self._shutdown_error = None
+        super().__init__(*args, **kwargs)
+
+    def _lock_until(self, deadline):
+        if not self._ownership_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("Fake HTTP ownership lock did not drain")
+
+    def _lock_cleanup_until(self, deadline):
+        if not self._cleanup_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("Fake HTTP socket cleanup lock did not drain")
+
+    def _interrupt(self, request, deadline=None):
+        self._lock_cleanup_until(time.monotonic() + 5 if deadline is None else deadline)
+        try:
+            shutdown_error = None
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError as error:
+                if error.errno not in {errno.EBADF, errno.ENOTCONN, 10038, 10057}:
+                    shutdown_error = error
+            # The cleanup lock also covers handler.finish and ordinary server
+            # cleanup, so no wrapper can close a detached/reused descriptor.
+            if self._stopping and request in self._requests and request.fileno() >= 0:
+                self._stop_interrupted_requests.add(request)
+            descriptor = request.detach()
+            if descriptor >= 0:
+                socket.close(descriptor)  # Close once; never retry a numeric fd.
+            if shutdown_error is not None:
+                raise shutdown_error
+        finally:
+            self._cleanup_lock.release()
+
+    def shutdown_request(self, request):
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().shutdown_request(request)
+        finally:
+            self._cleanup_lock.release()
+
+    def close_request(self, request):
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().close_request(request)
+        finally:
+            self._cleanup_lock.release()
+
+    def process_request(self, request, client_address):
+        admitted = False
+        try:
+            self._lock_until(time.monotonic() + 5)
+            try:
+                if not self._stopping:
+                    self._workers = {worker for worker in self._workers if worker.is_alive()}
+                    worker = threading.Thread(target=self.process_request_thread,
+                                              args=(request, client_address),
+                                              daemon=self.daemon_threads)
+                    self._requests.add(request)
+                    self._workers.add(worker)
+                    try:
+                        # Registration and successful start are atomic to stop.
+                        worker.start()
+                    except BaseException:
+                        self._requests.discard(request)
+                        self._workers.discard(worker)
+                        raise
+                    admitted = True
+            finally:
+                self._ownership_lock.release()
+        finally:
+            if not admitted:
+                self._interrupt(request)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            # Retain exact cancellation provenance through handle_error and
+            # normal cleanup, then serialize removal with any stop snapshot.
+            deadline = time.monotonic() + 5
+            self._lock_cleanup_until(deadline)
+            try:
+                self._lock_until(deadline)
+                try:
+                    self._requests.discard(request)
+                    self._stop_interrupted_requests.discard(request)
+                finally:
+                    self._ownership_lock.release()
+            finally:
+                self._cleanup_lock.release()
+
+    def _shutdown_acceptance(self):
+        try:
+            self.shutdown()
+        except BaseException as error:
+            self._shutdown_error = type(error).__name__
+
+    def stop_owned(self, accept_thread):
+        """Bound the listener, shutdown helper and workers to one five-second budget."""
+        deadline = time.monotonic() + 5
+        self._lock_until(deadline)
+        try:
+            self._stopping = True
+            requests, workers = tuple(self._requests), tuple(self._workers)
+            helper = self._shutdown_thread
+            if helper is None:
+                helper = threading.Thread(target=self._shutdown_acceptance,
+                                          name="fake-http-shutdown", daemon=True)
+                self._shutdown_thread = helper
+                try:
+                    helper.start()
+                except BaseException:
+                    self._shutdown_thread = None
+                    raise
+        finally:
+            self._ownership_lock.release()
+
+        interrupt_failed = False
+        for request in requests:
+            try:
+                self._interrupt(request, deadline)
+            except (OSError, RuntimeError):
+                interrupt_failed = True
+        owned_threads = (accept_thread, helper, *workers)
+        for thread in owned_threads:
+            if thread is threading.current_thread():
+                raise RuntimeError("Fake HTTP stop cannot join its calling worker")
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in owned_threads):
+            raise RuntimeError("Fake HTTP shutdown exceeded its five-second deadline")
+        self.server_close()
+        self._lock_until(deadline)
+        try:
+            self._workers.difference_update(workers)
+        finally:
+            self._ownership_lock.release()
+        if self._shutdown_error or interrupt_failed:
+            raise RuntimeError("Fake HTTP owned shutdown failed")
+
     def handle_error(self, request, client_address):
         """Silence the per-request traceback for a client that gave up first.
 
@@ -175,15 +323,32 @@ class _FakeServer(http.server.ThreadingHTTPServer):
         test's output. Anything that is not a connection-level error is still
         reported by the stdlib.
         """
-        if isinstance(sys.exc_info()[1], ConnectionError):
+        error = sys.exc_info()[1]
+        if isinstance(error, ConnectionError):
             return
-        super().handle_error(request, client_address)
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            cancelled = (self._stopping and request in self._stop_interrupted_requests
+                         and request.fileno() == -1 and request._closed
+                         and isinstance(error, OSError)
+                         and error.errno in {errno.EBADF, 10038})
+        finally:
+            self._cleanup_lock.release()
+        if not cancelled:
+            super().handle_error(request, client_address)
 
 
 class _FakeHandler(http.server.BaseHTTPRequestHandler):
     """Serves the two Bot API calls the production notifier makes."""
 
     protocol_version = "HTTP/1.1"
+
+    def finish(self):
+        self.server._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().finish()
+        finally:
+            self.server._cleanup_lock.release()
 
     def log_message(self, format, *args):   # noqa: A003 - stdlib signature
         """Silence: the stdlib default writes one line per request to stderr."""
@@ -338,18 +503,13 @@ class FakeTelegram:
         return self
 
     def stop(self):
-        """Stop serving and close the listening socket (safe when not started)."""
+        """Release delays and close/join only this fixture's owned HTTP work."""
         server, thread = self._server, self._thread
-        self._server, self._thread = None, None
         if server is None:
             return
-        self._stopping.set()            # release blackholed/delaying handlers
-        try:
-            server.shutdown()
-        finally:
-            server.server_close()
-        if thread is not None:
-            thread.join(timeout=5)
+        self._stopping.set()            # release blackholed/delaying handlers first
+        server.stop_owned(thread)
+        self._server, self._thread = None, None
 
     def __enter__(self):
         return self.start()

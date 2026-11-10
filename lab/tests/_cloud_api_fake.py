@@ -43,11 +43,15 @@ Nothing here is a real credential: the only password is
 :data:`FAKE_PASSWORD`, and every token is prefixed with ``fake-``.
 """
 import contextlib
+import errno
 import hashlib
 import json
 import os
 import re
+import socket
+import sys
 import threading
+import time
 import uuid
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,7 +81,7 @@ SERVER_MESSAGE_CANARY = "SERVER_MESSAGE_CANARY"
 MAX_BODY_BYTES = 1024 * 1024
 
 _ENTITIES = ("customers", "customer_transactions", "owners", "identities",
-             "crm_devices", "periods", "settings")
+             "crm_devices", "periods", "settings", "clerks", "clerk_transactions")
 #: The admin role may enrol devices (spec §7).
 _ENROL_ROLES = frozenset({"admin"})
 
@@ -135,6 +139,173 @@ def error_envelope(status, code, message=None):
         "error": {"code": code, "message": text,
                   "request_id": str(uuid.uuid4())},
     }
+
+
+class _FakeServer(ThreadingHTTPServer):
+    """Own accepted sockets and daemon workers until their bounded teardown."""
+
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self._ownership_lock = threading.Lock()
+        self._cleanup_lock = threading.RLock()
+        self._stopping = False
+        self._requests = set()
+        self._stop_interrupted_requests = set()
+        self._workers = set()
+        self._shutdown_thread = None
+        self._shutdown_error = None
+        super().__init__(*args, **kwargs)
+
+    def _lock_until(self, deadline):
+        if not self._ownership_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("Fake HTTP ownership lock did not drain")
+
+    def _lock_cleanup_until(self, deadline):
+        if not self._cleanup_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("Fake HTTP socket cleanup lock did not drain")
+
+    def _interrupt(self, request, deadline=None):
+        self._lock_cleanup_until(time.monotonic() + 5 if deadline is None else deadline)
+        try:
+            shutdown_error = None
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError as error:
+                if error.errno not in {errno.EBADF, errno.ENOTCONN, 10038, 10057}:
+                    shutdown_error = error
+            # Transfer this exact accepted socket once. The invalid wrapper
+            # cannot later close a recycled descriptor through a SocketIO ref.
+            if self._stopping and request in self._requests and request.fileno() >= 0:
+                self._stop_interrupted_requests.add(request)
+            descriptor = request.detach()
+            if descriptor >= 0:
+                socket.close(descriptor)  # Never retain or retry after an error.
+            if shutdown_error is not None:
+                raise shutdown_error
+        finally:
+            self._cleanup_lock.release()
+
+    def shutdown_request(self, request):
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().shutdown_request(request)
+        finally:
+            self._cleanup_lock.release()
+
+    def close_request(self, request):
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().close_request(request)
+        finally:
+            self._cleanup_lock.release()
+
+    def process_request(self, request, client_address):
+        admitted = False
+        try:
+            self._lock_until(time.monotonic() + 5)
+            try:
+                if not self._stopping:
+                    self._workers = {worker for worker in self._workers if worker.is_alive()}
+                    worker = threading.Thread(target=self.process_request_thread,
+                                              args=(request, client_address),
+                                              daemon=self.daemon_threads)
+                    self._requests.add(request)
+                    self._workers.add(worker)
+                    try:
+                        # Stop cannot snapshot an unstarted registered worker or
+                        # miss a worker that starts immediately after its check.
+                        worker.start()
+                    except BaseException:
+                        self._requests.discard(request)
+                        self._workers.discard(worker)
+                        raise
+                    admitted = True
+            finally:
+                self._ownership_lock.release()
+        finally:
+            if not admitted:
+                self._interrupt(request)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            # handle_error and normal socket cleanup finish before provenance
+            # is released. Serialize removal with a possibly stale stop snapshot.
+            deadline = time.monotonic() + 5
+            self._lock_cleanup_until(deadline)
+            try:
+                self._lock_until(deadline)
+                try:
+                    self._requests.discard(request)
+                    self._stop_interrupted_requests.discard(request)
+                finally:
+                    self._ownership_lock.release()
+            finally:
+                self._cleanup_lock.release()
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        self._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            cancelled = (self._stopping and request in self._stop_interrupted_requests
+                         and request.fileno() == -1 and request._closed
+                         and isinstance(error, OSError)
+                         and error.errno in {errno.EBADF, 10038})
+        finally:
+            self._cleanup_lock.release()
+        if not cancelled:
+            super().handle_error(request, client_address)
+
+    def _shutdown_acceptance(self):
+        try:
+            self.shutdown()
+        except BaseException as error:
+            self._shutdown_error = type(error).__name__
+
+    def stop_owned(self, accept_thread):
+        """Spend one existing five-second budget on all owned shutdown work."""
+        deadline = time.monotonic() + 5
+        self._lock_until(deadline)
+        try:
+            self._stopping = True
+            requests, workers = tuple(self._requests), tuple(self._workers)
+            helper = self._shutdown_thread
+            if helper is None:
+                helper = threading.Thread(target=self._shutdown_acceptance,
+                                          name="fake-http-shutdown", daemon=True)
+                self._shutdown_thread = helper
+                try:
+                    helper.start()
+                except BaseException:
+                    self._shutdown_thread = None
+                    raise
+        finally:
+            self._ownership_lock.release()
+
+        interrupt_failed = False
+        for request in requests:
+            try:
+                self._interrupt(request, deadline)
+            except (OSError, RuntimeError):
+                interrupt_failed = True
+        owned_threads = (accept_thread, helper, *workers)
+        for thread in owned_threads:
+            if thread is threading.current_thread():
+                raise RuntimeError("Fake HTTP stop cannot join its calling worker")
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in owned_threads):
+            raise RuntimeError("Fake HTTP shutdown exceeded its five-second deadline")
+        # Only close the listener after serve_forever has stopped using it.
+        self.server_close()
+        self._lock_until(deadline)
+        try:
+            self._workers.difference_update(workers)
+        finally:
+            self._ownership_lock.release()
+        if self._shutdown_error or interrupt_failed:
+            raise RuntimeError("Fake HTTP owned shutdown failed")
 
 
 class FakeApi(object):
@@ -201,8 +372,7 @@ class FakeApi(object):
 
         Handler.api = api
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        server.daemon_threads = True
+        server = _FakeServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever,
                                   name="irica-fake-api", daemon=True)
         thread.start()
@@ -211,12 +381,11 @@ class FakeApi(object):
         return self
 
     def stop(self):
-        server, self._server = self._server, None
+        server = self._server
         if server is None:
             return
-        server.shutdown()
-        server.server_close()
-        self._thread.join(timeout=5)
+        server.stop_owned(self._thread)
+        self._server, self._thread = None, None
 
     # ------------------------------------------------------------------
     # Seeding
@@ -384,6 +553,13 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "IricaFakeAPI"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+
+    def finish(self):
+        self.server._lock_cleanup_until(time.monotonic() + 5)
+        try:
+            super().finish()
+        finally:
+            self.server._cleanup_lock.release()
 
     def log_message(self, *args):                 # keep stdout out of the run
         return

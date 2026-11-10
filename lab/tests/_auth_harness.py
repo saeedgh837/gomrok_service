@@ -43,3 +43,23 @@ def install_auth_cookie(testcase, token):
     patcher.start()
     testcase.addCleanup(patcher.stop)
     return original
+
+
+def start_http_fixture(testcase, server):
+    """Serve a loopback fixture and stop its accept loop before closing it."""
+    import threading
+
+    thread = threading.Thread(target=server.serve_forever,
+                              kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+
+    def stop():
+        try:
+            server.shutdown()
+            thread.join(timeout=5)
+            testcase.assertFalse(thread.is_alive(), "HTTP fixture did not stop")
+        finally:
+            server.server_close()
+
+    testcase.addCleanup(stop)
+    return thread

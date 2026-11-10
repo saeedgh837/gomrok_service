@@ -54,6 +54,9 @@ def _node_available():
                                   text=True, timeout=60)
             _NODE["ok"] = proc.returncode == 0
             _NODE["version"] = (proc.stdout or proc.stderr).strip()
+        except PermissionError:
+            # Isolation denial is missing authority, not a missing JS engine.
+            raise
         except (OSError, subprocess.SubprocessError):
             _NODE["ok"] = False
     return _NODE["ok"]
@@ -183,9 +186,7 @@ class RouteContainmentTests(IsolatedStoreMixin, unittest.TestCase):
         self.token = _auth_harness.seed_test_users()
         httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = httpd.server_address[1]
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.shutdown)
-        self.addCleanup(httpd.server_close)
+        _auth_harness.start_http_fixture(self, httpd)
 
     def get(self, path):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")

@@ -13,10 +13,13 @@ Contract tests for the signature feature of the release:
 - the unified brand tokens across all six redesigned pages, Vazirmatn
   everywhere, the path-drawn brand favicon, and zero pictographic emoji
 """
+import os
 import re
 import unittest
 
 import panel
+
+ROOT = os.path.dirname(os.path.abspath(panel.__file__))
 
 
 def crm_js():
@@ -186,7 +189,7 @@ class BrandSyncTests(unittest.TestCase):
 
     def test_design_docs_match_code(self):
         for doc in ("lab/design/irica-brand.md", "lab/design/preview.html"):
-            with open(doc, encoding="utf-8") as fh:
+            with open(os.path.join(ROOT, doc), encoding="utf-8") as fh:
                 self.assertNotIn("#4f6bef", fh.read(), doc)
 
 

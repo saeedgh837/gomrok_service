@@ -112,7 +112,17 @@ def _make_import_result(ok=True, code=None, backup_path="C:/fake/backup.json",
 # =====================================================================
 # 1. Conflict endpoints: GET /cloud-conflicts
 # =====================================================================
-class ConflictEndpointTests(_GateHarness):
+class _CloudGateHarness(_GateHarness):
+    def setUp(self):
+        # Login metadata checks are covered by maintenance API tests, not these
+        # cloud endpoints. Stub only their scheduling boundary for this fixture.
+        maintenance = patch.object(panel, "_schedule_login_maintenance_check", return_value=None)
+        maintenance.start()
+        self.addCleanup(maintenance.stop)
+        super().setUp()
+
+
+class ConflictEndpointTests(_CloudGateHarness):
     def setUp(self):
         super().setUp()
         reset_cloud_panel()
@@ -185,7 +195,7 @@ class ConflictEndpointTests(_GateHarness):
 # =====================================================================
 # 2. Conflict resolution: POST /cloud-resolve-conflict
 # =====================================================================
-class ConflictResolutionTests(_GateHarness):
+class ConflictResolutionTests(_CloudGateHarness):
     def setUp(self):
         super().setUp()
         reset_cloud_panel()
@@ -443,12 +453,19 @@ class PullIntegrationTests(unittest.TestCase):
                               source_installation_id="inst-1")
         client = MagicMock()
         client.pull_all.return_value = 2
+        crm.store_write({"version": 1, "customers": [], "identities": [],
+                         "devices": [], "periods": [], "settings": {},
+                         "owners": [{"id": "existing-owner", "first_name": "Synthetic",
+                                     "last_name": "Owner", "national": "0012345679",
+                                     "birth": "1375/04/29", "mobile": "09121234567",
+                                     "passport": "PP0000001"}]})
         lease = _FakeLease(granted=time.time())
         runtime = _fake_runtime(config=config, client=client, lease=lease)
 
         res = panel.cloud_pull_step(runtime)
         self.assertEqual(res["pulled"], 2)
         client.pull_all.assert_called_once()
+        client.bootstrap.assert_not_called()
 
     def test_pull_step_protects_dirty_rows(self):
         outbox_file = os.path.join(self.tmp.name, "outbox.jsonl")
@@ -483,7 +500,8 @@ class PullIntegrationTests(unittest.TestCase):
         lease = _FakeLease(granted=1.0, expired=True)
         worker = MagicMock()
         runtime = _fake_runtime(config=config, lease=lease, worker=worker)
-        with patch.object(panel, "_cloud_runtime", return_value=runtime):
+        with patch.dict(os.environ, {"IRICA_CLOUD_WORKER_OFF": "0"}), \
+                patch.object(panel, "_cloud_runtime", return_value=runtime):
             beat = panel.cloud_worker_beat()
         self.assertEqual(beat["code"], "LEASE_EXPIRED")
 
@@ -498,7 +516,8 @@ class PullIntegrationTests(unittest.TestCase):
         worker.run_once.side_effect = IllegalTransitionError(
             SyncState.DISABLED, SyncEvent.START_SYNC, "not legal")
         runtime = _fake_runtime(config=config, lease=lease, worker=worker)
-        with patch.object(panel, "_cloud_runtime", return_value=runtime):
+        with patch.dict(os.environ, {"IRICA_CLOUD_WORKER_OFF": "0"}), \
+                patch.object(panel, "_cloud_runtime", return_value=runtime):
             beat = panel.cloud_worker_beat()
         self.assertEqual(beat["code"], "TRANSITION_NOT_LEGAL")
 
@@ -506,7 +525,7 @@ class PullIntegrationTests(unittest.TestCase):
 # =====================================================================
 # 4. Import endpoint: POST /cloud-import
 # =====================================================================
-class ImportEndpointTests(_GateHarness):
+class ImportEndpointTests(_CloudGateHarness):
     def setUp(self):
         super().setUp()
         reset_cloud_panel()

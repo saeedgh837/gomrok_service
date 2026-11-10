@@ -69,7 +69,10 @@ class BrowserVisibilityStoreTests(unittest.TestCase):
 
     def test_claim_resets_visibility_to_hidden(self):
         with tempfile.TemporaryDirectory() as tmp, self._paths(tmp):
-            self._seed([{"id": "p1", "title": "A", "browser_visible": True}])
+            self._seed([{"id": "p1", "title": "A", "browser_visible": True,
+                         "national": "0012345679", "birth": "1375/04/29",
+                         "mobile": "09121234567", "passport": "PP0000001",
+                         "imeis": ["352506099000001"]}])
             claimed = panel.claim_profile("p1")
             self.assertIsNotNone(claimed)
             self.assertFalse(claimed["browser_visible"])

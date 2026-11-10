@@ -1,21 +1,10 @@
 # -*- coding: utf-8 -*-
-"""v1.6.0 production fix — registration-profile creation failures.
+"""Registration-profile write retries, safe failure recovery and serial dedupe.
 
-Operator report: several cases on a coworker's install reached the payment
-stage with no registration profile; «شروع ربات پرداخت» answered the generic
-«پروفایل ثبت‌نام برای این دستگاه ساخته نشده است…» while the real cause was
-swallowed by a bare `except Exception`. Root-cause class: the profiles-store
-write (os.replace on Windows) fails while another process holds profiles.json
-open — the heal path then failed silently forever.
-
-The fix, pinned here:
-  * save_store: bounded retry (3 attempts, backoff) around the atomic write.
-  * The payment-start self-heal: 3 ensure attempts + the surfaced reason
-    («— علت: …») in the 400 and profile_ensure_failed detail in the log.
-  * The attach hook logs the exception detail too.
-  * crm_ensure_registration_profile dedupe is SERIAL-ONLY (the national-code
-    clause was dead code — a misplaced parenthesis — and activating it would
-    link profiles whose imeis belong to a different device).
+Atomic profile writes retry bounded transient failures. Payment preparation
+retries ensure three times, starts only with canonical CRM identity, and exposes
+sanitized diagnostics without marking a failed attempt as paid. Profile adoption
+matches device serials, never the passenger's national identity alone.
 """
 import json
 import os
@@ -45,10 +34,10 @@ def _customer(cid, name, txs=None):
             "updated": "2026-01-01 00:00:00"}
 
 
-def _owner(oid, national="0012345678"):
+def _owner(oid, national="0012345679"):
     return {"id": oid, "first_name": "ن", "last_name": "م",
             "national": national, "birth": "1370/01/01",
-            "mobile": "09120000000", "card_no": "", "passport": "",
+            "mobile": "09120000000", "card_no": "", "passport": "PP0000001",
             "created": "2026-01-01 00:00:00", "updated": ""}
 
 
@@ -95,8 +84,17 @@ class EnsureFixCase(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        self.server_thread = threading.Thread(
+            target=self.httpd.serve_forever, daemon=True)
+        self.server_thread.start()
+        self.addCleanup(self._stop_server)
+
+    def _stop_server(self):
+        # Stop the accept loop before closing its socket on Windows.
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.server_thread.join(timeout=5)
+        self.assertFalse(self.server_thread.is_alive())
 
     def _seed(self, devices=None):
         crm.store_write({"version": 1,
@@ -165,24 +163,29 @@ class PaymentHealTests(EnsureFixCase):
     def _start_payment(self):
         return self._post("/crm-start-payment", {"device_id": "d1"})
 
-    def test_persistent_ensure_failure_surfaces_reason_and_logs_detail(self):
+    def test_persistent_ensure_failure_is_sanitized_and_logs_payment_phase(self):
         self._seed()
         boom = RuntimeError("profiles.json ghabel-e neveshtan nist")
-        with patch.object(panel, "crm_ensure_registration_profile",
-                          side_effect=boom) as ensure:
+        with patch.object(panel, "crm_ensure_registration_profile", side_effect=boom) as ensure, \
+                patch.object(panel, "start_profile_process") as spawn:
             status, body = self._start_payment()
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 503)
         self.assertTrue(body.get("errors"), body)
-        self.assertIn("پروفایل ثبت‌نام برای این دستگاه ساخته نشده است",
-                      body["errors"][0])
-        self.assertIn("علت:", body["errors"][0])
-        self.assertIn("ghabel-e neveshtan", body["errors"][0])
-        self.assertEqual(ensure.call_count, 3)      # retried, not once
+        self.assertEqual(body["errors"][0],
+                         "Registration profile storage is unavailable; close conflicting operations and retry")
+        self.assertTrue(body["errors"][0].isascii())
+        self.assertEqual(ensure.call_count, 3)
+        spawn.assert_not_called()
         events = [e for e in self._log_events()
                   if e.get("event") == "profile_ensure_failed"]
         self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].get("event"), "profile_ensure_failed")
         self.assertEqual(events[0].get("phase"), "payment")
-        self.assertIn("RuntimeError", str(events[0].get("detail")))
+        self.assertEqual(events[0].get("error_type"), "RuntimeError")
+        self.assertNotIn(str(boom), json.dumps({"response": body, "events": events}))
+        device = next(d for d in crm.store_read()["devices"] if d["id"] == "d1")
+        self.assertEqual(device["stage"], "to_payment")
+        self.assertFalse(device.get("payment_confirmed_at"))
 
     def test_transient_ensure_failure_heals_within_retries(self):
         self._seed()
@@ -197,22 +200,30 @@ class PaymentHealTests(EnsureFixCase):
 
         with patch.object(panel, "crm_ensure_registration_profile",
                           side_effect=flaky):
-            with patch.object(panel, "start_profile",
-                              return_value=(200, {"ok": True})) as sp:
+            with patch.object(panel, "start_profile_process",
+                              return_value={"pid": 4321}) as spawn:
                 status, body = self._start_payment()
         self.assertEqual(status, 200, body)
         self.assertEqual(state["n"], 3)
-        sp.assert_called_once()
+        spawn.assert_called_once()
         device = next(d for d in crm.store_read()["devices"]
                       if d["id"] == "d1")
-        self.assertTrue(device["profile_id"])      # link landed
+        self.assertTrue(device["profile_id"])
+        self.assertEqual(device["stage"], "payment")
+        self.assertFalse(device.get("payment_confirmed_at"))
+        self.assertEqual(spawn.call_args.args, (device["profile_id"],))
+        self.assertTrue(spawn.call_args.kwargs["runner_id"])
 
     def test_no_passenger_still_gets_the_actionable_error(self):
         self._seed(devices=[_device("d1", owner_id="")])
         status, body = self._start_payment()
         self.assertEqual(status, 400)
-        self.assertIn("ابتدا مسافر را به پرونده", body["errors"][0])
-        self.assertNotIn("علت:", body["errors"][0])
+        self.assertIn("attach", body["errors"][0].lower())
+        self.assertIn("passenger", body["errors"][0].lower())
+        self.assertEqual(panel.load_store()["profiles"], [])
+        device = next(d for d in crm.store_read()["devices"] if d["id"] == "d1")
+        self.assertEqual(device["stage"], "to_payment")
+        self.assertFalse(device.get("payment_confirmed_at"))
 
 
 class AttachHookDiagnosticsTests(EnsureFixCase):
@@ -243,7 +254,7 @@ class SerialOnlyDedupeTests(EnsureFixCase):
         self._seed(devices=[dict(_device("d1", stage="ready_owner"),
                                  serial1="111111111111111", owner_id="")])
         panel.save_store({"profiles": [{
-            "id": "pOld", "title": "قدیم", "national": "0012345678",
+            "id": "pOld", "title": "قدیم", "national": "0012345679",
             "birth": "1370/01/01", "mobile": "09120000000",
             "imeis": ["999999999999999"]}], "active_id": "pOld"})
         status, body = self._post("/crm-tick", {
@@ -261,7 +272,7 @@ class SerialOnlyDedupeTests(EnsureFixCase):
         self._seed(devices=[dict(_device("d1", stage="ready_owner"),
                                  serial1="111111111111111", owner_id="")])
         panel.save_store({"profiles": [{
-            "id": "pOld", "title": "قدیم", "national": "0012345678",
+            "id": "pOld", "title": "قدیم", "national": "0012345679",
             "birth": "1370/01/01", "mobile": "09120000000",
             "imeis": ["111111111111111"]}], "active_id": "pOld"})
         status, body = self._post("/crm-tick", {

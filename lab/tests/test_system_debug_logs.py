@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -43,24 +42,40 @@ class SystemDebugTests(unittest.TestCase):
                 panel.read_system_log("../profiles.json")
 
     def test_launcher_captures_failures_before_robot_import(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            script = os.path.join(os.path.dirname(panel.__file__), "missing_diagnostic_fixture.py")
-            log_dir = os.path.join(temp_dir, "logs")
-            env = os.environ.copy()
-            env["IRICA_SYSTEM_DEBUG"] = "1"
-            env["IRICA_SYSTEM_LOG_DIR"] = log_dir
-            result = subprocess.run([sys.executable, os.path.join(os.path.dirname(panel.__file__), "robot_launcher.py"), script],
-                                    cwd=os.path.dirname(panel.__file__), env=env,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            logs = os.listdir(log_dir)
-            self.assertEqual(len(logs), 1)
-            with open(os.path.join(log_dir, logs[0]), encoding="utf-8") as handle:
-                content = handle.read()
-            self.assertIn("missing_diagnostic_fixture.py", content)
-            self.assertIn("Traceback", content)
-            self.assertIn("python=", content)
-            self.assertIn("argv=", content)
+        import atexit
+        import contextlib
+        import io
+        import runpy
+        import test_robot_interpreter as launcher_fixtures
+
+        fixture = launcher_fixtures.LauncherBootstrapTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        script = fixture.root / "missing_diagnostic_fixture.py"
+        log_dir = str(fixture.root / "logs")
+        captured = io.StringIO()
+        original_hook = sys.excepthook
+        with fixture._fresh_project_imports(isolated=True), \
+                contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured), \
+                patch.dict(os.environ, {"IRICA_SYSTEM_DEBUG": "1", "IRICA_SYSTEM_LOG_DIR": log_dir}):
+            sys.argv[:] = [str(fixture.root / "robot_launcher.py"), str(script)]
+            try:
+                with self.assertRaises(FileNotFoundError):
+                    runpy.run_path(str(fixture.root / "robot_launcher.py"), run_name="__main__")
+            finally:
+                debug = sys.modules.get("system_debug")
+                if debug is not None:
+                    debug.close()
+                    atexit.unregister(debug.close)
+                sys.excepthook = original_hook
+        logs = os.listdir(log_dir)
+        self.assertEqual(len(logs), 1)
+        with open(os.path.join(log_dir, logs[0]), encoding="utf-8") as handle:
+            content = handle.read()
+        self.assertIn("missing_diagnostic_fixture.py", content)
+        self.assertIn("Traceback", content)
+        self.assertIn("python=", content)
+        self.assertIn("argv=", content)
 
     def test_panel_contains_debug_controls_and_routes(self):
         html = panel.render_page().decode("utf-8")

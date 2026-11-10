@@ -194,4 +194,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from maintenance_gate import run_job
+    run_job(main)

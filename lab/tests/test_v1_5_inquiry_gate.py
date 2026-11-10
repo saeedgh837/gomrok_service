@@ -160,8 +160,7 @@ class InquiryGateHttpHarness(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _post(self, path, payload):

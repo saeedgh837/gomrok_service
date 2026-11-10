@@ -254,6 +254,12 @@ class EndToEndSyncCycleTest(unittest.TestCase):
 
     def setUp(self):
         super().setUp()
+        from unittest.mock import patch
+        # Keep the synthetic server's schema current without replacing the
+        # real client, mapper, snapshot validation or network transport.
+        entities = patch.object(fake_api, "_ENTITIES", tuple(apply.ENTITIES))
+        entities.start()
+        self.addCleanup(entities.stop)
         self.handle = fake_api.start_api(self, needs_fake=False)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)

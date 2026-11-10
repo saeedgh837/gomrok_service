@@ -16,7 +16,9 @@ Fixes under test:
 """
 import ast
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -35,6 +37,25 @@ def read(path):
 
 
 class TestSolverConfidenceAPI(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="confidence-source-fixture-")
+        self.addCleanup(temporary.cleanup)
+        names = ("onnx_solve", "config", "preprocess", "vocab")
+        for name in names:
+            shutil.copyfile(os.path.join(ROOT, "solver", name + ".py"),
+                            os.path.join(temporary.name, name + ".py"))
+        saved_path = list(sys.path)
+        saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+        sys.path.insert(0, temporary.name)
+
+        def restore():
+            for name in names:
+                sys.modules.pop(name, None)
+            sys.modules.update(saved)
+            sys.path[:] = saved_path
+
+        self.addCleanup(restore)
+
     def test_forced_decode_with_conf_exists(self):
         src = read(ONNX)
         self.assertIn("def _forced_decode_conf", src)
@@ -52,7 +73,6 @@ class TestSolverConfidenceAPI(unittest.TestCase):
     def test_conf_is_mean_peak_of_final_runs(self):
         # Import the numpy decoder directly and feed a synthetic log_probs
         # tensor: 3 blank steps, then 5 distinct strong runs -> conf ~1.0.
-        sys.path.insert(0, os.path.join(ROOT, "solver"))
         import importlib
         mod = importlib.import_module("onnx_solve")
         import numpy as np
@@ -75,7 +95,6 @@ class TestSolverConfidenceAPI(unittest.TestCase):
 
     def test_fabricated_answer_flags_low_conf(self):
         # greedy gives 3 runs; forced path duplicates -> conf below the strong case
-        sys.path.insert(0, os.path.join(ROOT, "solver"))
         import importlib
         mod = importlib.import_module("onnx_solve")
         import numpy as np

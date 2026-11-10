@@ -22,6 +22,7 @@ Field-ha (az roo-ye form_dump_ready.json — ba wicketpath-e paydar):
   continue     : form_imeiStep_continue1                          (dokme-ye edame)
 """
 import argparse
+import functools
 import os
 import re
 import sys
@@ -97,13 +98,12 @@ def load_panel_inputs():
         return {}
 
 
-def _claim_panel_profile(profile_id=None):
+def _claim_panel_profile(profile_id=None, runner_id=None):
+    import panel
     try:
-        import panel
-        return panel.claim_profile(profile_id)
-    except Exception as e:
-        print(f">>> (claim-e profile anjam nashod: {e})")
-        return None
+        return panel.claim_profile(profile_id, runner_id)
+    except Exception:
+        raise panel.ProfileIdentityStopped("Cannot claim a verified registration attempt") from None
 
 
 def _panel_browser_visibility(profile_id):
@@ -123,19 +123,91 @@ def _release_panel_profile(profile_id, runner_id):
         return False
 
 
-def _record_panel_output(profile_id, runner_id, receipt, payment, link):
-    try:
+def _assert_identity_current():
+    if _CLAIMED_PROFILE_ID:
         import panel
-        return panel.record_profile_output(profile_id, runner_id, receipt, payment, link)
-    except Exception as e:
-        print(f">>> (record-e output-e profile anjam nashod: {e})")
+        panel.assert_profile_identity_current(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID)
+
+
+def _restrict_unattended_verification(work):
+    """Keep the legacy implementation outside CRM-linked verification scope."""
+    @functools.wraps(work)
+    def guarded(*args, **kwargs):
+        if _CLAIMED_CRM_DEVICE_ID:
+            from robot_launcher import stop_for_manual_verification
+            stop_for_manual_verification(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID,
+                                         _CLAIMED_FINGERPRINT)
+        return work(*args, **kwargs)
+    return guarded
+
+
+def _registration_inputs(claimed, args):
+    """Linked CLI overrides must never replace the frozen authoritative claim."""
+    linked = bool(claimed.get("crm_device_id"))
+    result = {}
+    for field in ("national", "birth", "mobile", "passport"):
+        result[field] = str(claimed.get(field) if linked else
+                            getattr(args, field, None) or claimed.get(field) or "").strip()
+    result["passport"] = result["passport"].upper()
+    result["imeis"] = list(claimed.get("imeis") or []) if linked else list(
+        getattr(args, "imei", None) or claimed.get("imeis") or [])
+    return result
+
+
+def verify_first_page_identity(driver, identity):
+    for field, wicketpath in (("national", WP_NATIONAL), ("birth", WP_BIRTH)):
+        try:
+            actual = (find(driver, wicketpath).get_attribute("value") or "").strip()
+        except Exception:
+            return False
+        if actual != str(identity.get(field) or "").strip():
+            return False
+    return verify_imeis(driver, identity.get("imeis") or [])[0]
+
+
+def verify_registrant_identity(driver, identity):
+    """A nonempty field is not verification: require exact submitted identity."""
+    for field, wicketpath in (("national", WP_REG_NATIONAL), ("mobile", WP_REG_MOBILE),
+                              ("passport", WP_REG_PASSPORT)):
+        expected = str(identity.get(field) or "").strip()
+        try:
+            actual = str(driver.execute_script(
+                "var e=document.querySelector('[wicketpath=\"'+arguments[0]+'\"]');"
+                "return e?e.value:'';", wicketpath) or "").strip()
+        except Exception:
+            return False
+        if not expected or actual != expected:
+            return False
+    return True
+
+
+def _publish_panel_result(receipt, payment, link, *, existing_prepayment=False):
+    import panel
+    if not _CLAIMED_PROFILE_ID or not _CLAIMED_FINGERPRINT:
+        raise panel.ProfileIdentityStopped("An exact registration attempt is required to publish output")
+    try:
+        accepted = panel.publish_profile_result(
+            _CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID, _CLAIMED_FINGERPRINT,
+            {"receipt": receipt or "", "payment": payment or "", "link": link or "",
+             "identity_verified": _CLAIMED_IDENTITY_VERIFIED,
+             "existing_prepayment": existing_prepayment})
+    except Exception:
+        raise panel.ProfileIdentityStopped("Cannot publish registration output safely") from None
+    if not accepted.get("ok"):
+        raise panel.ProfileIdentityStopped(accepted.get("error") or "Registration output was rejected")
+    return accepted
+
+
+def _record_panel_output(profile_id, runner_id, receipt, payment, link):
+    if profile_id != _CLAIMED_PROFILE_ID or runner_id != _CLAIMED_RUNNER_ID:
         return False
+    return bool(_publish_panel_result(receipt, payment, link).get("ok"))
 
 
 def _mark_panel_profile_unusable(profile_id, error_text):
     try:
         import panel
-        return panel.mark_profile_unusable(profile_id, error_text)
+        return panel.mark_profile_unusable(profile_id, error_text, _CLAIMED_RUNNER_ID)
     except Exception as e:
         print(f">>> (mark-e profile-e gheyr-e ghabele voroud anjam nashod: {e})")
         return False
@@ -163,6 +235,9 @@ _LOGS_PATH = app_paths.data_path("logs.jsonl")
 _SCREENSHOTS_DIR = app_paths.data_subdir("screenshots")
 _CLAIMED_PROFILE_ID = ""
 _CLAIMED_RUNNER_ID = ""
+_CLAIMED_FINGERPRINT = ""
+_CLAIMED_CRM_DEVICE_ID = ""
+_CLAIMED_IDENTITY_VERIFIED = False
 _CUSTOMER_TELEGRAM_CHAT_ID = ""
 
 # --- Budge-ye zamani-ye telegram -------------------------------------------
@@ -346,13 +421,12 @@ WP_TSC_BACK     = "form_stepsOrInfoPanel_form_tscStep_tscStepBack"  # dokme-ye '
 WP_REG_GOMROK   = "form_stepsOrInfoPanel_form_registrantStep_gomrokChoice"   # <select> gomrok
 WP_REG_MOBILE   = "form_stepsOrInfoPanel_form_registrantStep_mobileField"    # shomare-ye mobile
 WP_REG_NATIONAL = "form_stepsOrInfoPanel_form_registrantStep_registrantField"  # kod-e melli (disabled)
-WP_REG_PASSPORT = "form_stepsOrInfoPanel_form_registrantStep_passportField"  # gozarname (sabet="A")
+WP_REG_PASSPORT = "form_stepsOrInfoPanel_form_registrantStep_passportField"
 WP_REG_CONTINUE = "form_stepsOrInfoPanel_form_registrantStep_registrantContinue"  # 'edame'
 WP_REG_BACK     = "form_stepsOrInfoPanel_form_registrantStep_backToTscStep"  # 'bargasht'
 WP_REG_ERROR    = "form_stepsOrInfoPanel_form_registrantStep_errorPanel"     # panel-e khata
 WP_REG_END      = "form_stepsOrInfoPanel_form_registrantStep_errorPanel_endImeiEzhar"  # dokme-ye 'پایان'
 GOMROK_NAME     = "سرو"   # gomrok-e vorudi hamishe 'سرو' (daghigh, na 'بازارچه سرو')
-PASSPORT_VALUE  = "A"     # meghdar-e sabet-e gozarname
 
 # --- marhale-ye 5 (securityCodeStep): kod-e amniati-ye 4-raqami (SMS) + tik + edame ---
 # NEMIDANIM kod chist -> BRUTE-FORCE: 1000..9999 be tartib. dokme-ye 'end' AjaxButton
@@ -1089,8 +1163,7 @@ def type_and_verify(driver, wicketpath, value, tries=3):
             cur = ""
         if cur == value:
             return True
-        print(f">>> HOSHDAR: field {wicketpath!r} hanooz {cur!r} ast (entezar: {value!r}) "
-              f"— talash #{i + 2}")
+        print(f">>> Field verification failed: {wicketpath!r}; retry {i + 2}")
     return False
 
 
@@ -1520,6 +1593,7 @@ _SCS_FAST_JS = r"""
 """
 
 
+@_restrict_unattended_verification
 def brute_force_security_code(driver, dbg=None, title="", national="", imei="",
                               start=1000, end=9999):
     """MARHALE-ye 5: kod-e amniati-ye 4-raqami-ra (ke NEMIDANIM) BRUTE-FORCE mikonad.
@@ -1811,85 +1885,35 @@ def detect_prepayment_page(driver):
 
 
 def handle_already_registered(driver, title="", national="", imei=""):
-    """Safhe-ye faktor-e pish-pardakht BEDUN-e tey kardan-e marhale-ha amad.
-
-    Ma'ni: in profile GHABLAN sabt shode va link-e pardakht gerefte. Pas:
-      1) screenshot-e faktor + zakhire-ye link (mahali),
-      2) log-e panel (logs.jsonl) ba payam-e roshan,
-      3) ersal-e telegram ba budge-ye mahdud (robot montazer nemimanad),
-      4) profile dar panel MOVAFFAGH (success) sabt mishavad — NA masdud —
-         hamrah ba link-e pardakht va aks-e faktor,
-      5) morurgar baste mishavad va robot khatm mishavad (retry bi-fayde ast).
-
-    Barmigardanad link-e pardakht (agar peyda shod).
-    """
-    import random
-
-    message = "قبلاً این پروفایل لینک پرداخت گرفته است"
+    """An existing prepayment page is evidence, not proof of corrected identity."""
+    import uuid
+    _assert_identity_current()
     os.makedirs(_SCREENSHOTS_DIR, exist_ok=True)
-    rand = str(random.randint(10000, 99999))
     safe = _safe_filename(title)
-
+    suffix = uuid.uuid4().hex[:10]
     pay_link = _extract_payment_link(driver)
-
-    shot = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_already_paid.png")
-    try:
-        if not _full_screenshot(driver, shot):
-            shot = None
-    except Exception as exc:
-        print(f">>> (screenshot-e faktor-e ghabli na-shod: {exc})")
-        shot = None
-
+    shot = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{suffix}_existing_prepayment.png")
+    if not _full_screenshot(driver, shot):
+        shot = ""
     if pay_link:
-        link_txt = os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{rand}.txt")
-        try:
-            with open(link_txt, "w", encoding="utf-8") as f:
-                f.write(pay_link + "\n")
-            print(f">>> Link-e pardakht-e ghabli zakhire shod: {link_txt}")
-        except OSError as exc:
-            print(f">>> (zakhire-ye link na-shod: {exc})")
-
-    log_event("success",
-              f"{message} — safhe-ye faktor-e pish-pardakht bedun-e tey-e marhale-ha "
-              f"amad. profile MOVAFFAGH sabt shod va robot motevaghef shod."
-              + (f" link: {pay_link}" if pay_link else "")
-              + (f" | screenshot: {shot}" if shot else ""),
-              step="marhale-1/imeiStep -> faktor-e pish-pardakht",
-              title=title, national=national, imei=imei)
-
-    caption = (
-        f"✅ <b>{message}</b>\n"
-        f"👤 Profile: {title or national}\n"
-        f"📱 IMEI: {imei}\n"
-        f"ℹ️ Safhe-ye faktor-e pish-pardakht bedun-e tey kardan-e marhale-ha amad — "
-        f"profile be onvan-e MOVAFFAGH zakhire shod va robot motevaghef shod."
-        + (f"\n🔗 Link:\n<code>{pay_link}</code>" if pay_link else "")
-    )
-    if shot and os.path.exists(shot):
+        with open(os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{suffix}.txt"),
+                  "w", encoding="utf-8") as handle:
+            handle.write(pay_link + "\n")
+    # No fallback by national/title/IMEI and no Telegram success before acceptance.
+    # Linked attempts arriving here have not verified the corrected form in this
+    # browser session, so publication preserves evidence and requires review.
+    _publish_panel_result(shot, "", pay_link, existing_prepayment=True)
+    log_event("success", "Existing prepayment output accepted for the current attempt",
+              step="prepayment", title=title, national=national, imei=imei)
+    caption = "<b>Current registration prepayment</b>\n" + (pay_link or "")
+    _assert_identity_current()
+    if shot:
         _telegram_deliver("photo", photo_path=shot, caption=caption,
-                          step="telegram: profile-e ghablan sabt-shode (aks)",
-                          title=title, national=national, imei=imei,
-                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
+                          step="prepayment", title=title, national=national,
+                          imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
     else:
-        _telegram_deliver("text", text=caption,
-                          step="telegram: profile-e ghablan sabt-shode (matn)",
-                          title=title, national=national, imei=imei,
-                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-
-    if _CLAIMED_PROFILE_ID:
-        # MOVAFFAGH (na masdud): record_profile_output status ra 'success' mikonad
-        # va link + aks-e faktor ra rooye profile mineshanad. profile ba'd az an
-        # ghabel-e ejra nist (claim/start profile-haye success ra rad mikonand).
-        if not _record_panel_output(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID,
-                                    shot or "", "", pay_link or ""):
-            # fallback: agar runner_id match nashod, mostaghim mohr-e movaffaghiat
-            try:
-                import panel as profile_store
-                profile_store.mark_profile_success(title, national, imei, pay_link or "")
-            except Exception as exc:
-                print(f">>> (mohr-e movaffaghiat-e profile na-shod: {exc})")
-
-    print(f">>> ✅ {message} — profile MOVAFFAGH sabt shod; robot motevaghef mishavad.")
+        _telegram_deliver("text", text=caption, step="prepayment", title=title,
+                          national=national, imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
     return pay_link
 
 
@@ -1940,137 +1964,59 @@ def _full_screenshot(driver, path):
 
 
 def handle_receipt_and_payment(driver, title="", national="", imei=""):
-    """Ba'd az movaffaghiat-e kod-e amniati:
-    1) Screenshot-e rasid + ersal be telegram + zakhire dar screenshots/
-    2) Agar dokme-ye pardakht hast -> click -> screenshot-e pish-pardakht
-       + link-e kamel + ersal be telegram + zakhire-ye link dar payment-link-*.txt
-    """
-    import random
-
+    """Collect local evidence, then publish atomically before any success notice."""
+    import uuid
+    _assert_identity_current()
     os.makedirs(_SCREENSHOTS_DIR, exist_ok=True)
-    rand = str(random.randint(10000, 99999))
+    suffix = uuid.uuid4().hex[:10]
     safe = _safe_filename(title)
-
-    # --- 1) Screenshot-e rasid ---
-    shot_receipt = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_receipt.png")
-    try:
-        if _full_screenshot(driver, shot_receipt):
-            print(f">>> Screenshot-e rasid: {shot_receipt}")
-        else:
-            shot_receipt = None
-    except Exception as e:
-        print(f">>> (screenshot-e rasid na-shod: {e})")
-        shot_receipt = None
-
-    caption_receipt = (
-        f"✅ <b>Sabt-e IMEI movaffagh</b>\n"
-        f"👤 Profile: {title or national}\n"
-        f"📱 IMEI: {imei}\n"
-        f"🔐 Kod-e amniati peyda shod — safhe-ye rasid"
-    )
-    if shot_receipt and os.path.exists(shot_receipt):
-        _telegram_deliver("photo", photo_path=shot_receipt, caption=caption_receipt,
-                          step="telegram: rasid (aks)", title=title, national=national,
-                          imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-    else:
-        _telegram_deliver("text", text=caption_receipt,
-                          step="telegram: rasid (matn)", title=title, national=national,
-                          imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-
-    # --- 2) Dokme-ye pardakht ---
+    shot_receipt = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{suffix}_receipt.png")
+    if not _full_screenshot(driver, shot_receipt):
+        shot_receipt = ""
     pay_btns = driver.find_elements(By.CSS_SELECTOR, f'[wicketpath="{WP_PARDAKHT}"]')
     if not pay_btns:
-        print(">>> (dokme-ye pardakht peyda nashod — shayad safhe-ye digar ast.)")
+        print(">>> No prepayment boundary is visible; output was not published")
         return
-
-    # Vojud-e dokme-ye pardakht marz-e movaffaghiat-e profile ast.
-    try:
-        import panel as profile_store
-        profile_store.mark_profile_success(title, national, imei)
-        print(">>> Profile dar panel: MOVAFFAGH (resid be pardakht).")
-    except Exception as e:
-        print(f">>> (status-e profile zakhire nashod: {e})")
-
-    print(">>> Dokme-ye pardakht peyda shod — click mikonam ...")
-    try:
-        # onclick-e dokme link-ra dar window.location set mikonad; link-ra QABL az click
-        # az onclick mikhanim ta agar safhe avaz shod, link-ra az dast nadahim.
-        onclick = pay_btns[0].get_attribute("onclick") or ""
-        import re as _re
-        m = _re.search(r"window\.location\.href\s*=\s*'([^']+)'", onclick)
-        pay_link = m.group(1) if m else ""
-
-        cc.fire_refresh_events(driver, pay_btns[0])
-        time.sleep(2.5)
-    except Exception as e:
-        print(f">>> (click-e pardakht khata dad: {e})")
-        pay_link = ""
-
-    # agar link az onclick nayamad, az current_url bekhah
+    pay_link = _extract_payment_link(driver)
+    _assert_identity_current()
+    # This is the existing navigation to prepayment, not an actual payment.
+    cc.fire_refresh_events(driver, pay_btns[0])
+    time.sleep(2.5)
+    _assert_identity_current()
     if not pay_link:
-        try:
-            pay_link = driver.current_url
-        except Exception:
-            pay_link = ""
-
+        pay_link = str(driver.current_url or "")
+    shot_payment = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{suffix}_payment.png")
+    if not _full_screenshot(driver, shot_payment):
+        shot_payment = ""
     if pay_link:
-        try:
-            import panel as profile_store
-            profile_store.mark_profile_success(title, national, imei, pay_link)
-        except Exception as e:
-            print(f">>> (link-e pardakht dar profile zakhire nashod: {e})")
-
-    # screenshot-e pish-pardakht
-    shot_pay = os.path.join(_SCREENSHOTS_DIR, f"{safe}_{rand}_payment.png")
-    try:
-        if _full_screenshot(driver, shot_pay):
-            print(f">>> Screenshot-e pish-pardakht: {shot_pay}")
+        with open(os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{suffix}.txt"),
+                  "w", encoding="utf-8") as handle:
+            handle.write(pay_link + "\n")
+    _publish_panel_result(shot_receipt, shot_payment, pay_link)
+    log_event("success", "Registration prepayment accepted for the current attempt",
+              step="prepayment", title=title, national=national, imei=imei)
+    for shot, caption in ((shot_receipt, "<b>Registration receipt</b>"),
+                          (shot_payment, "<b>Current prepayment</b>\n" + pay_link)):
+        # A correction between publication and notification must not emit an old
+        # success as current; repeat the safe boundary check for each delivery.
+        _assert_identity_current()
+        if shot:
+            _telegram_deliver("photo", photo_path=shot, caption=caption,
+                              step="prepayment", title=title, national=national,
+                              imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
         else:
-            shot_pay = None
-    except Exception as e:
-        print(f">>> (screenshot-e pish-pardakht na-shod: {e})")
-        shot_pay = None
-
-    # zakhire-ye link dar txt
-    link_txt = os.path.join(_SCREENSHOTS_DIR, f"payment-link-{safe}_{rand}.txt")
-    try:
-        with open(link_txt, "w", encoding="utf-8") as f:
-            f.write(pay_link + "\n")
-        print(f">>> Link-e pardakht zakhire shod: {link_txt}")
-    except Exception as e:
-        print(f">>> (zakhire-ye link na-shod: {e})")
-
-    caption_pay = (
-        f"💳 <b>Safhe-ye pish-pardakht</b>\n"
-        f"👤 Profile: {title or national}\n"
-        f"📱 IMEI: {imei}\n"
-        f"🔗 Link:\n<code>{pay_link}</code>"
-    )
-    if shot_pay and os.path.exists(shot_pay):
-        _telegram_deliver("photo", photo_path=shot_pay, caption=caption_pay,
-                          step="telegram: pish-pardakht (aks)", title=title,
-                          national=national, imei=imei,
-                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-    else:
-        _telegram_deliver("text", text=caption_pay,
-                          step="telegram: pish-pardakht (matn)", title=title,
-                          national=national, imei=imei,
-                          chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
-
-    if pay_link:
-        print(f">>> 🔗 Link-e pardakht: {pay_link}")
-
-    if _CLAIMED_PROFILE_ID:
-        _record_panel_output(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID,
-                             shot_receipt or "", shot_pay or "", pay_link)
+            _telegram_deliver("text", text=caption, step="prepayment", title=title,
+                              national=national, imei=imei, chat_ids=[_CUSTOMER_TELEGRAM_CHAT_ID])
 
 
 def main():
     global _CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID, _CUSTOMER_TELEGRAM_CHAT_ID
+    global _CLAIMED_FINGERPRINT, _CLAIMED_IDENTITY_VERIFIED, _CLAIMED_CRM_DEVICE_ID
     ap = argparse.ArgumentParser(description="Por kardan-e form-e irica (bedun-e submit)")
     ap.add_argument("--national", help="kod-e melli-ye mosafer")
     ap.add_argument("--birth", help="tarikh-e tavallod, format-e shamsi mesl 1375/04/29")
     ap.add_argument("--mobile", help="shomare-ye telefon-e hamrah (marhale-ye 4)")
+    ap.add_argument("--passport", help="Actual passport for an unlinked manual profile")
     ap.add_argument("--imei", action="append", default=None,
                     help="kod-e IMEI-ye dastgah (15 raqam). Baraye chand IMEI "
                          "chand bar bede: --imei AAA --imei BBB")
@@ -2088,17 +2034,21 @@ def main():
                     help="safhe-ye avval ra baz kon; karbar dasti ta kod-e 4-raqami "
                          "miravad, tik mizanad, dokme-ye balaye safhe -> brute-force")
     ap.add_argument("--profile-id", help="ID-e profile ke panel sarih entekhab karde")
+    ap.add_argument("--runner-id", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     # 1) manba'-e asli: inputs.json (ke panel.py mineveshtash). 2) CLI-args override.
     # 3) agar hich-kodam nabood -> input-e dasti.
-    claimed = _claim_panel_profile(args.profile_id)
+    claimed = _claim_panel_profile(args.profile_id, args.runner_id)
     if not claimed:
         print(">>> Profile-e azad baraye ejra vojood nadarad.")
         return
     panel = claimed
     _CLAIMED_PROFILE_ID = claimed.get("id", "")
     _CLAIMED_RUNNER_ID = claimed.get("runner_id", "")
+    _CLAIMED_FINGERPRINT = claimed.get("claimed_identity_fingerprint", "")
+    _CLAIMED_CRM_DEVICE_ID = str(claimed.get("crm_device_id") or "")
+    _CLAIMED_IDENTITY_VERIFIED = False
     _CUSTOMER_TELEGRAM_CHAT_ID = str(claimed.get("telegram_chat_id") or "").strip()
     _start_profile_heartbeat(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID)
     import atexit
@@ -2116,14 +2066,14 @@ def main():
     if not args.manual_manage and panel.get("manual_manage"):
         args.manual_manage = True
 
-    national = args.national or panel.get("national") or ""
-    birth    = args.birth    or panel.get("birth")    or ""
-    mobile   = args.mobile   or panel.get("mobile")   or ""
-    mobile   = str(mobile).strip()
-    # onvan-e profile (baraye log-ha). agar khali bud -> kod-e melli.
-    title    = str(panel.get("title") or "").strip() or (str(national).strip() or "manual")
+    inputs = _registration_inputs(claimed, args)
+    national, birth, mobile, passport = (inputs[key] for key in ("national", "birth", "mobile", "passport"))
+    # Linked attempts are never allowed to switch to unverified manual identity.
+    if claimed.get("crm_device_id"):
+        args.manual_manage = False
+    title = str(panel.get("title") or "").strip() or (str(national).strip() or "manual")
 
-    imeis = args.imei or panel.get("imeis") or None
+    imeis = inputs["imeis"]
     if not imeis:
         imeis = []
     imeis = [str(x).strip() for x in imeis if x and str(x).strip()]
@@ -2148,10 +2098,12 @@ def main():
                 imei = one
         title = str(panel.get("title") or "").strip() or (national or "")
 
-    print(f">>> Vorudi-ha: melli={national!r} birth={birth!r} imeis={imeis!r} "
-          f"(n={len(imeis)}) mobile={mobile!r} confirm_tik={not args.no_confirm_check} "
-          f"submit={args.submit} debugging={args.debugging} "
-          f"manual_manage={args.manual_manage}")
+    print(f">>> Registration input status: national={bool(national)} birth={bool(birth)} "
+          f"imeis={len(imeis)} mobile={bool(mobile)} passport={bool(passport)} "
+          f"submit={args.submit} debugging={args.debugging} manual_manage={args.manual_manage}")
+    if not args.manual_manage and not re.fullmatch(r"[A-Z0-9]{1,20}", passport):
+        import panel as profile_store
+        raise profile_store.ProfileIdentityStopped("A valid actual passport is required before submission")
     if not args.manual_manage and not (national and birth and imeis):
         print(">>> KHATA: vorudi-ha kamel nist. Aval panel.py ra ejra kon va zakhire kon.")
         return
@@ -2183,6 +2135,7 @@ def main():
                                    panel.get("browser_visible"))
     for attempt in range(1, MAX_TRY + 1):
         try:
+            _assert_identity_current()
             skip_build = reuse_driver  # in talash: driver-e ghabli ra negah dar
             if not reuse_driver:
                 ua = cc.USER_AGENTS[(attempt - 1) % len(cc.USER_AGENTS)]
@@ -2264,6 +2217,7 @@ def main():
                       "boro (tik-e taahhod ra ham bezan).")
                 man = ManualManageController(driver)
                 man.wait_until_user_ready()
+                _assert_identity_current()
                 found = brute_force_security_code(
                     driver, dbg=None, title=title,
                     national=national, imei=imei)
@@ -2466,6 +2420,11 @@ def main():
                 """, WP_CONTINUE)
 
             def _do_click():
+                _assert_identity_current()
+                if not verify_first_page_identity(driver, inputs):
+                    import panel as profile_store
+                    raise profile_store.ProfileIdentityStopped(
+                        "Initial form fields no longer match the claimed identity")
                 btn = find(driver, WP_CONTINUE)  # dobare peyda kon (id avaz mishavad)
                 driver.execute_script(
                     "arguments[0].scrollIntoView({block:'center'});", btn)
@@ -2874,6 +2833,7 @@ def main():
                     """, WP_HAMTA_CONTINUE)
 
                 def _do_hamta_click():
+                    _assert_identity_current()
                     hbtn = find(driver, WP_HAMTA_CONTINUE)  # dobare peyda kon
                     driver.execute_script(
                         "arguments[0].scrollIntoView({block:'center'});", hbtn)
@@ -3078,6 +3038,7 @@ def main():
                                 """, WP_TSC_CONTINUE)
 
                             def _do_tsc_click():
+                                _assert_identity_current()
                                 tbtn = find(driver, WP_TSC_CONTINUE)
                                 driver.execute_script(
                                     "arguments[0].scrollIntoView({block:'center'});", tbtn)
@@ -3153,10 +3114,9 @@ def main():
                                 print(">>> (safhe-ye registrantStep peyda nashod — "
                                       "_after_tsc ra check kon.)")
                             else:
-                                dbg.notify("marhale-ye 4: entekhab-e gomrok='سرو' + "
-                                           "mobile + gozarname='A'")
-                                # 1) gomrok = 'سرو' (DAGHIGH, na 'بازارچه سرو'):
-                                #    option-i ke text-ash barabar-e 'سرو' ast ra migirim.
+                                _assert_identity_current()
+                                dbg.notify("Registrant form: selecting customs and entering the claimed identity")
+                                # Keep the existing customs selection unchanged.
                                 gres = driver.execute_script(r"""
                                     var wp=arguments[0], target=arguments[1];
                                     var sel=document.querySelector('[wicketpath="'+wp+'"]');
@@ -3181,40 +3141,17 @@ def main():
                                 """, WP_REG_GOMROK, GOMROK_NAME)
                                 print(f">>> gomrok -> {gres}")
 
-                                # 2) mobile
-                                if mobile:
-                                    try:
-                                        type_and_verify(driver, WP_REG_MOBILE, mobile)
-                                    except Exception as _me:
-                                        print(f">>> (mobile na-shod ba type_and_verify: {_me})")
-                                    mob_now = driver.execute_script(
-                                        "var e=document.querySelector('[wicketpath=\"%s\"]');"
-                                        "return e?e.value:''" % WP_REG_MOBILE)
-                                    print(f">>> mobile -> {mob_now!r}")
-                                else:
-                                    print(">>> HOSHDAR: mobile khali ast (panel-ra check kon).")
-
-                                # 3) gozarname = 'A' (sabet)
-                                try:
-                                    type_and_verify(driver, WP_REG_PASSPORT, PASSPORT_VALUE)
-                                except Exception as _pe:
-                                    print(f">>> (gozarname na-shod: {_pe})")
-                                pass_now = driver.execute_script(
-                                    "var e=document.querySelector('[wicketpath=\"%s\"]');"
-                                    "return e?e.value:''" % WP_REG_PASSPORT)
-                                nat_now = driver.execute_script(
-                                    "var e=document.querySelector('[wicketpath=\"%s\"]');"
-                                    "return e?e.value:''" % WP_REG_NATIONAL)
-                                print(f">>> VERIFY-e marhale-4 -> gomrok_ok={gres.get('ok')} "
-                                      f"mobile={mob_now if mobile else '-'!r} "
-                                      f"gozarname={pass_now!r} melli(disabled)={nat_now!r}")
-
+                                # Enter the exact mobile and actual passport from
+                                # the claim; logs contain verification status only.
+                                type_and_verify(driver, WP_REG_MOBILE, mobile)
+                                type_and_verify(driver, WP_REG_PASSPORT, passport)
                                 gomrok_ok = bool(gres.get("ok"))
-                                pass_ok = (pass_now or "").strip() == PASSPORT_VALUE
-                                mob_ok = (not mobile) or bool((mob_now or "").strip())
-                                if not (gomrok_ok and pass_ok and mob_ok):
-                                    print(">>> HOSHDAR: field-haye marhale-4 kamel nashod — "
-                                          "dokme-ye edame zade NEMISHAVAD. dasti check kon.")
+                                identity_ok = verify_registrant_identity(driver, inputs)
+                                print(f">>> Registrant verification: customs={gomrok_ok} identity={identity_ok}")
+                                if not (gomrok_ok and identity_ok):
+                                    import panel as profile_store
+                                    raise profile_store.ProfileIdentityStopped(
+                                        "Registrant fields do not exactly match the claimed identity")
                                 else:
                                     # noghte-ye tasmim -> dar debug MEKAS (step)
                                     dbg.step("click: 'edame'-ye registrantStep (marhale-4) — "
@@ -3301,6 +3238,11 @@ def main():
                                         """, WP_REG_CONTINUE)
 
                                     def _do_reg_click():
+                                        _assert_identity_current()
+                                        if not verify_registrant_identity(driver, inputs):
+                                            import panel as profile_store
+                                            raise profile_store.ProfileIdentityStopped(
+                                                "Registrant fields no longer match the claimed identity")
                                         rbtn = find(driver, WP_REG_CONTINUE)
                                         driver.execute_script(
                                             "arguments[0].scrollIntoView({block:'center'});", rbtn)
@@ -3447,6 +3389,7 @@ def main():
                                                     driver.execute_script(
                                                         "arguments[0].scrollIntoView("
                                                         "{block:'center'});", end_btn)
+                                                    _assert_identity_current()
                                                     cc.fire_refresh_events(driver, end_btn)
                                                 except Exception as _ebe:
                                                     print(f">>> (click-e 'پایان' na-shod: "
@@ -3527,6 +3470,10 @@ def main():
                                             time.sleep(300)
                                         return
 
+                                    # Verification belongs to this attempt only, and
+                                    # is set after the exact registrant form advanced.
+                                    _assert_identity_current()
+                                    _CLAIMED_IDENTITY_VERIFIED = True
                                     # inja HATMAN scs amade (ya advanced)
                                     log_event("success",
                                               "marhale-4 bedun-e khata rad shod "
@@ -3541,6 +3488,7 @@ def main():
                                     if driver.find_elements(
                                             By.CSS_SELECTOR,
                                             f'[wicketpath="{WP_SCS_CHECK}"]'):
+                                        _assert_identity_current()
                                         found = brute_force_security_code(
                                             driver, dbg=dbg, title=title,
                                             national=national, imei=imei)
@@ -3586,13 +3534,27 @@ def main():
                     time.sleep(300)
             break  # kar tamam shod
 
+        except SystemExit:
+            # Safe identity stops must not retry. Close only this owned browser
+            # and release only the exact attempt, never force external actions.
+            if visibility is not None:
+                visibility.stop()
+            try:
+                if driver is not None:
+                    driver.quit()
+            finally:
+                _release_panel_profile(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID)
+            raise
+
         except Page1Restart:
             # safhe-ye 1 dobare (ba'd az 'پایان' marhale-4) — HAMUN driver,
             # quit NAMIKONIM. loop-e asli ba reuse_driver=True edame mikonad.
+            _CLAIMED_IDENTITY_VERIFIED = False
             print(">>> (Page1Restart: bazgasht be safhe-ye 1 — hamun morurgar)")
             continue
 
         except Exception as e:
+            _CLAIMED_IDENTITY_VERIFIED = False
             msg = str(e).splitlines()[0] if str(e) else type(e).__name__
             print(f">>> [talash {attempt}] khata: {msg}")
             if attempt >= MAX_TRY:
@@ -3626,4 +3588,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from maintenance_gate import run_job
+    run_job(main)

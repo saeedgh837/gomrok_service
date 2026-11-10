@@ -41,7 +41,6 @@ import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -110,30 +109,11 @@ TIGHT_BUDGET_SEC = 8.0
 _PRE_FIX = {}
 
 
-def _git_bytes(args):
-    """stdout of a git command in ROOT, or None when git failed.
-
-    A missing git binary is a hard error: the pre-fix comparison must never
-    quietly degrade into "not compared".
-    """
-    try:
-        done = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE)
-    except OSError as exc:
-        raise AssertionError(f"cannot run {args[0]!r}: {exc}") from exc
-    return done.stdout if done.returncode == 0 else None
-
-
 def _pre_fix_source_bytes():
-    """The pre-fix telegram_notify.py as bytes, from the pinned blob (or the commit)."""
-    raw = _git_bytes(["git", "cat-file", "blob", PRE_FIX_BLOB])
-    if not raw:
-        raw = _git_bytes(["git", "show", f"{PRE_FIX_COMMIT}:telegram_notify.py"])
-    if not raw:
-        raise AssertionError(
-            f"cannot read the pre-fix telegram_notify.py from git "
-            f"(blob {PRE_FIX_BLOB}, commit {PRE_FIX_COMMIT})")
-    return raw
+    """Read the fixed data fixture of the pinned pre-fix Git blob."""
+    path = os.path.join(HERE, "fixtures", "telegram_notify_prefanout.py")
+    with open(path, "rb") as handle:
+        return handle.read()
 
 
 def _load_pre_fix_module():

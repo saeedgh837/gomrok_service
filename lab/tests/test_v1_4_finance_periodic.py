@@ -166,10 +166,8 @@ class FinanceApiTests(unittest.TestCase):
         self.addCleanup(crm.reset_cache)
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
-
         from lab.tests import _auth_harness
+        _auth_harness.start_http_fixture(self, self.httpd)
         self._token = _auth_harness.seed_test_users()
         _auth_harness.install_auth_cookie(self, self._token)
         cust, _ = crm.add_customer({"full_name": "آزمون", "mobile": "09120000000"})
@@ -272,10 +270,8 @@ class PeriodicToolsApiTests(unittest.TestCase):
         self.addCleanup(crm.reset_cache)
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
-
         from lab.tests import _auth_harness
+        _auth_harness.start_http_fixture(self, self.httpd)
         self._token = _auth_harness.seed_test_users()
         _auth_harness.install_auth_cookie(self, self._token)
 

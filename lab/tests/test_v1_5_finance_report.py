@@ -458,8 +458,7 @@ class FinanceApiTests(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _url(self, path):
@@ -595,19 +594,19 @@ class FinanceApiTests(unittest.TestCase):
         self.assertTrue(text.startswith("گزارش مالی مشتریان: "))
         self.assertIn("مانده‌ها بر اساس مشتری‌های فعلی است.", text)
 
-    def test_pdf_fmt_serves_pdf_or_html_fallback(self):
+    def test_pdf_fmt_serves_rendered_pdf_bytes(self):
         self._seed_store([_customer("c1", "مشتری یک", [
             _tx("2026-09-15 09:00:00", 24000000, "receipt")])])
-        status, raw, headers = self._get(
-            "/crm-finance-report?mode=daily&ref=2026-09-15&fmt=pdf")
+        fixture_pdf = b"%PDF" + bytes(600)
+        with patch.object(panel, "crm_html_to_pdf", return_value=fixture_pdf) as converter:
+            status, raw, headers = self._get(
+                "/crm-finance-report?mode=daily&ref=2026-09-15&fmt=pdf")
         self.assertEqual(status, 200)
-        ctype = headers.get("Content-Type", "")
-        if "pdf" in ctype:
-            self.assertGreater(len(raw), 500)
-            self.assertEqual(raw[:4], b"%PDF")
-        else:
-            self.assertIn("html", ctype)
-            self.assertIn("print", raw.decode("utf-8"))
+        self.assertIn("pdf", headers.get("Content-Type", ""))
+        self.assertGreater(len(raw), 500)
+        self.assertEqual(raw[:4], b"%PDF")
+        self.assertEqual(raw, fixture_pdf)
+        converter.assert_called_once()
 
     def test_pdf_fmt_html_fallback_branch(self):
         # deterministic fallback: with the converter disabled the route must

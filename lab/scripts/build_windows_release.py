@@ -74,6 +74,8 @@ RUNTIME_REQS = [
 APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
     "app_paths.py", "crm.py", "jalali.py", "panel_auth.py",
+    "app_updater.py", "maintenance_gate.py", "installer_handoff.py",
+    "maintenance_service.py", "maintenance_ui.py",
     # Shared JSONL appender, imported lazily by panel.py and crm.py on every
     # log write. Absent from the bundle, a CLEAN install raises ImportError on
     # the first log line; an existing install only looks healthy because the
@@ -186,24 +188,14 @@ FIRST_RUN_TXT = """Before the first run
 
 1) Install Google Chrome.
 
-2) chromedriver: a matching copy is bundled in .tools\\chromedriver.exe, so
-   normally nothing to do.
+2) ChromeDriver: a matching copy is bundled in .tools\\chromedriver.exe.
+   If Chrome changes and the driver is missing or incompatible, the robot
+   stops with an update-required message. It never installs a driver silently.
 
-   If Chrome auto-updates to a NEW major version, the service repairs itself:
-   on the next robot launch it notices the mismatch, downloads the matching
-   driver from Google's Chrome-for-Testing service THROUGH THE SAME TUNNEL the
-   rest of the service uses, and swaps it in. There is nothing to download by
-   hand. The driver file is only ever replaced by a copy that passed a version
-   check first, so a failed download leaves the working driver untouched.
-
-   If that automatic repair could not reach Google (the tunnel was down, for
-   instance), open the panel's launch page and click
-   "به‌روزرسانی درایور مرورگر" to try again on demand. It reports what
-   happened either way.
-
-   Do NOT download chromedriver yourself. The Chrome-for-Testing site is not
-   directly reachable from Iran, and the service already knows how to fetch
-   the right build.
+   Sign in, open Updates in any panel header, check ChromeDriver, and confirm
+   installation. The update uses the configured connection and verifies the
+   driver before replacement. A failed download leaves the existing driver
+   untouched; retry after correcting the reported connection problem.
 
 3) Double-click install.bat once to verify the bundled runtime.
 
@@ -224,9 +216,13 @@ device inquiries, logs -- is stored in:
 
    %LOCALAPPDATA%\\irica
 
-To upgrade, just unzip the new release into a new folder and run it. Nothing
-needs to be copied by hand. Upgrading from v1.0.6 or older also needs nothing:
-the settings in your previous install are imported automatically on first run,
+Installed copies can check for application updates after sign-in and install
+only after confirmation. Active work is never forcibly stopped. Copies without
+the Updates controls need one normal installer upgrade before in-app updates
+are available. Portable copies require a manual upgrade into a new folder.
+
+Nothing needs to be copied by hand. Upgrading from v1.0.6 or older also needs
+nothing: the settings in your previous install are imported automatically on first run,
 whether you unzipped over the old folder or beside it (copied, not moved, so the
 old version keeps working if you go back). The panel prints which folder it read
 them from.
@@ -413,10 +409,6 @@ def copy_app(stage: Path) -> None:
     (stage / "install.bat").write_text(INSTALL_BAT, encoding="utf-8")
     (stage / "FIRST_RUN.txt").write_text(FIRST_RUN_TXT, encoding="utf-8")
 
-    # Bundle chromedriver when a copy is available next to the build script or
-    # at the C:\ override the robots historically use. Optional by design: a
-    # build on a machine without the driver still ships a working bundle
-    # (Selenium Manager resolves it), it just keeps the FIRST_RUN manual step.
     driver_candidates = [ROOT / ".tools" / "chromedriver.exe",
                          Path(r"C:\chromedriver.exe")]
     for candidate in driver_candidates:

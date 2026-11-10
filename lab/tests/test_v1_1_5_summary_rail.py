@@ -83,7 +83,7 @@ class SummaryRailMarkupTests(unittest.TestCase):
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.page)
 
     def test_css_collapses_below_cards_on_narrow_widths(self):
-        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:1fr}",
+        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:minmax(0,1fr)}",
                       self.page)
 
     def test_device_card_anchor_ids_added(self):

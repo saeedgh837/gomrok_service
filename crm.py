@@ -25,6 +25,8 @@ All English in code per the project contract; Persian appears only in
 user-facing error strings.
 """
 import datetime
+import errno
+import hashlib
 import jalali
 import json
 import os
@@ -33,7 +35,101 @@ import threading
 import time
 import uuid
 
-STORE_LOCK = threading.RLock()
+
+class _CRMStoreLock:
+    """Reentrant thread/file guard; pin the store path for each transaction."""
+
+    def __init__(self, timeout=30.0):
+        self._timeout = timeout
+        self._thread_lock = threading.RLock()
+        self._local = threading.local()
+
+    @property
+    def path(self):
+        return getattr(self._local, "path", None)
+
+    @staticmethod
+    def _file_lock(handle, release=False):
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(),
+                           msvcrt.LK_UNLCK if release else msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN if release else
+                        fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def acquire(self, blocking=True, timeout=-1):
+        if (not blocking and timeout != -1) or (timeout < 0 and timeout != -1):
+            raise ValueError("Invalid CRM lock timeout")
+        wait = self._timeout if timeout == -1 else timeout
+        deadline = time.monotonic() + wait
+        acquired = (self._thread_lock.acquire(timeout=wait) if blocking else
+                    self._thread_lock.acquire(False))
+        if not acquired:
+            return False
+        try:
+            if getattr(self._local, "depth", 0):
+                self._local.depth += 1
+                return True
+            path = os.path.normcase(os.path.realpath(os.path.abspath(_store_path())))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            handle = open(path + ".lock", "a+b")
+            try:
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                while True:
+                    try:
+                        self._file_lock(handle)
+                        break
+                    except OSError as error:
+                        if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                            raise
+                        remaining = deadline - time.monotonic()
+                        if not blocking or remaining <= 0:
+                            return False
+                        time.sleep(min(0.05, remaining))
+                self._local.path, self._local.handle = path, handle
+                self._local.depth = 1
+                return True
+            finally:
+                if not getattr(self._local, "depth", 0):
+                    handle.close()
+        finally:
+            if not getattr(self._local, "depth", 0):
+                self._thread_lock.release()
+
+    def release(self):
+        depth = getattr(self._local, "depth", 0)
+        if not depth:
+            raise RuntimeError("Cannot release an unowned CRM lock")
+        if depth > 1:
+            self._local.depth -= 1
+            self._thread_lock.release()
+            return
+        handle = self._local.handle
+        try:
+            self._file_lock(handle, release=True)
+        finally:
+            self._local.depth, self._local.path = 0, None
+            try:
+                handle.close()
+            finally:
+                self._local.handle = None
+                self._thread_lock.release()
+
+    def __enter__(self):
+        if not self.acquire():
+            raise TimeoutError("Timed out waiting for the CRM store lock")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.release()
+
+
+STORE_LOCK = _CRMStoreLock()
 
 BIRTH_RE = r"\d{4}/\d{1,2}/\d{1,2}"
 MOBILE_RE = r"09\d{9}"
@@ -429,7 +525,8 @@ def validate_device(data, exclude_device_id=None):
 # --------------------------------------------------------------------------
 
 def _store_path():
-    return (os.environ.get("IRICA_CRM_STORE") or "").strip() or _default_store_path()
+    return (STORE_LOCK.path or (os.environ.get("IRICA_CRM_STORE") or "").strip()
+            or _default_store_path())
 
 
 def _default_store_path():
@@ -473,14 +570,25 @@ def reset_cache():
     return None
 
 
-def _store_read():
+def _store_read(strict=False):
     path = _store_path()
-    if not os.path.exists(path):
+    if not strict and not os.path.exists(path):
         return _empty_store()
     try:
         with open(path, encoding="utf-8") as handle:
-            loaded = json.load(handle) or {}
-    except Exception:
+            loaded = json.load(handle)
+        if strict and (not isinstance(loaded, dict)
+                       or not isinstance(loaded.get("settings") or {}, dict)
+                       or any(not isinstance(loaded.get(key, []), list) or
+                              any(not isinstance(row, dict) for row in loaded.get(key, []))
+                              for key in ("owners", "devices"))):
+            raise ValueError("Invalid current CRM identity store")
+        loaded = loaded or {}
+    except Exception as error:
+        if strict:
+            if isinstance(error, FileNotFoundError):
+                return _empty_store()
+            raise RuntimeError("Current CRM identity store is unreadable or invalid") from None
         # Corrupt main file: fall back to the .bak before losing anything.
         bak = path + ".bak"
         if os.path.exists(bak):
@@ -666,22 +774,45 @@ def delete_customer(customer_id, force=False):
         return True, []
 
 
-def _device_mid_robot(device):
-    """True when an estelam run targets this row or its profile is busy (F13)."""
+def _device_mid_robot(device, strict=False):
+    """Check linked activity; identity mutations must fail closed on read errors."""
     try:
         import panel
+        if strict:
+            # Forgiving panel readers can hide a corrupt current runtime file.
+            # Never use a stale backup/cache as proof that an identity is idle.
+            for path_key, collection in (("ESTELAM_PATH", "devices"),
+                                         ("PROFILES_PATH", "profiles")):
+                path = getattr(panel, path_key, "")
+                if path:
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            runtime = json.load(handle)
+                    except FileNotFoundError:
+                        continue
+                    if (not isinstance(runtime, dict)
+                            or not isinstance(runtime.get(collection), list)
+                            or any(not isinstance(row, dict) for row in runtime[collection])):
+                        raise ValueError("Invalid runtime activity store")
         est = panel.estelam_load()
-        row = next((d for d in est.get("devices", [])
-                    if str(d.get("id")) == str(device.get("id"))), None)
-        if row and str(row.get("status") or "") == "running":
+        if any(str(row.get("id")) == str(device.get("id"))
+               and row.get("status") == "running" for row in est.get("devices", [])):
+            return True
+        if (strict and est.get("run_pid")
+                and str(est.get("run_device_id")) == str(device.get("id"))):
             return True
         profile_id = device.get("profile_id")
-        if profile_id:
-            profile = next((p for p in panel.load_store().get("profiles", [])
-                            if p.get("id") == profile_id), None)
-            if profile and profile.get("run_status") == "busy":
-                return True
+        if profile_id or strict:
+            for profile in panel.load_store().get("profiles", []):
+                linked = ((profile_id and profile.get("id") == profile_id) or
+                          (strict and profile.get("crm_device_id") == device.get("id")))
+                if linked and (profile.get("run_status") == "busy" or
+                               (strict and any(profile.get(key) == "running" for key in
+                                ("gomrok_inquiry_status", "hamta_inquiry_status")))):
+                    return True
     except Exception:
+        if strict:
+            raise RuntimeError("Registration activity cannot be verified; runtime store is unreadable") from None
         return False
     return False
 
@@ -1623,6 +1754,102 @@ tr.void td {{
 """
 
 
+def _owner_submission_fields(owner):
+    """Normalize material fields without modifying the owner or requiring drafts."""
+    fields = {key: normalize_digits(owner.get(key)).strip()
+              for key in ("national", "birth", "mobile")}
+    if re.fullmatch(BIRTH_RE, fields["birth"], flags=re.ASCII):
+        fields["birth"] = "/".join(f"{int(part):02d}" for part in fields["birth"].split("/"))
+    passport = str(owner.get("passport") or "").strip()
+    fields["passport"] = passport.upper() if passport.isascii() else passport
+    return fields
+
+
+def _registration_field_errors(fields, imeis):
+    """Registration validates submitted fields, not cosmetic names or cards."""
+    errors = []
+    if (not re.fullmatch(NATIONAL_RE, fields["national"], flags=re.ASCII)
+            or not national_checksum_ok(fields["national"])):
+        errors.append("Registration national code must have 10 digits and a valid checksum")
+    birth = fields["birth"]
+    age = shamsi_age(birth) if re.fullmatch(BIRTH_RE, birth, flags=re.ASCII) else None
+    if age is None or not 15 <= age <= 99:
+        errors.append("Registration birth date must be valid and age must be between 15 and 99")
+    else:
+        year, month, day = map(int, birth.split("/"))
+        last_day = 31 if month <= 6 else 30
+        if month == 12:
+            leap = any(tuple(gregorian_to_jalali(year + 622, 3, day)) == (year, 12, 30)
+                       for day in (19, 20))
+            last_day = 30 if leap else 29
+        if day > last_day:
+            errors.append("Registration birth date is not a valid calendar date")
+    if not re.fullmatch(MOBILE_RE, fields["mobile"], flags=re.ASCII):
+        errors.append("Registration mobile must have 11 digits and start with 09")
+    if not re.fullmatch(r"[A-Z0-9]{1,20}", fields["passport"]):
+        errors.append("Registration requires the actual passport: 1-20 Latin letters or digits")
+    if (not isinstance(imeis, list) or not 1 <= len(imeis) <= 2
+            or any(not re.fullmatch(r"[0-9]{15}", value) for value in imeis)
+            or len(set(imeis)) != len(imeis)):
+        errors.append("Registration requires one or two distinct 15-digit IMEIs")
+    return errors
+
+
+def registration_identity(device_id: str) -> tuple[dict | None, list[str]]:
+    """Return the exact linked CRM identity, without persisting normalization."""
+    if not isinstance(device_id, str) or not device_id.strip():
+        return None, ["Registration device ID is required"]
+    with STORE_LOCK:
+        try:
+            data = _store_read(strict=True)
+        except RuntimeError as error:
+            return None, [str(error)]
+        devices, owners = data.get("devices"), data.get("owners")
+        if (not isinstance(devices, list) or not isinstance(owners, list)
+                or any(not isinstance(row, dict) for row in devices + owners)):
+            return None, ["Registration identity collections are invalid"]
+        matching = [row for row in devices if row.get("id") == device_id]
+        if len(matching) != 1:
+            return None, ["Registration device is missing or ambiguous"]
+        device = matching[0]
+        owner_id = device.get("owner_id")
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            return None, ["Registration requires an explicitly linked owner"]
+        matching = [row for row in owners if row.get("id") == owner_id]
+        if (len(matching) != 1
+                or sum(row.get("owner_id") == owner_id for row in devices) != 1):
+            return None, ["Registration owner link is missing or ambiguous"]
+        owner = matching[0]
+        fields = _owner_submission_fields(owner)
+        serials = [normalize_digits(device.get(key)).strip() for key in ("serial1", "serial2")]
+        imeis = [serials[0]] + ([serials[1]] if serials[1] else [])
+        errors = _registration_field_errors(fields, imeis)
+        if errors:
+            return None, errors
+        name = " ".join(str(owner.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+        title = " — ".join(value for value in (str(device.get("name") or "").strip(), name) if value)
+        return {"device_id": device_id, "owner_id": owner_id, **fields,
+                "imeis": imeis, "title": title, "stage": stage_of(device)}, []
+
+
+def identity_fingerprint(identity: dict) -> str:
+    """SHA256 of submitted identity and exact links; cosmetic/stage changes do not count."""
+    if not isinstance(identity, dict):
+        raise ValueError("Registration identity must be a dictionary")
+    material = {key: identity.get(key) for key in ("device_id", "owner_id")}
+    if any(not isinstance(value, str) or not value.strip() for value in material.values()):
+        raise ValueError("Registration device and owner IDs are required")
+    material.update(_owner_submission_fields(identity))
+    imeis = identity.get("imeis")
+    material["imeis"] = ([normalize_digits(value).strip() for value in imeis]
+                         if isinstance(imeis, list) else imeis)
+    errors = _registration_field_errors(material, material["imeis"])
+    if errors:
+        raise ValueError("; ".join(errors))
+    payload = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def add_owner(fields):
     errs = validate_owner(fields)
     if errs:
@@ -1648,9 +1875,14 @@ def add_owner(fields):
 
 def update_owner(owner_id, fields):
     with STORE_LOCK:
-        data = _store_read()
-        record = next((o for o in data.get("owners", [])
-                       if o.get("id") == owner_id), None)
+        try:
+            data = _store_read(strict=True)
+        except RuntimeError as error:
+            return None, [str(error)]
+        matching = [owner for owner in data.get("owners", []) if owner.get("id") == owner_id]
+        if len(matching) > 1:
+            return None, ["Owner identity is ambiguous"]
+        record = matching[0] if matching else None
         if not record:
             return None, ["مسافر پیدا نشد"]
         merged = dict(record)
@@ -1660,6 +1892,18 @@ def update_owner(owner_id, fields):
         errs = validate_owner(merged)
         if errs:
             return None, errs
+        if _owner_submission_fields(merged) != _owner_submission_fields(record):
+            bound = [device for device in data.get("devices", [])
+                     if device.get("owner_id") == owner_id]
+            if len(bound) > 1:
+                return None, ["Owner device link is ambiguous"]
+            if any(stage_of(device) in ("payment_done", "done", "closed") for device in bound):
+                return None, ["Submitted identity cannot change for a paid, completed or closed case"]
+            try:
+                if any(_device_mid_robot(device, strict=True) for device in bound):
+                    return None, ["Submitted identity cannot change while registration or inquiry is active"]
+            except RuntimeError as error:
+                return None, [str(error)]
         record.update(merged)
         for key in ("national", "birth", "mobile", "card_no"):
             record[key] = normalize_digits(record.get(key) or "").replace(
@@ -2193,9 +2437,14 @@ def add_device(fields, customer=None, require_period=False):
 
 def update_device(device_id, fields):
     with STORE_LOCK:
-        data = _store_read()
-        record = next((d for d in data.get("devices", [])
-                       if d.get("id") == device_id), None)
+        try:
+            data = _store_read(strict=True)
+        except RuntimeError as error:
+            return None, [str(error)]
+        matching = [device for device in data.get("devices", []) if device.get("id") == device_id]
+        if len(matching) > 1:
+            return None, ["Device identity is ambiguous"]
+        record = matching[0] if matching else None
         if not record:
             return None, ["دستگاه پیدا نشد"]
         # serial1 is the immutable case identity (user item 2): a correction
@@ -2203,7 +2452,7 @@ def update_device(device_id, fields):
         # refunds the booked registry fee (Gate-H finding 2), so the message
         # tells the operator the correction is fee-neutral. Unchanged
         # (after digit normalization) or omitted serial1 keeps working;
-        # serial2 stays fully editable.
+        # serial2 changes obey the same submitted-identity safety as owner edits.
         if "serial1" in (fields or {}) and normalize_digits(
                 fields["serial1"]).strip() != normalize_digits(
                 record.get("serial1") or "").strip():
@@ -2219,6 +2468,15 @@ def update_device(device_id, fields):
         errs = validate_device(merged, exclude_device_id=device_id)
         if errs:
             return None, errs
+        if any(normalize_digits(merged.get(key)).strip() !=
+               normalize_digits(record.get(key)).strip() for key in ("serial1", "serial2")):
+            if stage_of(record) in ("payment_done", "done", "closed"):
+                return None, ["Submitted identity cannot change for a paid, completed or closed case"]
+            try:
+                if _device_mid_robot(record, strict=True):
+                    return None, ["Submitted identity cannot change while registration or inquiry is active"]
+            except RuntimeError as error:
+                return None, [str(error)]
         if merged.get("customer_id"):
             if not next((c for c in data.get("customers", [])
                          if c.get("id") == merged["customer_id"]), None):

@@ -39,6 +39,7 @@ class AuthorityTransportTests(unittest.TestCase):
         self.vault = TokenVault(store=MemorySecretStore(),
                                 path=os.path.join(self.tmp.name, "auth.dat"))
         self.client = SyncClient(self.config, self.vault)
+        self.addCleanup(self.client.close)
         self.client.login(fake_api.FAKE_USERNAME, fake_api.FAKE_PASSWORD)
         self.client.enroll()
 
@@ -129,6 +130,7 @@ class AuthorityTransportTests(unittest.TestCase):
             config,
             TokenVault(store=MemorySecretStore(),
                        path=os.path.join(self.tmp.name, "finance_auth.dat")))
+        self.addCleanup(client.close)
         client.login(fake_api.FAKE_USERNAME, fake_api.FAKE_PASSWORD)
         client.enroll()
 
@@ -152,12 +154,14 @@ class AuthorityTransportTests(unittest.TestCase):
 
 class AuthorityPanelContractTests(unittest.TestCase):
     def test_panel_commits_cursor_only_after_store_and_versions(self):
-        source = inspect.getsource(panel.cloud_pull_step)
+        source = inspect.getsource(panel._cloud_apply_snapshot)
         self.assertLess(source.index("apply.apply_snapshot("),
                         source.index("_save_cloud_versions(versions, versions_path)"))
         self.assertLess(source.index("_save_cloud_versions(versions, versions_path)"),
-                        source.index("client.commit_bootstrap(snapshot)"))
-        self.assertIn('getattr(config, "dataset_epoch", None) is None', source)
+                        source.index('runtime["client"].commit_bootstrap(snapshot)'))
+        dispatch = inspect.getsource(panel.cloud_pull_step)
+        self.assertIn("_cloud_apply_snapshot(runtime, snapshot)", dispatch)
+        self.assertIn('getattr(config, "dataset_epoch", None) is None', dispatch)
 
     def test_worker_bootstraps_before_outbox_run(self):
         source = inspect.getsource(panel.cloud_worker_beat)

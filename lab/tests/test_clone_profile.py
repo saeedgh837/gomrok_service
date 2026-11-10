@@ -58,8 +58,9 @@ class CloneProfileTests(unittest.TestCase):
                     "id": "p1", "title": "blocked", "enabled": False,
                     "registration_status": "blocked", "run_status": "idle",
                     "runtime_error": "این پروفایل دیگر قابل ورود نیست: IMEI قبلا ثبت شده",
-                    "national": "0011223344", "birth": "1375/04/29",
-                    "mobile": "09120000000", "imeis": ["352506099000001"],
+                    "national": "0012345679", "birth": "1375/04/29",
+                    "mobile": "09120000000", "passport": "PP0000001",
+                    "imeis": ["352506099000001"],
                 }]}, f, ensure_ascii=False)
             with patch.object(panel, "PROFILES_PATH", path), \
                     patch.object(panel, "INPUTS_PATH", os.path.join(tmp, "inputs.json")), \
@@ -68,6 +69,7 @@ class CloneProfileTests(unittest.TestCase):
                 cloned = panel.clone_profile("p1")
                 self.assertEqual(cloned["registration_status"], "pending")
                 self.assertEqual(cloned["runtime_error"], "")
+                self.assertEqual(cloned["passport"], "PP0000001")
                 # The block is gone, so start_profile no longer refuses with 409.
                 # Spawning the real robot is out of scope here, so the process
                 # launcher is stubbed; what matters is the gate, not the child.

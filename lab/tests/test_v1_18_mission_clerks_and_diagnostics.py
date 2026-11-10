@@ -318,46 +318,95 @@ class TestSystemUpdatesAndHealthChecks(unittest.TestCase):
             }
         }
 
-        with patch("chromedriver_updater.http_get_bytes") as mock_get:
-            def side_effect(url, **kwargs):
-                if "last-known-good-versions-with-downloads.json" in url:
-                    return json.dumps(mock_channels).encode("utf-8")
-                if "latest-versions-per-milestone-with-downloads.json" in url:
-                    return json.dumps(mock_milestones).encode("utf-8")
-                return b"{}"
-            mock_get.side_effect = side_effect
+        import chromedriver_updater
+        payloads = {
+            chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL: mock_channels,
+            chromedriver_updater.CFT_MILESTONE_URL: mock_milestones,
+        }
 
-            with patch("panel.get_installed_chrome_version", return_value="156.0.8078.49"):
-                with patch("chromedriver_updater.read_exe_version", return_value="154.0.8037.92"):
-                    res = panel.check_system_updates(force_direct=True)
-                    self.assertTrue(res["ok"])
-                    self.assertEqual(res["chrome"]["installed_version"], "156.0.8078.49")
-                    self.assertEqual(res["chromedriver"]["installed_version"], "154.0.8037.92")
-                    self.assertEqual(res["action_required"], "update_driver")
-                    self.assertIn("ناسازگار", res["notice"])
-                    self.assertTrue(res["proxy"]["used_direct"])
+        responses = []
+
+        def fake_get(_session, url, **kwargs):
+            self.assertIn(url, payloads, "unexpected diagnostics request")
+            body = json.dumps(payloads[url]).encode("utf-8")
+            response = MagicMock()
+            response.status_code = 200
+            response.headers = {"Content-Length": str(len(body))}
+            response.iter_content.return_value = iter((body,))
+            responses.append(response)
+            return response
+
+        driver_path = self.tmp.name + ".driver.exe"
+        with patch("requests.Session.get", autospec=True, side_effect=fake_get) as get, \
+                patch("panel.get_installed_chrome_version", return_value="156.0.8078.49"), \
+                patch("captcha_collector.resolve_chromedriver", return_value=driver_path) as resolve, \
+                patch("chromedriver_updater.read_exe_version", return_value="154.0.8037.92") as read_version, \
+                patch("captcha_collector._read_major_version", return_value=154) as read_major:
+            res = panel.check_system_updates(force_direct=True)
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["chrome"]["installed_version"], "156.0.8078.49")
+        self.assertEqual(res["chrome"]["installed_major"], 156)
+        self.assertEqual(res["chrome"]["latest_stable"], "156.0.8078.80")
+        self.assertEqual(res["chromedriver"]["installed_version"], "154.0.8037.92")
+        self.assertEqual(res["chromedriver"]["installed_major"], 154)
+        self.assertFalse(res["chromedriver"]["compatible"])
+        self.assertEqual(res["chromedriver"]["matched_version"], "156.0.8078.80")
+        self.assertEqual(res["chromedriver"]["download_url"],
+                         chromedriver_updater.cft_zip_url("156.0.8078.80"))
+        self.assertNotEqual(res["chromedriver"]["download_url"], "https://example.com/chromedriver-win64.zip")
+        self.assertEqual(res["action_required"], "update_driver")
+        self.assertIn("Sign in and confirm", res["notice"])
+        self.assertTrue(res["notice"].isascii())
+        self.assertTrue(res["proxy"]["used_direct"])
+        resolve.assert_called_once_with()
+        read_version.assert_called_once_with(driver_path)
+        read_major.assert_called_once_with(driver_path)
+        self.assertEqual([call.args[1] for call in get.call_args_list], list(payloads))
+        for call in get.call_args_list:
+            self.assertEqual(call.kwargs, {"proxies": {}, "timeout": (3, 5), "verify": True,
+                                           "allow_redirects": False, "stream": True})
+        self.assertEqual(len(responses), 2)
+        for response in responses:
+            response.iter_content.assert_called_once_with(chunk_size=16384)
+            response.close.assert_called_once_with()
 
     def test_check_services_health_structure(self):
-        with patch("requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_get.return_value = mock_resp
+        panel.save_system_proxy_config({"enabled": False, "host": "", "port": 0})
+        responses = []
 
-            # Clear system proxy config to test 'not_configured' state
-            panel.save_system_proxy_config({"enabled": False, "host": "", "port": 0})
+        def fake_get(_session, url, **kwargs):
+            self.assertIn(url, {"https://cloud.example.test/v1/health/live",
+                                "https://telegram.example.test"})
+            response = MagicMock()
+            response.status_code = 200
+            responses.append(response)
+            return response
 
+        config = MagicMock(api_base="https://cloud.example.test")
+        with patch("requests.Session.get", autospec=True, side_effect=fake_get) as get, \
+                patch("cloud_sync.config.load_config", return_value=config), \
+                patch.object(panel, "load_telegram_config", return_value={
+                    "mode": "direct", "api_base": "https://telegram.example.test"}):
             health = panel.check_services_health()
-            self.assertTrue(health["ok"])
-            self.assertIn("steps", health)
-            self.assertEqual(len(health["steps"]), 3)
 
-            step_ids = [s["id"] for s in health["steps"]]
-            self.assertIn("cloud", step_ids)
-            self.assertIn("telegram", step_ids)
-            self.assertIn("proxy", step_ids)
-
-            proxy_step = next(s for s in health["steps"] if s["id"] == "proxy")
-            self.assertEqual(proxy_step["status"], "not_configured")
+        self.assertTrue(health["ok"])
+        self.assertEqual([row["id"] for row in health["steps"]], ["cloud", "telegram", "proxy"])
+        self.assertEqual(len(health["steps"]), 3)
+        self.assertEqual(health["overall"], "warning")
+        cloud, telegram, proxy = health["steps"]
+        self.assertEqual(cloud["status"], "ok")
+        self.assertEqual(telegram["status"], "reachable")
+        self.assertEqual(telegram["readiness"], "unknown")
+        self.assertIn("message delivery were not tested", telegram["message"])
+        self.assertEqual(proxy["status"], "not_configured")
+        self.assertTrue(all(row["scope"] for row in health["steps"]))
+        self.assertEqual(get.call_count, 2)
+        for call in get.call_args_list:
+            self.assertEqual(call.kwargs, {"proxies": {}, "timeout": (3, 5), "verify": True,
+                                           "allow_redirects": False, "stream": True})
+        for response in responses:
+            response.close.assert_called_once_with()
 
 
 class TestFrontendContracts(unittest.TestCase):
@@ -399,7 +448,19 @@ class TestFrontendContracts(unittest.TestCase):
         # Free internet notice & recheck button
         self.assertIn("برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد", html)
         self.assertIn("فیلترشکن را روشن کردم؛ مجدداً بررسی کن", html)
-        self.assertIn("doUpdateChromeDriver", html)
+        self.assertIn("ورود برای به‌روزرسانی", html)
+        health = html.split("function renderHealthContent(d){", 1)[1].split("// Close modals", 1)[0]
+        for label in ("فقط بررسی ارتباط", "دسترسی رد شد", "تنظیم نشده", "پایان مهلت", "نامشخص"):
+            self.assertIn(label, health)
+        self.assertIn('<div lang="fa" dir="rtl">', health)
+        self.assertIn("آمادگی برای ارسال پیام بررسی نشده است.", health)
+        self.assertNotIn("row.message", health)
+        updates = html.split("function renderUpdatesContent(d, wasDirect){", 1)[1].split("function", 1)[0]
+        self.assertNotIn("d.notice", updates)
+        self.assertIn("بررسی نسخه ناموفق بود", updates)
+        self.assertIn("نسخهٔ سازگار", updates)
+        self.assertNotIn("doUpdateChromeDriver", html)
+        self.assertNotIn("/api/update-chromedriver", html)
         self.assertIn("/api/check-updates", html)
         self.assertIn("/api/health-check", html)
 
@@ -416,15 +477,18 @@ class TestSecurityAndNegativePaths(unittest.TestCase):
         handler = MagicMock()
         handler.command = "POST"
         handler.headers = {"Host": "127.0.0.1:8750"}
-        handler.client_address = ("192.168.1.50", 54321)
         handler._foreign_source.return_value = None
         handler._csrf_rejected.return_value = False
         handler.server = MagicMock()
         handler.server.server_address = ("127.0.0.1", 8750)
 
-        res = panel.Handler._gate(handler, "/api/update-chromedriver")
-        self.assertFalse(res)
-        handler._json.assert_called_with({"ok": False, "errors": ["دسترسی فقط از طریق لوکال مجاز است"]}, 403)
+        for peer in ("192.168.1.50", "testclient", "localhost"):
+            with self.subTest(peer=peer):
+                handler.client_address = (peer, 54321)
+                res = panel.Handler._gate(handler, "/api/update-chromedriver")
+                self.assertFalse(res)
+                handler._json.assert_called_with(
+                    {"ok": False, "errors": ["Maintenance is available from loopback only."]}, 403)
 
     def test_gate_rejects_foreign_origin_csrf(self):
         handler = MagicMock()

@@ -150,6 +150,7 @@ LOCAL_ONLY_SETTINGS = {
 EXPECTED_COUNTS = {
     "customers": 1, "customer_transactions": 2, "owners": 1,
     "identities": 1, "crm_devices": 1, "periods": 1, "settings": 1,
+    "clerks": 0, "clerk_transactions": 0,
 }
 
 
@@ -375,7 +376,7 @@ class TestPayload(unittest.TestCase):
         self.assertIsNone(dev["owner_id"])
 
     def test_a_document_missing_an_entity_is_refused(self):
-        # split_store always emits all seven; this pins the guard that keeps
+        # split_store emits every supported entity; this pins the guard that keeps
         # a future mapper change from silently dropping one from the payload.
         collections, _ = importer.split_document(
             sample_store(), source_installation_id=INSTALL)

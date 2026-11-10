@@ -6,7 +6,7 @@
   (review F5); failures keep the device in to_payment with advance_attempts
   capped at 6.
 - crm_ensure_registration_profile(): at handover, link or create the site-1
-  profile (dedupe by serial1/owner-national — review F9).
+  profile using canonical CRM identity and an exact serial-set match.
 - app_paths.MIGRATED_FILES carries the CRM data files (review F14).
 """
 import json
@@ -147,54 +147,65 @@ class TestAutoAdvance(CrmSchedulerCase):
         self.assertEqual(dev["advance_attempts"], 0)
 
     def test_auto_advance_moves_stage_only_on_200(self):
-        """F5: a 409/422/500 from start_profile must NOT advance the stage."""
+        """A 409/422/500 from the start boundary must not advance payment."""
         device = self._device_at_handed(auto_advance=True)
         self._advanced_estelam_row(device)
-        # create + link the profile so start fires
-        with patch.object(panel, "crm_ensure_registration_profile") as ensure, \
-                patch.object(panel, "start_profile") as startp, \
-                patch.object(panel, "estelam_is_running", return_value=False):
-            ensure.return_value = "prof-1"
-            startp.return_value = (409, {"error": "profile is already running"})
-            result = panel.crm_auto_advance_scan()
-        data = crm.store_read()
-        dev = next(d for d in data["devices"] if d["id"] == device["id"])
-        self.assertEqual(dev["stage"], "to_payment")
-        self.assertEqual(dev["advance_attempts"], 1)
+        for status in (409, 422, 500):
+            with self.subTest(status=status):
+                self._set_stage(device["id"], "handed")
+                with patch.object(panel, "_start_registration_profile",
+                                  return_value=(status, {"error": "synthetic start rejection"})) as start, \
+                        patch.object(panel, "estelam_is_running", return_value=False):
+                    result = panel.crm_auto_advance_scan()
+                dev = next(d for d in crm.store_read()["devices"] if d["id"] == device["id"])
+                self.assertTrue(dev["profile_id"])
+                profiles = panel.load_store()["profiles"]
+                self.assertIn(dev["profile_id"], [profile["id"] for profile in profiles])
+                start.assert_called_once_with(dev["profile_id"], None, payment_device_id=device["id"])
+                self.assertEqual(result["started"], [])
+                self.assertEqual(dev["stage"], "to_payment")
+                self.assertEqual(dev["advance_attempts"], 1)
+                self.assertFalse(dev.get("payment_confirmed_at"))
 
     def test_auto_advance_succeeds_on_200(self):
         device = self._device_at_handed(auto_advance=True)
         self._advanced_estelam_row(device)
-        with patch.object(panel, "crm_ensure_registration_profile") as ensure, \
-                patch.object(panel, "start_profile") as startp, \
+        with patch.object(panel, "start_profile_process", return_value={"pid": 4242}) as spawn, \
                 patch.object(panel, "estelam_is_running", return_value=False):
-            ensure.return_value = "prof-1"
-            startp.return_value = (200, {"pid": 4242})
             result = panel.crm_auto_advance_scan()
         self.assertIn(device["id"], result["started"])
-        data = crm.store_read()
-        dev = next(d for d in data["devices"] if d["id"] == device["id"])
+        dev = next(d for d in crm.store_read()["devices"] if d["id"] == device["id"])
         self.assertEqual(dev["stage"], "payment")
+        self.assertEqual(dev["advance_attempts"], 0)
+        self.assertTrue(dev["payment_started_at"])
+        self.assertFalse(dev.get("payment_confirmed_at"))
+        profile = next(p for p in panel.load_store()["profiles"] if p["id"] == dev["profile_id"])
+        self.assertEqual(profile["national"], "0012345679")
+        self.assertEqual(profile["passport"], "PP0000001")
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args, (dev["profile_id"],))
+        self.assertTrue(spawn.call_args.kwargs["runner_id"])
 
     def test_auto_advance_gives_up_after_six_attempts(self):
         device = self._device_at_handed(auto_advance=True)
         self._advanced_estelam_row(device)
-        for _ in range(8):
-            with patch.object(panel, "crm_ensure_registration_profile") as ensure, \
-                    patch.object(panel, "start_profile") as startp, \
-                    patch.object(panel, "estelam_is_running", return_value=False):
-                ensure.return_value = "prof-1"
-                startp.return_value = (409, {"error": "busy"})
+        with patch.object(panel, "_start_registration_profile",
+                          return_value=(409, {"error": "synthetic busy"})) as start, \
+                patch.object(panel, "estelam_is_running", return_value=False):
+            for _ in range(8):
                 panel.crm_auto_advance_scan()
-        data = crm.store_read()
-        dev = next(d for d in data["devices"] if d["id"] == device["id"])
+        dev = next(d for d in crm.store_read()["devices"] if d["id"] == device["id"])
         self.assertEqual(dev["stage"], "to_payment")
-        self.assertEqual(dev["advance_attempts"], 6)   # capped
+        self.assertEqual(dev["advance_attempts"], 6)
+        self.assertEqual(start.call_count, 6)
+        self.assertTrue(dev["profile_id"])
+        self.assertIn(dev["profile_id"], [profile["id"] for profile in panel.load_store()["profiles"]])
+        self.assertFalse(dev.get("payment_confirmed_at"))
 
     def test_no_auto_flag_never_starts_profile(self):
         device = self._device_at_handed(auto_advance=False)
         self._advanced_estelam_row(device)
-        with patch.object(panel, "start_profile") as startp, \
+        with patch.object(panel, "start_profile_process") as startp, \
                 patch.object(panel, "estelam_is_running", return_value=False):
             result = panel.crm_auto_advance_scan()
         startp.assert_not_called()

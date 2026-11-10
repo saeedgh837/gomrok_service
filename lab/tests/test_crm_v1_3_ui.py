@@ -76,6 +76,47 @@ class TestPaymentRobotRow(unittest.TestCase):
         self.assertIn("روبات پرداخت خودکار در جریان است", src)
 
     def test_state_payload_joins_profile_runtime(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {"IRICA_CRM_STORE": os.path.join(directory, "crm.json")}), \
+                patch.multiple(panel, PROFILES_PATH=os.path.join(directory, "profiles.json"),
+                               INPUTS_PATH=os.path.join(directory, "inputs.json"),
+                               _STORE_LOCK_PATH=os.path.join(directory, "profiles.json.lock"),
+                               ESTELAM_PATH=os.path.join(directory, "estelam.json")), \
+                patch.object(panel, "estelam_is_running", return_value=False):
+            crm.reset_cache()
+            panel._LAST_GOOD_STORE.clear()
+            try:
+                device, errors = crm.add_device({"name": "Synthetic device", "serial1": "356938035643809"})
+                self.assertEqual(errors, [])
+                owner, errors = crm.add_owner({"first_name": "Synthetic", "last_name": "Passenger",
+                    "national": "0012345679", "birth": "1375/04/29", "mobile": "09121234567",
+                    "passport": "PP0000001"})
+                self.assertEqual(errors, [])
+                data = crm.store_read()
+                row = next(row for row in data["devices"] if row["id"] == device["id"])
+                row.update(owner_id=owner["id"], stage="to_payment")
+                crm.store_write(data)
+                profile_id = panel.crm_ensure_registration_profile(device["id"])
+                claim = panel.claim_profile(profile_id)
+                self.assertIsNotNone(claim)
+                self.assertEqual(panel.set_browser_visibility(profile_id, True)[0], 200)
+                receipt = os.path.join(directory, "receipt.png")
+                with open(receipt, "wb") as handle:
+                    handle.write(bytes((137, 80, 78, 71, 13, 10, 26, 10)))
+                published = panel.publish_profile_result(
+                    profile_id, claim["runner_id"], claim["claimed_identity_fingerprint"],
+                    {"receipt": receipt, "payment": "", "link": "https://payment.example.test/current",
+                     "identity_verified": True})
+                self.assertTrue(published["ok"], published)
+                row = panel.crm_state_payload()["devices"][0]
+                self.assertEqual(row["pay"]["run_status"], "busy")
+                self.assertTrue(row["pay"]["browser_visible"])
+                self.assertEqual(row["pay"]["payment_link"], "https://payment.example.test/current")
+                self.assertEqual(row["pay"]["receipt_screenshot"], receipt)
+            finally:
+                crm.reset_cache()
+
+    def test_ownerless_mismatched_profile_has_no_current_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             profiles_path = os.path.join(temp_dir, "profiles.json")
             with open(profiles_path, "w", encoding="utf-8") as handle:
@@ -103,9 +144,10 @@ class TestPaymentRobotRow(unittest.TestCase):
                                      return_value=False):
                     payload = panel.crm_state_payload()
                 row = payload["devices"][0]
-                self.assertEqual(row["pay"]["run_status"], "busy")
-                self.assertTrue(row["pay"]["browser_visible"])
-                self.assertEqual(row["pay"]["payment_link"], "https://x/pay")
+                self.assertEqual(row["pay"]["run_status"], "")
+                self.assertFalse(row["pay"]["browser_visible"])
+                self.assertEqual(row["pay"]["payment_link"], "")
+                self.assertEqual(row["pay"]["receipt_screenshot"], "")
             finally:
                 crm.reset_cache()
                 os.environ.pop("IRICA_CRM_STORE", None)

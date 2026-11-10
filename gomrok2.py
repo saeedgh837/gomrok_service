@@ -60,15 +60,22 @@ def ensure_utf8_stdio():
 _CLAIMED_PROFILE_ID = ""
 _CLAIMED_RUNNER_ID = ""
 _CLAIMED_NATIONAL = ""
+_CLAIMED_CRM_DEVICE_ID = ""
+_CLAIMED_FINGERPRINT = ""
 
 
-def _claim_panel_profile(profile_id=None):
+def _claim_panel_profile(profile_id=None, runner_id=None):
+    import panel
     try:
+        return panel.claim_profile(profile_id, runner_id)
+    except Exception:
+        raise panel.ProfileIdentityStopped("Cannot claim a verified registration attempt") from None
+
+
+def _assert_identity_current():
+    if _CLAIMED_PROFILE_ID:
         import panel
-        return panel.claim_profile(profile_id)
-    except Exception as e:
-        print(f">>> (claim-e profile anjam nashod: {e})")
-        return None
+        panel.assert_profile_identity_current(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID)
 
 
 def _release_panel_profile(profile_id, runner_id):
@@ -511,6 +518,7 @@ def _code_page_ready(driver, timeout=20.0):
     """Montazer mimanad ta field-e kod rooye safhe zaher shavad."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        _assert_identity_current()
         try:
             if driver.execute_script(
                     'return !!document.querySelector(\'[wicketpath="%s"]\');' % WP_CODE_FIELD):
@@ -533,6 +541,7 @@ def _submit_one_code(driver, code):
         driver.execute_script(_CLEAR_ALERT_JS)
     except Exception:
         pass
+    _assert_identity_current()
     ok = driver.execute_script(_FIRE_JS, code)
     if not ok:
         return ("wrong", "فیلد کد یا دکمه‌ی تأیید پیدا نشد؛ مطمئن شو روی صفحه‌ی کد هستی.")
@@ -541,6 +550,7 @@ def _submit_one_code(driver, code):
     deadline = time.time() + 6.0
     last = {}
     while time.time() < deadline:
+        _assert_identity_current()
         try:
             last = driver.execute_script(_READ_JS) or {}
         except Exception:
@@ -571,6 +581,7 @@ def run_code_entry(driver, handoff):
 
     attempts = 0
     while True:
+        _assert_identity_current()
         handoff._ensure()
         try:
             submitted = driver.execute_script("return window.__gomrok2_code_submit===true;")
@@ -1157,6 +1168,10 @@ def _run_codeflow(driver, handoff, args):
     """Masir-e entekhab-shode-ra ejra mikonad va outcome barmigardanad
     ('success'|'failed'|'notfound'|'error'|None). None ya'ni masir-e halghe-i
     (manual/diagnose) ke khodash motevaghef nemishavad."""
+    if _CLAIMED_CRM_DEVICE_ID and not getattr(args, "manual", False):
+        from robot_launcher import stop_for_manual_verification
+        stop_for_manual_verification(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID,
+                                     _CLAIMED_FINGERPRINT)
     mode, codes = _choose_codeflow(args)
     if mode == "manual":
         run_code_entry(driver, handoff)
@@ -1279,10 +1294,8 @@ def _build_desktop_driver():
     options.add_argument("--start-maximized")
     options.add_argument(f"--user-agent={ua}")
 
-    path = cc.resolve_chromedriver()
-    if path and os.path.isfile(path):
-        return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
-    return webdriver.Chrome(options=options)
+    path = cc.require_compatible_chromedriver()
+    return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
 
 
 # ---------------------------------------------------------------------------
@@ -1294,10 +1307,8 @@ def _attach_driver(address):
 
     options = Options()
     options.add_experimental_option("debuggerAddress", address)
-    path = cc.resolve_chromedriver()
-    if path and os.path.isfile(path):
-        return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
-    return webdriver.Chrome(options=options)
+    path = cc.require_compatible_chromedriver()
+    return webdriver.Chrome(service=ChromeService(executable_path=path), options=options)
 
 
 def _pick_tab(driver, needle=""):
@@ -1331,11 +1342,15 @@ def run_after_continue(driver, handoff, debug=False):
 
 # ---------------------------------------------------------------------------
 def main(argv=None):
-    global _CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID
+    global _CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID, _CLAIMED_NATIONAL
+    global _CLAIMED_CRM_DEVICE_ID, _CLAIMED_FINGERPRINT
+    _CLAIMED_PROFILE_ID = _CLAIMED_RUNNER_ID = _CLAIMED_NATIONAL = ""
+    _CLAIMED_CRM_DEVICE_ID = _CLAIMED_FINGERPRINT = ""
     ensure_utf8_stdio()
     system_debug.configure("gomrok-site2")
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-id")
+    parser.add_argument("--runner-id", help=argparse.SUPPRESS)
     parser.add_argument("--url", default=URL)
     parser.add_argument("--debug", action="store_true",
                         help="halghe-ye snapshot: har 'edame' -> zakhire-ye HTML/screenshot/kholase")
@@ -1366,12 +1381,14 @@ def main(argv=None):
     use_panel = not (args.no_panel or args.attach or (args.debug and not args.profile_id))
     title = "سایت دوم"
     if use_panel:
-        claimed = _claim_panel_profile(args.profile_id)
+        claimed = _claim_panel_profile(args.profile_id, args.runner_id)
         if not claimed:
             print(">>> [gomrok2] profile-e azad baraye ejra vojood nadarad.")
             return
         _CLAIMED_PROFILE_ID = claimed.get("id", "")
         _CLAIMED_RUNNER_ID = claimed.get("runner_id", "")
+        _CLAIMED_CRM_DEVICE_ID = str(claimed.get("crm_device_id") or "")
+        _CLAIMED_FINGERPRINT = str(claimed.get("claimed_identity_fingerprint") or "")
         _CLAIMED_NATIONAL = str(claimed.get("national") or "").strip()
         title = str(claimed.get("title") or claimed.get("national") or "سایت دوم").strip()
         _start_profile_heartbeat(_CLAIMED_PROFILE_ID, _CLAIMED_RUNNER_ID)
@@ -1382,6 +1399,7 @@ def main(argv=None):
 
     driver = None
     try:
+        _assert_identity_current()
         if args.attach:
             # morurgar-e baz: hich vaght baste/navigate nemishavad.
             driver = _attach_driver(args.attach)
@@ -1411,7 +1429,9 @@ def main(argv=None):
             run_after_continue(driver, handoff, debug=True)
             outcome = None
         else:
+            _assert_identity_current()
             outcome = _run_codeflow(driver, handoff, args)
+        _assert_identity_current()
 
         # --- negahdari-ye morurgar ba'd az payan-e codeflow ---
         # dar HAME-ye halat-ha robot khamoosh mishavad; morurgar hichvaght baste
@@ -1430,6 +1450,10 @@ def main(argv=None):
                 # movaffaghiat: notif + log dar panel-e site2. morurgar baz mimanad
                 # ta banner-e 'done' payda bashad va user dasti bebandad.
                 national = _read_captured_national(driver) or _CLAIMED_NATIONAL
+                if _CLAIMED_PROFILE_ID and national != _CLAIMED_NATIONAL:
+                    import panel
+                    raise panel.ProfileIdentityStopped("Site-2 account does not match the claimed identity")
+                _assert_identity_current()
                 _notify_site2_success(national)
                 print(">>> [gomrok2] movaffagh; robot khamoosh mishavad, "
                       "morurgar baz mimanad (baste-shodan dasti).", flush=True)
@@ -1437,6 +1461,11 @@ def main(argv=None):
                 # masir-e halghe-i (manual/diagnose): morurgar baz mimanad.
                 print(">>> [gomrok2] robot khamoosh mishavad; morurgar baz "
                       "mimanad (baste-shodan dasti).", flush=True)
+    except SystemExit:
+        # On a safety stop, close only a browser this worker constructed.
+        if driver is not None and not args.attach:
+            driver.quit()
+        raise
     finally:
         # morurgar hichvaght baste NEMISHAVAD — hatta morurgar-e khod-e ma.
         # user khodash dasti mibandad; robot faghat claim-e profile-ra azad mikonad.
@@ -1444,4 +1473,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    from maintenance_gate import run_job
+    run_job(main)

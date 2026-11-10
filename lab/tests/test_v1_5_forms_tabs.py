@@ -107,7 +107,7 @@ class FormSourceMarkerTests(unittest.TestCase):
         self.assertTrue(body, "dlgAttach body not found")
         # v1.5 finance round: the bound map stays, but only as the filter —
         # no disabled options and no « — متصل» suffix anymore
-        self.assertIn("bound[d.owner_id]=true", body)
+        self.assertRegex(body, r"forEach\((\w+)=>\{if\(\1.owner_id\)bound\[\1.owner_id\]=true;\}\)")
         self.assertIn(".filter(o=>!bound[o.id])", body)
         self.assertIn("<option", body)
         self.assertNotRegex(body, r"<option[^>]*disabled")
@@ -193,8 +193,7 @@ class V15HttpHarness(unittest.TestCase):
 
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _seed_green_estelam(self, device_id):

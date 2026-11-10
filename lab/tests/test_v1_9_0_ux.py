@@ -176,6 +176,21 @@ class SoundEngineTests(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        # Route/whitelist behavior needs synthetic bytes, not shipped assets.
+        import wave
+        sound_dir = os.path.join(tmp.name, "sfx")
+        os.makedirs(sound_dir)
+        with wave.open(os.path.join(sound_dir, "ui-ok.wav"), "wb") as sound:
+            sound.setnchannels(1)
+            sound.setsampwidth(2)
+            sound.setframerate(8000)
+            sound.writeframes(bytes(1600))
+        here = patch.object(panel, "HERE", tmp.name)
+        here.start()
+        self.addCleanup(here.stop)
+        cache = patch.dict(panel._SFX_CACHE, {}, clear=True)
+        cache.start()
+        self.addCleanup(cache.stop)
         store = os.path.join(tmp.name, "crm_store.json")
         patches = [
             patch.dict(os.environ, {"IRICA_CRM_STORE": store}),
@@ -191,8 +206,7 @@ class SoundEngineTests(unittest.TestCase):
 
         httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         port = httpd.server_address[1]
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
+        _auth_harness.start_http_fixture(self, httpd)
 
         def get(path):
             req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")

@@ -15,7 +15,9 @@ Ejra:
     python panel.py
 sepas boro be:  http://127.0.0.1:8750
 """
+import copy
 import functools
+import hashlib
 import json
 import os
 import re
@@ -68,6 +70,7 @@ _MIGRATED_FILES = app_paths.bootstrap()
 DATA_DIR = app_paths.data_dir()
 
 import panel_auth  # noqa: E402  (needs HERE on sys.path first)
+from maintenance_ui import with_maintenance_ui
 
 # The three operator accounts are NOT seeded here. robots import this module
 # too (gomrok.py, exitban.py, ...), and their stdout is a log file — seeding
@@ -250,10 +253,14 @@ class StoreUnreadableError(RuntimeError):
 
 
 @contextmanager
-def _locked_store():
-    """Lock-e beyn-processi; chand gomrok.py yek profile ra claim nakonand."""
+def _locked_store(timeout=None):
     import msvcrt
-    with _STORE_LOCK:
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    acquired = (_STORE_LOCK.acquire() if deadline is None else
+                _STORE_LOCK.acquire(timeout=max(0.0, deadline - time.monotonic())))
+    if not acquired:
+        raise TimeoutError("The profile store is busy")
+    try:
         os.makedirs(os.path.dirname(_STORE_LOCK_PATH), exist_ok=True)
         with open(_STORE_LOCK_PATH, "a+b") as lock_file:
             if os.path.getsize(_STORE_LOCK_PATH) == 0:
@@ -265,20 +272,29 @@ def _locked_store():
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
-                    time.sleep(0.05)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError("The profile store is busy") from None
+                    remaining = 0.05 if deadline is None else min(0.05, max(0.0, deadline - time.monotonic()))
+                    time.sleep(remaining)
             try:
                 yield
             finally:
                 lock_file.seek(0)
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        _STORE_LOCK.release()
 
 PROFILE_DEFAULTS = {
     "id": "", "title": "", "national": "", "birth": "", "mobile": "", "telegram_chat_id": "",
     "first_name": "", "last_name": "", "father_name": "", "birth_certificate_no": "",
-    # v1.5 item 11: OPTIONAL latin passport number, carried for the operator's
-    # manual portal workflow. Never required — start_profile's missing-list
-    # deliberately does NOT include it (robot side out of scope).
+    # Draft profiles may be incomplete; automated registration requires the
+    # actual passport, never a placeholder.
     "passport": "",
+    # Local-only attempt metadata. These fields are not part of the cloud schema.
+    "crm_device_id": "", "identity_fingerprint": "",
+    "claimed_identity_fingerprint": "", "claimed_runner_id": "",
+    "attempt_invalidated": False, "attempt_reserved": False,
+    "identity_review_required": False, "attempt_history": [],
     "imeis": ["", ""], "no_confirm_check": False, "submit": True,
     "debugging": False, "manual_manage": False,
     # Morurgar be tore pishfarz makhfi (off-screen) ejra mishavad ta manabe-e
@@ -325,8 +341,14 @@ def _clean_profile(p):
               "exitban_result", "exitban_checked_at", "device_inquiry_service",
               "device_inquiry_started_at", "gomrok_inquiry_status", "gomrok_inquiry_error",
               "gomrok_inquiry_checked_at", "hamta_inquiry_status", "hamta_inquiry_error",
-              "hamta_inquiry_checked_at"):
+              "hamta_inquiry_checked_at", "crm_device_id", "identity_fingerprint",
+              "claimed_identity_fingerprint", "claimed_runner_id"):
         out[k] = str(out.get(k) or "").strip()
+    for key in ("attempt_invalidated", "attempt_reserved", "identity_review_required"):
+        out[key] = bool(out.get(key))
+    history = out.get("attempt_history")
+    out["attempt_history"] = [copy.deepcopy(e) for e in history[-20:]
+                              if isinstance(e, dict)] if isinstance(history, list) else []
     # Optional passport (v1.5 item 11): normalize strip+uppercase, NEVER
     # reject — legacy rows without the key simply default to "" and stay
     # valid. Format enforcement lives in the /save route only.
@@ -456,6 +478,10 @@ def _backup_path():
 
 # Set by shutdown_everything(); main()'s serve loop polls it and exits cleanly.
 _SHUTDOWN_REQUESTED = threading.Event()
+_MAINTENANCE_DRAINING = threading.Event()
+_ACTIVE_HTTP_SERVER = None
+_TELEGRAM_BOOTSTRAP_THREAD = None
+_UPDATE_SHUTDOWN_LOCK = threading.Lock()
 
 
 def stop_profile_inquiry(profile_id):
@@ -553,6 +579,16 @@ def _parse_store_file(path):
     return {"profiles": profs, "active_id": active}
 
 
+def _recovered_profile_store(store):
+    recovered = copy.deepcopy(store)
+    recovered["recovery_required"] = True
+    for profile in recovered.get("profiles", []):
+        _invalidate_profile_identity(profile)
+        profile["attempt_invalidated"] = True
+        profile["runtime_error"] = "Profile storage requires recovery; recovered results are historical only"
+    return recovered
+
+
 def load_store():
     """profiles.json ra mikhanad: {profiles:[...], active_id:"..."}.
 
@@ -575,12 +611,11 @@ def load_store():
         if recovered is not None:
             print(">>> HOSHDAR: profiles.json kharab bood — az profiles.json.bak barmigardanim.")
             _LAST_GOOD_STORE[PROFILES_PATH] = recovered
-            return recovered
+            return _recovered_profile_store(recovered)
         cached = _LAST_GOOD_STORE.get(PROFILES_PATH)
         if cached is not None:
-            print(">>> HOSHDAR: profiles.json kharab bood — az cache-e process estefade shod.")
-            return {"profiles": [dict(p) for p in cached["profiles"]],
-                    "active_id": cached["active_id"]}
+            print(">>> Profile storage is unreadable; recovered inputs are read-only.")
+            return _recovered_profile_store(cached)
         raise StoreUnreadableError(
             "profiles.json ghabel-e khandan nist va backup/cache ham vojood nadarad")
 
@@ -608,6 +643,8 @@ def save_store(store):
     agar process/system zir-e bar ghat' shavad, file-e khali/nimekare baja
     migozarad — hamin baes-e 'khali shodan-e profile-ha' mishod.
     """
+    if store.get("recovery_required"):
+        raise StoreUnreadableError("Recovered profile inputs cannot replace the current store")
     profs = [_clean_profile(p) for p in store.get("profiles", [])]
     active = store.get("active_id") or (profs[0]["id"] if profs else "")
     if profs and active not in [p["id"] for p in profs]:
@@ -660,41 +697,307 @@ def save_store(store):
     return clean
 
 
-def mark_profile_success(title="", national="", imei="", payment_link=""):
-    """Profile-e motabegh ra vaghti be pardakht resid movaffagh mikonad."""
-    import time
-    store = load_store()
-    title, national, imei = str(title).strip(), str(national).strip(), str(imei).strip()
-    target = None
-    for p in store.get("profiles", []):
-        if national and p.get("national") == national:
-            target = p
-            break
-        if imei and imei in (p.get("imeis") or []):
-            target = p
-            break
-        if title and p.get("title") == title:
-            target = p
-    if not target:
-        return False
-    target["registration_status"] = "success"
-    target["success_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    target["payment_link"] = str(payment_link or "").strip()
-    save_store(store)
-    return True
+_REGISTRATION_STAGES = frozenset(("handed", "to_payment", "payment"))
+_PROTECTED_REGISTRATION_STAGES = frozenset(("payment_done", "done", "closed"))
+_IDENTITY_FIELDS = ("national", "birth", "mobile", "passport", "imeis")
+_RESULT_FIELDS = ("success_at", "payment_link", "receipt_screenshot", "payment_screenshot")
 
 
-def mark_profile_unusable(profile_id, error_text):
-    with _locked_store():
-        store = load_store()
+class RegistrationIdentityError(ValueError):
+    """The local profile cannot be bound to one authoritative CRM identity."""
+
+
+class ProfileIdentityStopped(SystemExit):
+    """A stale registration attempt must stop, not enter a robot retry loop."""
+
+
+@contextmanager
+def _registration_transaction():
+    """The only lock order for linked profile transactions: CRM, then profiles.
+
+    Helpers used inside this context operate on the supplied stores and never
+    acquire the non-reentrant interprocess profile lock again.
+    """
+    import crm as crm_mod
+    with crm_mod.STORE_LOCK:
+        with _locked_store():
+            data = crm_mod._store_read(strict=True)
+            if os.path.exists(PROFILES_PATH):
+                store = _parse_store_file(PROFILES_PATH)
+                if store is None:
+                    raise StoreUnreadableError("Current registration profiles are unreadable; recovery needs review")
+                ids = [p["id"] for p in store["profiles"]]
+                if len(ids) != len(set(ids)):
+                    raise StoreUnreadableError("Duplicate registration profile IDs require review")
+            else:
+                store = load_store()
+            yield crm_mod, data, store
+
+
+def _profile_device(profile, data):
+    """Resolve explicit and reverse links without any personal-data matching."""
+    profile_id = profile.get("id")
+    reverse_id = str(profile.get("crm_device_id") or "")
+    devices = [d for d in data.get("devices", [])
+               if (reverse_id and d.get("id") == reverse_id)
+               or (profile_id and d.get("profile_id") == profile_id)]
+    if len(devices) > 1:
+        raise RegistrationIdentityError("Ambiguous CRM/profile binding; review the case links")
+    if not devices:
+        if reverse_id:
+            raise RegistrationIdentityError("The linked CRM device is missing; review the case")
+        return None
+    device = devices[0]
+    if reverse_id and device.get("id") != reverse_id:
+        raise RegistrationIdentityError("Conflicting CRM/profile binding; review the case links")
+    if not reverse_id:
+        import crm as crm_mod
+        serials = {crm_mod.normalize_digits(device.get(k)).strip()
+                   for k in ("serial1", "serial2") if device.get(k)}
+        if serials != set(_profile_material(profile)["imeis"]):
+            raise RegistrationIdentityError("Opaque CRM profile link does not match this local device")
+    return device
+
+
+def _profile_material(profile, device_id="", owner_id=""):
+    import crm as crm_mod
+    birth = crm_mod.normalize_digits(profile.get("birth")).strip()
+    parts = birth.split("/")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        birth = "/".join((parts[0], parts[1].zfill(2), parts[2].zfill(2)))
+    return {
+        "device_id": device_id, "owner_id": owner_id,
+        "national": crm_mod.normalize_digits(profile.get("national")).strip(),
+        "birth": birth,
+        "mobile": crm_mod.normalize_digits(profile.get("mobile")).strip(),
+        "passport": str(profile.get("passport") or "").strip().upper(),
+        "imeis": [crm_mod.normalize_digits(v).strip() for v in profile.get("imeis", [])],
+    }
+
+
+def _manual_fingerprint(profile):
+    material = _profile_material(profile)
+    return hashlib.sha256(json.dumps(material, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _attempt_evidence(profile, *, status, fingerprint=None, runner_id=None, result=None):
+    result = result or {}
+    evidence = {
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"), "status": status,
+        "fingerprint": fingerprint if fingerprint is not None else
+            profile.get("identity_fingerprint", ""),
+        "runner_id": runner_id if runner_id is not None else profile.get("runner_id", ""),
+        "success_at": result.get("success_at", profile.get("success_at", "")),
+        "payment_link": result.get("link", profile.get("payment_link", "")),
+        "receipt_screenshot": result.get("receipt", profile.get("receipt_screenshot", "")),
+        "payment_screenshot": result.get("payment", profile.get("payment_screenshot", "")),
+    }
+    history = profile.setdefault("attempt_history", [])
+    if not history or any(history[-1].get(k) != v for k, v in evidence.items() if k != "at"):
+        history.append(evidence)
+    profile["attempt_history"] = history[-20:]
+
+
+def _invalidate_profile_identity(profile, *, clear_result=True):
+    if any(profile.get(k) for k in _RESULT_FIELDS):
+        _attempt_evidence(profile, status="superseded")
+    if profile.get("run_status") == "busy":
+        profile["attempt_invalidated"] = True
+    if clear_result:
+        profile["registration_status"] = "pending"
+        for field in _RESULT_FIELDS:
+            profile[field] = ""
+    profile["identity_review_required"] = True
+    profile["runtime_error"] = "Registration identity changed; a fresh verified attempt is required"
+
+
+def _refresh_profile_identity(profile, data, crm_mod):
+    """Reconcile copied inputs before every success/start/claim gate.
+
+    Paid/closed cases are immutable here. An invalid live source invalidates an
+    active attempt as well; a missing passport can never fall back to the copy.
+    """
+    device = _profile_device(profile, data)
+    if device is None:
+        return None
+    stage = str(device.get("stage") or "new")
+    if stage in _PROTECTED_REGISTRATION_STAGES:
+        return device
+    identity, errors = crm_mod.registration_identity(device.get("id"))
+    if errors or identity is None:
+        _invalidate_profile_identity(profile)
+        raise RegistrationIdentityError("; ".join(errors) or "Invalid linked registration identity")
+    fingerprint = crm_mod.identity_fingerprint(identity)
+    previous = profile.get("identity_fingerprint")
+    if not previous:
+        try:
+            previous = crm_mod.identity_fingerprint(_profile_material(
+                profile, identity["device_id"], identity["owner_id"]))
+        except ValueError:
+            previous = "invalid"
+    if previous != fingerprint:
+        _invalidate_profile_identity(profile)
+    for field in _IDENTITY_FIELDS + ("title",):
+        profile[field] = copy.deepcopy(identity[field])
+    profile["crm_device_id"] = identity["device_id"]
+    profile["identity_fingerprint"] = fingerprint
+    return device
+
+
+def current_profile_store():
+    try:
+        with _registration_transaction() as (crm_mod, data, store):
+            before = copy.deepcopy(store)
+            for profile in store.get("profiles", []):
+                try:
+                    _profile_device(profile, data)
+                except RegistrationIdentityError:
+                    if profile.get("crm_device_id"):
+                        _invalidate_profile_identity(profile)
+                    continue
+                try:
+                    _refresh_profile_identity(profile, data, crm_mod)
+                except RegistrationIdentityError:
+                    _invalidate_profile_identity(profile)
+            return save_store(store) if store != before else store
+    except StoreUnreadableError:
+        recovered = load_store()
+        if not recovered.get("recovery_required"):
+            raise
+        return recovered
+
+
+def _profile_start_error(profile, device):
+    if device and str(device.get("stage")) not in _REGISTRATION_STAGES:
+        return 409, "This CRM stage does not permit a registration attempt"
+    if profile.get("run_status") == "busy" or _pid_alive(profile.get("runner_pid")):
+        return 409, "Profile is already running"
+    if profile.get("registration_status") == "success":
+        return 409, "Profile is already complete"
+    if profile.get("registration_status") == "blocked":
+        return 409, "Profile is blocked; review the recorded error"
+    if not profile.get("manual_manage") or device:
+        missing = [key for key in ("national", "birth", "imeis") if not profile.get(key)]
+        if missing:
+            return 422, "Registration inputs are incomplete: " + ", ".join(missing)
+        if not re.fullmatch(r"[A-Z0-9]{1,20}", str(profile.get("passport") or "")):
+            return 422, "A valid actual passport is required before registration"
+    return None
+
+
+def _claim_attempt(profile, *, reserved=False):
+    runner_id = uuid.uuid4().hex
+    profile.update({
+        "run_status": "busy", "runner_id": runner_id, "claimed_runner_id": runner_id,
+        "claimed_identity_fingerprint": profile.get("identity_fingerprint") or _manual_fingerprint(profile),
+        "attempt_invalidated": False, "attempt_reserved": reserved,
+        "busy_since": time.strftime("%Y-%m-%d %H:%M:%S"), "runner_pid": os.getpid(),
+        "browser_visible": False,
+    })
+    profile["heartbeat_at"] = profile["busy_since"]
+    return runner_id
+
+
+def _current_attempt_error(profile, runner_id, data, crm_mod):
+    if (not runner_id or profile.get("run_status") != "busy"
+            or profile.get("runner_id") != runner_id
+            or profile.get("claimed_runner_id") != runner_id
+            or profile.get("runner_pid") != os.getpid()
+            or profile.get("attempt_reserved")):
+        return "Registration attempt is no longer owned by this runner"
+    try:
+        device = _refresh_profile_identity(profile, data, crm_mod)
+    except RegistrationIdentityError as exc:
+        profile["attempt_invalidated"] = True
+        return str(exc)
+    if device and str(device.get("stage")) not in _REGISTRATION_STAGES:
+        profile["attempt_invalidated"] = True
+        return "The CRM case no longer permits registration"
+    fingerprint = profile.get("identity_fingerprint") if device else _manual_fingerprint(profile)
+    if (profile.get("attempt_invalidated") or not profile.get("claimed_identity_fingerprint")
+            or fingerprint != profile.get("claimed_identity_fingerprint")):
+        profile["attempt_invalidated"] = True
+        return "Registration identity changed; this attempt must stop"
+    return ""
+
+
+def assert_profile_identity_current(profile_id, runner_id):
+    """Fail closed at submission boundaries, beyond broad robot Exception retries."""
+    try:
+        with _registration_transaction() as (crm_mod, data, store):
+            profile = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
+            if profile is None:
+                raise ProfileIdentityStopped("The registration profile no longer exists")
+            error = _current_attempt_error(profile, runner_id, data, crm_mod)
+            if error:
+                save_store(store)
+                raise ProfileIdentityStopped(error)
+    except Exception:
+        raise ProfileIdentityStopped("Cannot verify registration identity; the attempt was stopped safely") from None
+
+
+def publish_profile_result(profile_id, runner_id, expected_fingerprint, result):
+    try:
+        return _publish_profile_result(profile_id, runner_id, expected_fingerprint, result)
+    except (OSError, RuntimeError, ValueError, TimeoutError):
+        return {"ok": False, "error": "Cannot verify current registration state; output was not published",
+                "review_required": True}
+
+
+def _publish_profile_result(profile_id, runner_id, expected_fingerprint, result):
+    """Commit current output only for the exact live, authoritative attempt.
+
+    Rejected evidence stays in bounded local history and is never exposed as the
+    current success/link. No national, title or IMEI lookup selects a CRM case.
+    """
+    if (not isinstance(result, dict) or not runner_id or not expected_fingerprint
+            or any(not isinstance(result.get(key, ""), str) for key in ("receipt", "payment", "link"))):
+        return {"ok": False, "error": "An exact attempt identity and valid result are required"}
+    with _registration_transaction() as (crm_mod, data, store):
+        profile = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
+        if profile is None:
+            return {"ok": False, "error": "Registration profile not found"}
+        error = _current_attempt_error(profile, runner_id, data, crm_mod)
+        if expected_fingerprint != profile.get("claimed_identity_fingerprint"):
+            error = "Result fingerprint does not match the claimed attempt"
+        if not error and profile.get("crm_device_id") and result.get("identity_verified") is not True:
+            error = "External registration identity is unverified; manual review is required"
+            profile["identity_review_required"] = True
+        if error:
+            # Do not let an unrelated runner append output to someone else's history.
+            if (profile.get("runner_id") == runner_id
+                    and expected_fingerprint == profile.get("claimed_identity_fingerprint")):
+                _attempt_evidence(profile, status="review_required" if not profile.get("attempt_invalidated")
+                                  else "rejected", fingerprint=expected_fingerprint,
+                                  runner_id=runner_id, result=result)
+                profile["runtime_error"] = error
+                save_store(store)
+            return {"ok": False, "error": error, "review_required": True}
+        profile.update({
+            "registration_status": "success", "success_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "receipt_screenshot": result.get("receipt", ""),
+            "payment_screenshot": result.get("payment", ""), "payment_link": result.get("link", ""),
+            "identity_review_required": False, "runtime_error": "",
+        })
+        _attempt_evidence(profile, status="accepted", fingerprint=expected_fingerprint,
+                          runner_id=runner_id, result=result)
+        save_store(store)
+        return {"ok": True, "profile_id": profile_id, "fingerprint": expected_fingerprint}
+
+
+def mark_profile_unusable(profile_id, error_text, runner_id=""):
+    with _registration_transaction() as (crm_mod, data, store):
         profile = next((p for p in store.get("profiles", [])
                         if p.get("id") == str(profile_id)), None)
         if not profile:
             return False
+        if runner_id and _current_attempt_error(profile, runner_id, data, crm_mod):
+            save_store(store)
+            return False
         profile["registration_status"] = "blocked"
         profile["enabled"] = False
-        profile["runtime_error"] = (
-            "این پروفایل دیگر قابل ورود نیست: " + str(error_text or "").strip())
+        profile["runtime_error"] = "Profile cannot be registered: " + str(error_text or "").strip()
         profile["run_status"] = "idle"
         profile["runner_id"] = ""
         profile["busy_since"] = ""
@@ -767,6 +1070,67 @@ def merge_profile_update(current, submitted):
     return merged
 
 
+def save_profile_update(submitted):
+    """Serialize operator edits with claims and preserve server-owned metadata."""
+    if not isinstance(submitted, dict):
+        raise ValueError("A profile object is required")
+    editable = {"title", "national", "birth", "mobile", "passport", "imeis", "telegram_chat_id",
+                "first_name", "last_name", "father_name", "birth_certificate_no",
+                "no_confirm_check", "debugging", "manual_manage", "enabled", "browser_visible"}
+    with _registration_transaction() as (crm_mod, data, store):
+        profile_id = str(submitted.get("id") or "").strip()
+        current = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
+        candidate = _clean_profile({**(current or {}),
+                                    **{k: v for k, v in submitted.items() if k in editable},
+                                    "id": profile_id or _new_id()})
+        if candidate["passport"] and not re.fullmatch(r"[A-Z0-9]{1,20}", candidate["passport"]):
+            raise ValueError("Passport must contain 1 to 20 ASCII letters or digits")
+        if current:
+            material_changed = _profile_material(current) != _profile_material(candidate)
+            if material_changed and (current.get("run_status") == "busy"
+                                     or _pid_alive(current.get("runner_pid"))):
+                raise RegistrationIdentityError("Stop the active robot before editing registration identity")
+            device = _profile_device(current, data)
+            if material_changed and device:
+                raise RegistrationIdentityError("Edit the linked passenger identity in CRM, not the copied profile")
+            if material_changed:
+                _invalidate_profile_identity(candidate)
+                candidate["identity_fingerprint"] = ""
+            store["profiles"][store["profiles"].index(current)] = candidate
+        else:
+            store["profiles"].append(candidate)
+        store["active_id"] = candidate["id"]
+        return save_store(store)
+
+
+def update_profile_collection(action, fields=None):
+    """UI collection edits must not overwrite a newer claim or invalidation."""
+    fields = fields or {}
+    profile_id = str(fields.get("id") or "").strip()
+    with _registration_transaction() as (_, _, store):
+        profile = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
+        if action == "activate":
+            store["active_id"] = profile_id
+        elif action == "toggle":
+            if profile and profile.get("run_status") != "busy":
+                profile["enabled"] = bool(fields.get("enabled"))
+        elif action == "new":
+            profile = _clean_profile({})
+            store["profiles"].append(profile)
+            store["active_id"] = profile["id"]
+        elif action == "delete":
+            if profile and (profile.get("run_status") == "busy" or _pid_alive(profile.get("runner_pid"))):
+                raise RegistrationIdentityError("Stop the active robot before deleting its profile")
+            store["profiles"] = [p for p in store["profiles"] if p.get("id") != profile_id]
+            if not store["profiles"]:
+                store["profiles"] = [_clean_profile({})]
+            if store.get("active_id") == profile_id:
+                store["active_id"] = store["profiles"][0]["id"]
+        else:
+            raise ValueError("Unsupported profile collection action")
+        return save_store(store)
+
+
 def clone_profile(profile_id):
     with _locked_store():
         store = load_store()
@@ -781,6 +1145,10 @@ def clone_profile(profile_id):
         clone = dict(source)
         clone.update({
             "id": _new_id(), "title": f"{base} {number}",
+            "crm_device_id": "", "identity_fingerprint": "",
+            "claimed_identity_fingerprint": "", "claimed_runner_id": "",
+            "attempt_invalidated": False, "attempt_reserved": False,
+            "identity_review_required": False, "attempt_history": [],
             "registration_status": "pending", "success_at": "", "payment_link": "",
             "runtime_error": "",
             "run_status": "idle", "runner_id": "", "busy_since": "", "runner_pid": 0,
@@ -800,32 +1168,47 @@ def clone_profile(profile_id):
         return clone
 
 
-def claim_profile(profile_id=None):
-    """Avalin profile-e azad va takmil-nashode ra atomically be yek robot midahad."""
-    with _locked_store():
-        store = load_store()
+def claim_profile(profile_id=None, runner_id=None):
+    """Claim frozen canonical inputs, or redeem one exact parent reservation."""
+    with _registration_transaction() as (crm_mod, data, store):
         profiles = store.get("profiles", [])
         active = store.get("active_id")
         ordered = ([p for p in profiles if p.get("id") == profile_id] if profile_id else
                    sorted(profiles, key=lambda p: p.get("id") != active))
-        for p in ordered:
-            if p.get("run_status") == "busy" and not _pid_alive(p.get("runner_pid")):
-                p["run_status"], p["runner_id"], p["busy_since"], p["runner_pid"], p["heartbeat_at"] = "idle", "", "", 0, ""
-            if (((not p.get("enabled", True)) and not profile_id) or p.get("run_status") == "busy" or
-                    p.get("registration_status") == "success"):
+        changed = False
+        for profile in ordered:
+            try:
+                device = _refresh_profile_identity(profile, data, crm_mod)
+                changed = True
+            except RegistrationIdentityError:
+                changed = True
                 continue
-            runner_id = uuid.uuid4().hex
-            p["run_status"] = "busy"
-            p["runner_id"] = runner_id
-            p["busy_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            p["heartbeat_at"] = p["busy_since"]
-            p["runner_pid"] = os.getpid()
-            # har ejra ba morurgar-e makhfi shoru mishavad (off-screen).
-            p["browser_visible"] = False
+            if runner_id:
+                if (profile.get("attempt_reserved") and profile.get("run_status") == "busy"
+                        and profile.get("runner_id") == runner_id
+                        and profile.get("claimed_runner_id") == runner_id
+                        and profile.get("runner_pid") == os.getpid()
+                        and not profile.get("attempt_invalidated")
+                        and (not device or str(device.get("stage")) in _REGISTRATION_STAGES)
+                        and profile.get("claimed_identity_fingerprint") ==
+                            (profile.get("identity_fingerprint") if device else _manual_fingerprint(profile))):
+                    profile["attempt_reserved"] = False
+                    profile["heartbeat_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    save_store(store)
+                    return copy.deepcopy(profile)
+                continue
+            if profile.get("run_status") == "busy" and not _pid_alive(profile.get("runner_pid")):
+                profile.update(run_status="idle", runner_id="", runner_pid=0,
+                               busy_since="", heartbeat_at="", attempt_reserved=False)
+            if not profile_id and not profile.get("enabled", True):
+                continue
+            if _profile_start_error(profile, device):
+                continue
+            _claim_attempt(profile)
             save_store(store)
-            result = dict(p)
-            result["runner_id"] = runner_id
-            return result
+            return copy.deepcopy(profile)
+        if changed:
+            save_store(store)
     return None
 
 
@@ -834,92 +1217,135 @@ def _robot_command(python_executable, script, *args):
             os.path.join(HERE, script)] + [str(arg) for arg in args]
 
 
-def start_profile_process(profile_id, actor=None):
-    command = _robot_command(ROBOT_PYTHON, "gomrok.py", "--profile-id", profile_id)
-    child_env = _robot_child_env(actor)
-    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
-                                   stdout=log_file, stderr=log_file)
-    finally:
-        log_file.close()
-    return {"pid": process.pid, "profile_id": str(profile_id)}
+def _spawn_root_robot(command, child_env, log_path=None):
+    """Keep update admission closed to installers until the child is registered."""
+    from maintenance_gate import default_gate
+    gate = default_gate()
+    with open(log_path or ROBOT_LOG_PATH, "a", encoding="utf-8") as log_file:
+        with gate.admit():
+            process = subprocess.Popen(command, cwd=HERE, env=child_env,
+                                       stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
+            try:
+                created = gate.register(process.pid)
+            except BaseException:
+                # This process was just created by us; never leave an untracked root job.
+                process.terminate()
+                process.wait(timeout=5)
+                raise
+    return {"pid": process.pid, "created": created}
 
 
-def start_profile2_process(profile_id, actor=None):
-    command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--profile-id", profile_id)
-    child_env = _robot_child_env(actor)
-    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
-                                   stdout=log_file, stderr=log_file)
-    finally:
-        log_file.close()
-    return {"pid": process.pid, "profile_id": str(profile_id)}
+def start_profile_process(profile_id, actor=None, runner_id=""):
+    args = ["--profile-id", profile_id]
+    if runner_id:
+        args += ["--runner-id", runner_id]
+    runtime = _spawn_root_robot(_robot_command(ROBOT_PYTHON, "gomrok.py", *args),
+                                _robot_child_env(actor))
+    return {**runtime, "profile_id": str(profile_id)}
+
+
+def start_profile2_process(profile_id, actor=None, runner_id=""):
+    args = ["--profile-id", profile_id]
+    if runner_id:
+        args += ["--runner-id", runner_id]
+    runtime = _spawn_root_robot(_robot_command(ROBOT_PYTHON, "gomrok2.py", *args),
+                                _robot_child_env(actor))
+    return {**runtime, "profile_id": str(profile_id)}
 
 
 def start_site2_manual_process(actor=None):
-    command = _robot_command(ROBOT_PYTHON, "gomrok2.py", "--no-panel")
-    child_env = _robot_child_env(actor)
-    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
+    return _spawn_root_robot(_robot_command(ROBOT_PYTHON, "gomrok2.py", "--no-panel"),
+                             _robot_child_env(actor))
+
+
+def _start_registration_profile(profile_id, actor=None, *, site2=False, payment_device_id=None):
+    profile_id = str(profile_id or "").strip()
     try:
-        process = subprocess.Popen(command, cwd=HERE, env=child_env, stdin=subprocess.DEVNULL,
-                                   stdout=log_file, stderr=log_file)
-    finally:
-        log_file.close()
-    return {"pid": process.pid}
+        with _registration_transaction() as (crm_mod, data, store):
+            profile = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
+            if not profile:
+                return 404, {"error": "Registration profile not found"}
+            try:
+                device = _refresh_profile_identity(profile, data, crm_mod)
+            except RegistrationIdentityError as exc:
+                save_store(store)
+                return 422, {"error": str(exc)}
+            error = _profile_start_error(profile, device)
+            if error:
+                save_store(store)
+                return error[0], {"error": error[1]}
+            if payment_device_id:
+                if not device or device.get("id") != payment_device_id:
+                    return 409, {"error": "CRM/payment profile binding changed"}
+                stage = str(device.get("stage"))
+                if stage not in ("to_payment", "payment"):
+                    return 409, {"error": "This CRM stage does not permit payment registration"}
+                if stage == "to_payment":
+                    _, errors = crm_mod.advance(payment_device_id, "start_payment")
+                    if errors:
+                        return 409, {"error": "; ".join(errors)}
+            runner_id = _claim_attempt(profile, reserved=True)
+            save_store(store)
+            spawn = start_profile2_process if site2 else start_profile_process
+            try:
+                runtime = spawn(profile_id, actor=actor, runner_id=runner_id)
+                pid = int(runtime["pid"])
+                if pid <= 0:
+                    raise ValueError("Invalid registration runner PID")
+            except Exception:
+                profile.update(run_status="idle", runner_id="", claimed_runner_id="", runner_pid=0,
+                               busy_since="", heartbeat_at="", attempt_reserved=False)
+                save_store(store)
+                raise
+            # The child cannot redeem this reservation before these two locks release.
+            profile["runner_pid"] = pid
+            save_store(store)
+            return 200, {"ok": True, "profile_id": profile_id, "pid": pid}
+    except Exception:
+        return 503, {"error": "Cannot start registration safely; check the local runner or update guard"}
 
 
 def start_profile2(profile_id, actor=None):
-    profile_id = str(profile_id or "").strip()
-    with _locked_store():
-        profile = next((p for p in load_store().get("profiles", []) if p.get("id") == profile_id), None)
-        if not profile:
-            return 404, {"error": "profile not found"}
-        if profile.get("run_status") == "busy":
-            return 409, {"error": "profile is already running"}
-        if profile.get("registration_status") == "blocked":
-            return 409, {"error": "این پروفایل قابل استفاده نیست"}
-    try:
-        runtime = start_profile2_process(profile_id, actor=actor)
-    except (OSError, ValueError):
-        return 500, {"error": "شروع ربات سایت دوم انجام نشد"}
-    # profile-ra INJA busy nemikonim; khod-e gomrok2.py ba claim_profile() an-ra
-    # busy + runner_id mikonad (mesl-e start_profile). faghat pid-ra sabt mikonim
-    # ta ta zaman-e claim, clear_stale_busy_profiles process-e zende-ra nakoshad.
-    set_profile_runtime(profile_id, runtime["pid"])
-    return 200, {"ok": True, "profile_id": profile_id, "pid": runtime["pid"]}
+    return _start_registration_profile(profile_id, actor, site2=True)
 
 
 def start_profile(profile_id, actor=None):
-    profile_id = str(profile_id or "").strip()
-    with _locked_store():
-        store = load_store()
-        profile = next((p for p in store.get("profiles", []) if p.get("id") == profile_id), None)
-        if not profile:
-            return 404, {"error": "profile not found"}
-        if profile.get("run_status") == "busy":
-            return 409, {"error": "profile is already running"}
-        if profile.get("registration_status") == "success":
-            return 409, {"error": "profile is already complete"}
-        if profile.get("registration_status") == "blocked":
-            return 409, {"error": "این پروفایل قابل استفاده نیست؛ خطای غیرقابل‌ورود ثبت شده است"}
-        missing = []
-        if not profile.get("manual_manage"):
-            if not profile.get("national"):
-                missing.append("کد ملی")
-            if not profile.get("birth"):
-                missing.append("تاریخ تولد")
-            if not profile.get("imeis"):
-                missing.append("سریال / IMEI")
-        if missing:
-            return 422, {"error": "اطلاعات پروفایل ناقص است", "missing": missing}
+    return _start_registration_profile(profile_id, actor)
+
+
+def start_crm_payment(device_id, actor=None):
+    """Validate the financial stage before reconciliation, reservation or spawning."""
+    import crm as crm_mod
     try:
-        runtime = start_profile_process(profile_id, actor=actor)
-    except (OSError, ValueError):
-        return 500, {"error": "شروع ربات انجام نشد"}
-    set_profile_runtime(profile_id, runtime["pid"])
-    return 200, {"ok": True, "profile_id": profile_id, "pid": runtime["pid"]}
+        with crm_mod.STORE_LOCK:
+            data = crm_mod.store_read()
+            device = next((d for d in data.get("devices", []) if d.get("id") == device_id), None)
+            if not device:
+                return 404, {"error": "CRM device not found"}
+            if str(device.get("stage")) not in ("to_payment", "payment"):
+                return 409, {"error": "This CRM stage does not permit payment registration"}
+            if not device.get("owner_id"):
+                return 400, {"error": "Attach a passenger in CRM before starting payment registration"}
+            profile_id = ""
+            for attempt in range(3):
+                try:
+                    profile_id = crm_ensure_registration_profile(device_id)
+                    break
+                except RegistrationIdentityError:
+                    raise
+                except (OSError, RuntimeError) as exc:
+                    if attempt == 2:
+                        crm_mod.crm_log("error", "profile_ensure_failed", device_id=device_id,
+                                        phase="payment", error_type=type(exc).__name__)
+                        return 503, {"error": "Registration profile storage is unavailable; close conflicting operations and retry"}
+                    time.sleep(0.15 * (attempt + 1))
+            if not profile_id:
+                return 422, {"error": "Attach a valid passenger before starting registration"}
+            return _start_registration_profile(profile_id, actor, payment_device_id=device_id)
+    except RegistrationIdentityError as exc:
+        return 422, {"error": str(exc)}
+    except Exception:
+        return 503, {"error": "Cannot prepare the linked registration safely"}
 
 
 def start_profile_device_inquiry(profile_id, service, actor=None):
@@ -948,39 +1374,29 @@ def start_profile_device_inquiry(profile_id, service, actor=None):
 
     command = _robot_command(ROBOT_PYTHON, "profile_inquiry.py",
                              "--profile-id", profile_id, "--service", service)
-    child_env = _robot_child_env(actor)
-    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
     try:
-        process = subprocess.Popen(command, cwd=HERE, env=child_env,
-                                   stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
-    except OSError:
-        return 500, {"error": "شروع ربات استعلام انجام نشد"}
-    finally:
-        log_file.close()
+        runtime = _spawn_root_robot(command, _robot_child_env(actor))
+    except (OSError, RuntimeError, ValueError):
+        return 503, {"error": "Cannot start the inquiry while the runner or update guard is unavailable"}
     with _locked_store():
         store = load_store()
         profile = next(p for p in store["profiles"] if p["id"] == profile_id)
-        profile["device_inquiry_pid"] = process.pid
+        profile["device_inquiry_pid"] = runtime["pid"]
         profile["device_inquiry_service"] = service
         profile["device_inquiry_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         for name in (("gomrok", "hamta") if service == "all" else (service,)):
             profile[f"{name}_inquiry_status"] = "running"
             profile[f"{name}_inquiry_error"] = ""
         save_store(store)
-    return 200, {"ok": True, "profile_id": profile_id, "service": service, "pid": process.pid}
+    return 200, {"ok": True, "profile_id": profile_id, "service": service, "pid": runtime["pid"]}
 
 
 def start_exitban_process(profile_id, actor=None):
     log_path = app_paths.data_path("exitban_worker.log")
     command = _robot_command(ROBOT_PYTHON, "exitban.py",
                              "--profile-id", profile_id, "--submit")
-    log_file = open(log_path, "a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(command, cwd=HERE, env=_robot_child_env(actor), stdin=subprocess.DEVNULL,
-                                   stdout=log_file, stderr=log_file)
-    finally:
-        log_file.close()
-    return {"pid": process.pid, "profile_id": str(profile_id)}
+    runtime = _spawn_root_robot(command, _robot_child_env(actor), log_path)
+    return {**runtime, "profile_id": str(profile_id)}
 
 
 def stop_profile_process(pid):
@@ -1070,6 +1486,8 @@ def clear_stale_busy_profiles():
     changed = False
     with _locked_store():
         store = load_store()
+        if store.get("recovery_required"):
+            return False
         for p in store.get("profiles", []):
             if p.get("run_status") != "busy":
                 continue
@@ -1129,27 +1547,19 @@ def release_profile(profile_id, runner_id):
         for p in store.get("profiles", []):
             if p.get("id") == profile_id and p.get("runner_id") == runner_id:
                 p["run_status"], p["runner_id"], p["busy_since"], p["runner_pid"], p["heartbeat_at"] = "idle", "", "", 0, ""
+                p["attempt_reserved"] = False
+                p["claimed_runner_id"] = ""
                 save_store(store)
                 return True
     return False
 
 
-def record_profile_output(profile_id, runner_id="", receipt="", payment="", link=""):
-    with _locked_store():
-        store = load_store()
-        for p in store.get("profiles", []):
-            if p.get("id") != profile_id:
-                continue
-            if runner_id and p.get("runner_id") not in ("", runner_id):
-                return False
-            p["registration_status"] = "success"
-            p["success_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            p["receipt_screenshot"] = str(receipt or "")
-            p["payment_screenshot"] = str(payment or "")
-            p["payment_link"] = str(link or "")
-            save_store(store)
-            return True
-    return False
+def record_profile_output(profile_id, runner_id="", receipt="", payment="", link="",
+                          expected_fingerprint=""):
+    """Compatibility wrapper; an empty or inferred attempt identity is forbidden."""
+    return bool(publish_profile_result(profile_id, runner_id, expected_fingerprint,
+                                      {"receipt": receipt, "payment": payment,
+                                       "link": link, "identity_verified": False}).get("ok"))
 
 
 def load_system_debug_config():
@@ -1494,365 +1904,184 @@ def get_installed_chrome_version():
 
 
 def check_system_updates(force_direct=False):
-    """Check installed Chrome and ChromeDriver against Google Chrome-for-Testing (v1.17.0)."""
     import captcha_collector
     import chromedriver_updater
     import requests
 
-    chrome_ver = get_installed_chrome_version()
-    chrome_major = int(chrome_ver.split(".")[0]) if (chrome_ver and chrome_ver.split(".")[0].isdigit()) else captcha_collector._chrome_major_from_registry_or_path()
-
+    chrome_ver = get_installed_chrome_version() or ""
+    valid_version = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\Z")
+    chrome_major = (int(chrome_ver.split(".")[0])
+                    if len(chrome_ver) <= 64 and valid_version.fullmatch(chrome_ver) else None)
     driver_path = captcha_collector.resolve_chromedriver()
-    driver_ver = chromedriver_updater.read_exe_version(driver_path) if driver_path else None
+    driver_ver = chromedriver_updater.read_exe_version(driver_path) if driver_path else ""
     driver_major = captcha_collector._read_major_version(driver_path) if driver_path else None
+    compatible = bool(chrome_major and driver_major == chrome_major)
+    base = {"ok": False, "error": "check_unavailable",
+            "notice": "ChromeDriver availability could not be verified. Check the connection and retry.",
+            "chrome": {"installed_version": chrome_ver, "installed_major": chrome_major},
+            "chromedriver": {"installed_version": driver_ver or "", "installed_major": driver_major,
+                             "compatible": compatible, "matched_version": ""}}
+    config = load_system_proxy_config()
+    proxy = config.get("proxy_url") if config.get("enabled") and not force_direct else None
+    if not chrome_major or (config.get("enabled") and not force_direct
+                            and (not isinstance(proxy, str) or not proxy.strip())):
+        return base
+    proxies = {"http": proxy, "https": proxy} if proxy else {}
+    deadline = time.monotonic() + 20.0
+    session = requests.Session()
+    session.trust_env = False
+    session.auth = session.cert = None
+    session.cookies.clear()
+    session.params.clear()
+    session.proxies.clear()
 
-    proxy_cfg = public_proxy_config()
-    proxies = get_requests_proxies(force_direct=force_direct)
-
-    cft_channels = {}
-    cft_milestones = {}
+    def catalogue(url):
+        response = session.get(url, proxies=proxies, timeout=(3, 5),
+                               verify=True, allow_redirects=False, stream=True)
+        try:
+            length = response.headers.get("Content-Length", "")
+            if response.status_code != 200 or (length.isdigit() and int(length) > 1024 * 1024):
+                raise ValueError("The driver catalogue is unavailable")
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=16384):
+                if time.monotonic() >= deadline or len(body) + len(chunk) > 1024 * 1024:
+                    raise ValueError("The driver catalogue exceeded its budget")
+                body.extend(chunk)
+            result = json.loads(body)
+            if not isinstance(result, dict):
+                raise ValueError("The driver catalogue is invalid")
+            return result
+        finally:
+            response.close()
 
     try:
-        session = requests.Session()
-        if force_direct:
-            session.trust_env = True
-            use_proxies = None
-        else:
-            session.trust_env = False
-            use_proxies = proxies
-
-        if not use_proxies and not force_direct:
-            # If no proxy configured, test if direct access works
-            try:
-                r_test = session.get(chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL,
-                                     proxies=None, timeout=3)
-                if r_test.status_code == 200:
-                    cft_channels = r_test.json().get("channels", {})
-            except Exception:
-                return {
-                    "ok": False,
-                    "error": "proxy_required",
-                    "notice": "برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد. لطفاً پروکسی را تنظیم کنید یا فیلترشکن سیستم را روشن کنید.",
-                    "chrome": {
-                        "installed_version": chrome_ver or "یافت نشد",
-                        "installed_major": chrome_major,
-                    },
-                    "chromedriver": {
-                        "installed_version": driver_ver or "یافت نشد",
-                        "installed_major": driver_major,
-                        "compatible": bool(chrome_major and driver_major and chrome_major == driver_major),
-                    },
-                    "proxy": proxy_cfg,
-                }
-        else:
-            r_ch = session.get(chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL,
-                               proxies=use_proxies, timeout=8)
-            if r_ch.status_code == 200:
-                cft_channels = r_ch.json().get("channels", {})
-
-        if not cft_milestones:
-            r_ms = session.get(chromedriver_updater.CFT_MILESTONE_URL,
-                               proxies=use_proxies, timeout=8)
-            if r_ms.status_code == 200:
-                cft_milestones = r_ms.json().get("milestones", {})
-
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": "connection_error",
-            "notice": "برای بررسی بروزرسانی‌ها نیاز به دسترسی اینترنت آزاد وجود دارد. لطفاً پروکسی را تنظیم کنید یا فیلترشکن سیستم را روشن کنید.",
-            "details": str(exc),
-            "chrome": {
-                "installed_version": chrome_ver or "یافت نشد",
-                "installed_major": chrome_major,
-            },
-            "chromedriver": {
-                "installed_version": driver_ver or "یافت نشد",
-                "installed_major": driver_major,
-                "compatible": bool(chrome_major and driver_major and chrome_major == driver_major),
-            },
-            "proxy": proxy_cfg,
-        }
-
-    stable = cft_channels.get("Stable", {})
-    latest_stable_chrome = stable.get("version") or ""
-
-    matched_driver = None
-    matched_driver_ver = None
-    if chrome_major:
-        ms_data = cft_milestones.get(str(chrome_major), {})
-        matched_driver_ver = ms_data.get("version")
-        drivers = ms_data.get("downloads", {}).get("chromedriver", [])
-        matched_driver = next((d for d in drivers if d.get("platform") == "win64"), None)
-
-    compat_ok = bool(chrome_major and driver_major and chrome_major == driver_major)
-    if not chrome_ver:
-        status_msg = "مرورگر گوگل کروم روی سیستم شناسایی نشد."
-        action = "no_chrome"
-    elif not driver_ver:
-        status_msg = "فایل درایور ChromeDriver یافت نشد. دریافت خودکار الزامی است."
-        action = "download_driver"
-    elif not compat_ok:
-        status_msg = f"نسخه درایور ({driver_major}) با نسخه گوگل کروم ({chrome_major}) ناسازگار است. بروزرسانی درایور الزامی است."
-        action = "update_driver"
-    elif matched_driver_ver and driver_ver != matched_driver_ver:
-        status_msg = f"نسخه جدیدتر ChromeDriver ({matched_driver_ver}) برای کروم {chrome_major} موجود است."
-        action = "update_driver"
-    else:
-        status_msg = f"نسخه درایور ({driver_ver}) با کروم ({chrome_ver}) کاملاً هماهنگ و بروز است."
-        action = "up_to_date"
-
-    return {
-        "ok": True,
-        "action_required": action,
-        "notice": status_msg,
-        "chrome": {
-            "installed_version": chrome_ver or "نامشخص",
-            "installed_major": chrome_major,
-            "latest_stable": latest_stable_chrome,
-        },
-        "chromedriver": {
-            "installed_version": driver_ver or "یافت نشد",
-            "installed_major": driver_major,
-            "compatible": compat_ok,
-            "matched_version": matched_driver_ver or "نامشخص",
-            "download_url": matched_driver.get("url") if matched_driver else None,
-        },
-        "proxy": {
-            "configured": bool(proxy_cfg.get("enabled")),
-            "protocol": proxy_cfg.get("protocol"),
-            "used_direct": force_direct,
-        }
-    }
-
-
-_DRIVER_UPDATE_LOCK = threading.Lock()
-_LAST_DRIVER_UPDATE = 0.0
-
-
-def run_chromedriver_update(force_direct=False):
-    """Download and install compatible ChromeDriver via proxy or direct (v1.17.0)."""
-    global _LAST_DRIVER_UPDATE
-    if not _DRIVER_UPDATE_LOCK.acquire(blocking=False):
-        return {"ok": False, "error": "عملیات بروزرسانی درایور در حال انجام است؛ لطفاً شکیبا باشید"}
-    try:
-        now = time.monotonic()
-        if now - _LAST_DRIVER_UPDATE < 8.0:
-            return {"ok": False, "error": "عملیات بروزرسانی به تازگی انجام شده است؛ چند لحظه بعد دوباره امتحان کنید"}
-
-        import captcha_collector
-        import chromedriver_updater
-
-        target = captcha_collector.resolve_chromedriver()
-        if not target:
-            target = os.path.join(captcha_collector.HERE, ".tools", "chromedriver.exe")
-        primary, extras = captcha_collector._driver_update_targets(target)
-
-        browser_major = captcha_collector._chrome_major_from_registry_or_path()
-        if not browser_major:
-            return {"ok": False, "error": "نسخهٔ گوگل کروم شناسایی نشد"}
-
-        proxy_url_val = None
-        if not force_direct:
-            cfg = load_system_proxy_config()
-            if cfg.get("enabled") and cfg.get("proxy_url"):
-                proxy_url_val = cfg["proxy_url"]
-
-        res = chromedriver_updater.update_chromedriver(
-            target_exe=primary,
-            expected_major=int(browser_major),
-            extra_targets=extras,
-            proxy_override=proxy_url_val,
-            allow_direct=force_direct,
-            total=120.0
-        )
-
-        _LAST_DRIVER_UPDATE = time.monotonic()
-        if res.get("status") in ("updated", "up-to-date"):
-            new_ver = chromedriver_updater.read_exe_version(primary)
-            return {"ok": True, "status": res.get("status"), "version": new_ver,
-                    "message": f"درایور ChromeDriver با موفقیت به نسخهٔ {new_ver} بروزرسانی شد."}
-        else:
-            return {"ok": False, "status": res.get("status"), "detail": res.get("detail"),
-                    "error": f"بروزرسانی درایور با خطا مواجه شد: {res.get('detail')}"}
+        channels = catalogue(chromedriver_updater.CFT_LAST_KNOWN_GOOD_URL).get("channels", {})
+        milestones = catalogue(chromedriver_updater.CFT_MILESTONE_URL).get("milestones", {})
+        matched = milestones.get(str(chrome_major), {})
+        desired = matched.get("version")
+        if (not isinstance(desired, str) or len(desired) > 64 or not valid_version.fullmatch(desired)
+                or int(desired.split(".")[0]) != chrome_major):
+            return base
+        latest = channels.get("Stable", {}).get("version", "")
+        if not isinstance(latest, str) or len(latest) > 64 or not valid_version.fullmatch(latest):
+            latest = ""
+        action = ("download_driver" if not driver_ver else
+                  "update_driver" if not compatible or driver_ver != desired else "up_to_date")
+        base.update(ok=True, error="", action_required=action,
+                    notice=("ChromeDriver matches installed Chrome." if action == "up_to_date" else
+                            "A compatible ChromeDriver build is available. Sign in and confirm it in Updates."),
+                    proxy={"configured": bool(proxy), "protocol": config.get("protocol"),
+                           "used_direct": not bool(proxy)})
+        base["chrome"]["latest_stable"] = latest
+        base["chromedriver"].update(matched_version=desired,
+                                    download_url=chromedriver_updater.cft_zip_url(desired))
+        return base
+    except (requests.RequestException, OSError, ValueError, TypeError, AttributeError):
+        return base
     finally:
-        _DRIVER_UPDATE_LOCK.release()
+        session.close()
+
+
+_MAINTENANCE_SERVICE = None
+_MAINTENANCE_SERVICE_LOCK = threading.Lock()
+
+
+@contextmanager
+def _driver_install_admission():
+    from maintenance_gate import MaintenanceBlocked, default_gate
+    gate = default_gate()
+    with gate.admit():
+        if gate.running_jobs(exclude_pids={os.getpid()}):
+            raise MaintenanceBlocked("Active work prevents ChromeDriver installation")
+        yield
+
+
+def _install_confirmed_driver(*, consent, desired_version):
+    from captcha_collector import update_chromedriver_now
+    config = load_system_proxy_config()
+    proxy = config.get("proxy_url") if config.get("enabled") else None
+    if config.get("enabled") and (not isinstance(proxy, str) or not proxy.strip()):
+        raise ValueError("The enabled update proxy has no valid route")
+    return update_chromedriver_now(consent=consent, desired_version=desired_version,
+                                   proxy_override=proxy, allow_direct=not bool(proxy))
+
+
+def _maintenance_proxies():
+    config = load_system_proxy_config()
+    if not config.get("enabled"):
+        return {}
+    proxy = config.get("proxy_url")
+    if not isinstance(proxy, str) or not proxy.strip():
+        raise ValueError("The enabled update proxy has no valid route")
+    return {"http": proxy, "https": proxy}
+
+
+def _maintenance_service():
+    global _MAINTENANCE_SERVICE
+    with _MAINTENANCE_SERVICE_LOCK:
+        if _MAINTENANCE_SERVICE is None:
+            from app_updater import AppUpdater
+            from installer_handoff import InstallerHandoff
+            from maintenance_gate import default_gate
+            from maintenance_service import MaintenanceService
+            gate = default_gate()
+            handoff = InstallerHandoff(shutdown_callback=prepare_application_update_shutdown,
+                                       gate=gate, install_dir=HERE, data_dir=DATA_DIR)
+            application = AppUpdater(current_version=app_version_text(),
+                                     installable=handoff.eligible(), installer=handoff,
+                                     proxies={}, proxy_provider=_maintenance_proxies,
+                                     install_dir=HERE, data_dir=DATA_DIR)
+            _MAINTENANCE_SERVICE = MaintenanceService(
+                application=application, driver_check=check_system_updates,
+                driver_install=_install_confirmed_driver, admission=_driver_install_admission)
+        return _MAINTENANCE_SERVICE
+
+
+def maintenance_status():
+    return _maintenance_service().status()
+
+
+def maintenance_check(*, force=False):
+    return _maintenance_service().check(force=force)
+
+
+def confirm_application_update(offer_id):
+    return _maintenance_service().confirm_app(offer_id)
+
+
+def _schedule_login_maintenance_check():
+    try:
+        maintenance_check(force=False)
+    except (OSError, RuntimeError, ValueError):
+        import logging
+        logging.getLogger(__name__).warning("The post-login update check could not start")
+
+
+def run_chromedriver_update(*, offer_id, consent=False):
+    return _maintenance_service().confirm_driver(offer_id, consent=consent)
 
 
 def check_services_health():
-    """Perform the 3-step service health diagnostics (v1.17.0)."""
-    import time
-    import requests
-
-    results = []
-    overall_status = "ok"
-
-    # Step 1: Cloud Server
-    cloud_cfg_path = app_paths.data_path("cloud_config.json")
-    api_base = "https://api.oneserver.in"
-    if os.path.isfile(cloud_cfg_path):
-        try:
-            with open(cloud_cfg_path, "r", encoding="utf-8") as f:
-                c_cfg = json.load(f) or {}
-            if c_cfg.get("api_base"):
-                api_base = str(c_cfg["api_base"]).strip()
-        except Exception:
-            pass
-
-    t0 = time.monotonic()
+    from cloud_sync.config import load_config
+    from cloud_sync.errors import ConfigError
+    from maintenance_service import check_service_health
+    invalid_cloud = False
     try:
-        r_cloud = requests.get(f"{api_base}/v1/health/live", timeout=6)
-        latency = int((time.monotonic() - t0) * 1000)
-        if r_cloud.status_code == 200:
-            results.append({
-                "id": "cloud",
-                "name": "اتصال به سرور ابری",
-                "status": "ok",
-                "message": f"ارتباط با سرور ابری برقرار است ({latency} میلی‌ثانیه)",
-                "latency_ms": latency,
-                "endpoint": api_base
-            })
-        else:
-            overall_status = "warning"
-            results.append({
-                "id": "cloud",
-                "name": "اتصال به سرور ابری",
-                "status": "error",
-                "message": f"سرور ابری وضعیت غیرمنتظره بازگرداند (کد {r_cloud.status_code})",
-                "latency_ms": latency,
-                "endpoint": api_base
-            })
-    except Exception as exc:
-        overall_status = "warning"
-        results.append({
-            "id": "cloud",
-            "name": "اتصال به سرور ابری",
-            "status": "error",
-            "message": "خطا در اتصال به سرور ابری (ممکن است اتصال اینترنت قطع باشد)",
-            "details": str(exc),
-            "endpoint": api_base
-        })
-
-    # Step 2: Telegram
-    tg_cfg_path = app_paths.data_path("telegram_config.json")
-    tg_cfg = {}
-    if os.path.isfile(tg_cfg_path):
-        try:
-            with open(tg_cfg_path, "r", encoding="utf-8") as f:
-                tg_cfg = json.load(f) or {}
-        except Exception:
-            pass
-
-    mode = tg_cfg.get("mode") or "host"
-    t0 = time.monotonic()
-    try:
-        if mode == "host":
-            relay_url = tg_cfg.get("relay_url") or "https://api.oneserver.in/telegram.php"
-            r_tg = requests.get(relay_url, timeout=6)
-            latency = int((time.monotonic() - t0) * 1000)
-            if r_tg.status_code in (200, 400, 403, 405):
-                results.append({
-                    "id": "telegram",
-                    "name": "اتصال به سرویس تلگرام",
-                    "status": "ok",
-                    "message": f"ارتباط با سرویس هاست تلگرام برقرار است ({latency} میلی‌ثانیه)",
-                    "latency_ms": latency,
-                    "mode": "سرویس هاست ابری"
-                })
-            else:
-                overall_status = "warning"
-                results.append({
-                    "id": "telegram",
-                    "name": "اتصال به سرویس تلگرام",
-                    "status": "error",
-                    "message": f"خطا در پاسخ سرویس رله تلگرام (کد {r_tg.status_code})",
-                    "latency_ms": latency
-                })
-        else:
-            proxies = get_requests_proxies()
-            r_tg = requests.get("https://api.telegram.org", proxies=proxies, timeout=7)
-            latency = int((time.monotonic() - t0) * 1000)
-            if r_tg.status_code in (200, 302, 400, 404):
-                results.append({
-                    "id": "telegram",
-                    "name": "اتصال به سرویس تلگرام",
-                    "status": "ok",
-                    "message": f"ارتباط با سرورهای تلگرام برقرار است ({latency} میلی‌ثانیه)",
-                    "latency_ms": latency,
-                    "mode": "مستقیم / پروکسی"
-                })
-            else:
-                overall_status = "warning"
-                results.append({
-                    "id": "telegram",
-                    "name": "اتصال به سرویس تلگرام",
-                    "status": "error",
-                    "message": "عدم دسترسی به سرورهای تلگرام",
-                    "latency_ms": latency
-                })
-    except Exception as exc:
-        overall_status = "warning"
-        results.append({
-            "id": "telegram",
-            "name": "اتصال به سرویس تلگرام",
-            "status": "error",
-            "message": "عدم برقراری ارتباط با API تلگرام (نیاز به اینترنت آزاد یا سرویس هاست)",
-            "details": str(exc)
-        })
-
-    # Step 3: Proxy
-    p_cfg = load_system_proxy_config()
-    if not p_cfg.get("enabled") or not p_cfg.get("proxy_url"):
-        results.append({
-            "id": "proxy",
-            "name": "اتصال به پروکسی اینترنت آزاد",
-            "status": "not_configured",
-            "message": "پروکسی تنظیم نشده است (اختیاری)"
-        })
-    else:
-        p_url = p_cfg["proxy_url"]
-        proto = p_cfg.get("protocol") or "socks5"
-        t0 = time.monotonic()
-        try:
-            r_p = requests.get("https://googlechromelabs.github.io",
-                               proxies={"http": p_url, "https": p_url}, timeout=6)
-            latency = int((time.monotonic() - t0) * 1000)
-            if r_p.status_code in (200, 301, 302):
-                results.append({
-                    "id": "proxy",
-                    "name": "اتصال به پروکسی اینترنت آزاد",
-                    "status": "ok",
-                    "message": f"ارتباط پروکسی ({proto.upper()}) موفقیت‌آمیز است ({latency} میلی‌ثانیه)",
-                    "latency_ms": latency,
-                    "type": proto.upper()
-                })
-            else:
-                overall_status = "warning"
-                results.append({
-                    "id": "proxy",
-                    "name": "اتصال به پروکسی اینترنت آزاد",
-                    "status": "error",
-                    "message": f"پروکسی پاسخ نامعتبر بازگرداند (کد {r_p.status_code})",
-                    "type": proto.upper()
-                })
-        except Exception as exc:
-            overall_status = "warning"
-            results.append({
-                "id": "proxy",
-                "name": "اتصال به پروکسی اینترنت آزاد",
-                "status": "error",
-                "message": f"خطا در اتصال به پروکسی ({proto.upper()})",
-                "details": str(exc),
-                "type": proto.upper()
-            })
-
-    has_err = any(r["status"] == "error" for r in results)
-    return {
-        "ok": True,
-        "overall": "error" if has_err else "ok",
-        "steps": results,
-        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")
-    }
+        cloud_url = load_config(create=False).api_base
+    except ConfigError:
+        cloud_url = None
+        invalid_cloud = os.path.exists(app_paths.data_path("cloud_config.json"))
+    telegram = load_telegram_config()
+    proxy = load_system_proxy_config()
+    result = check_service_health(
+        cloud_url=cloud_url,
+        telegram={key: telegram.get(key) for key in ("mode", "relay_url", "api_base", "proxy_url")},
+        proxy={"enabled": bool(proxy.get("enabled")), "proxy_url": proxy.get("proxy_url") or ""})
+    if invalid_cloud:
+        result["steps"][0].update(status="unknown", message="The cloud configuration could not be read safely.")
+        if result["overall"] == "ok":
+            result["overall"] = "warning"
+    return result
 
 
 # =====================================================================
@@ -2053,7 +2282,7 @@ def _cloud_counts(machine, outbox):
         p_val = getattr(outbox, "pending_count", 0)
         pending = int(p_val() if callable(p_val) else p_val)
         c_val = getattr(outbox, "conflict_count", 0)
-        conflicts = max(conflicts, int(c_val() if callable(c_val) else c_val))
+        conflicts = int(c_val() if callable(c_val) else c_val)
     except (OSError, ValueError, TypeError):
         pass
     return pending, conflicts
@@ -2525,37 +2754,59 @@ def _cloud_worker_loop():
             _cloud_note_beat(code="SERVER_ERROR", fault="UNEXPECTED")
 
 
-def cloud_worker_start():
-    """Start the beat thread, or None when it is off or unconfigured.
+_CLOUD_WORKER_RESTART = False
 
-    Started from main() like crm_scheduler_start(), and again by the config
-    route: nothing runs before a base URL exists (spec §9, §11).
-    """
-    global _CLOUD_WORKER_THREAD, _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK
-    if os.environ.get("IRICA_CLOUD_WORKER_OFF") == "1":
+
+def _cloud_worker_entry():
+    global _CLOUD_WORKER_THREAD, _CLOUD_WORKER_RESTART
+    try:
+        _cloud_worker_loop()
+    finally:
+        with _CLOUD_WORKER_CV:
+            if _CLOUD_WORKER_THREAD is threading.current_thread():
+                _CLOUD_WORKER_THREAD = None
+                restart = (_CLOUD_WORKER_RESTART and not _CLOUD_WORKER_STOP
+                           and not _MAINTENANCE_DRAINING.is_set())
+                _CLOUD_WORKER_RESTART = False
+                if restart:
+                    _CLOUD_WORKER_THREAD = threading.Thread(
+                        target=_cloud_worker_entry, name="cloud-sync", daemon=True)
+                    _CLOUD_WORKER_THREAD.start()
+
+
+def cloud_worker_start():
+    global _CLOUD_WORKER_THREAD, _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK, _CLOUD_WORKER_RESTART
+    if os.environ.get("IRICA_CLOUD_WORKER_OFF") == "1" or _MAINTENANCE_DRAINING.is_set():
         return None
-    if _CLOUD_WORKER_THREAD is not None and _CLOUD_WORKER_THREAD.is_alive():
-        return _CLOUD_WORKER_THREAD
     if not _cloud_configured():
         return None
     with _CLOUD_WORKER_CV:
+        if _MAINTENANCE_DRAINING.is_set():
+            return None
+        if _CLOUD_WORKER_THREAD is not None and _CLOUD_WORKER_THREAD.is_alive():
+            if _CLOUD_WORKER_STOP:
+                _CLOUD_WORKER_RESTART = True
+                _CLOUD_WORKER_STOP = False
+                _CLOUD_WORKER_CV.notify_all()
+            return _CLOUD_WORKER_THREAD
         _CLOUD_WORKER_STOP = False
         _CLOUD_WORKER_KICK = False
-        thread = threading.Thread(target=_cloud_worker_loop,
+        _CLOUD_WORKER_RESTART = False
+        thread = threading.Thread(target=_cloud_worker_entry,
                                   name="cloud-sync", daemon=True)
         _CLOUD_WORKER_THREAD = thread
-    thread.start()
-    return thread
+        thread.start()
+        return thread
 
 
 def cloud_worker_stop():
-    """Ask the beat to end. Returns the thread so a caller can join it."""
-    global _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK
+    global _CLOUD_WORKER_STOP, _CLOUD_WORKER_KICK, _CLOUD_WORKER_RESTART
     with _CLOUD_WORKER_CV:
         _CLOUD_WORKER_STOP = True
         _CLOUD_WORKER_KICK = False
+        _CLOUD_WORKER_RESTART = False
         _CLOUD_WORKER_CV.notify_all()
-    return _CLOUD_WORKER_THREAD
+        return _CLOUD_WORKER_THREAD
 
 
 def cloud_worker_kick():
@@ -2786,6 +3037,72 @@ def _local_store_is_empty(store_path):
         return True
 
 
+def _registration_source_token(profile, data, crm_mod):
+    try:
+        device = _profile_device(profile, data)
+        if device is None:
+            return None
+        identity, errors = crm_mod.registration_identity(device.get("id"))
+        fingerprint = crm_mod.identity_fingerprint(identity) if identity is not None and not errors else "invalid"
+        return (device.get("id"), fingerprint, str(device.get("stage")) in _REGISTRATION_STAGES)
+    except RegistrationIdentityError:
+        if not profile.get("crm_device_id"):
+            return None
+        return (profile.get("crm_device_id"), "invalid_binding", False)
+
+
+@contextmanager
+def _cloud_registration_apply():
+    """Compare sources and persist sticky invalidation in the SAME CRM transaction.
+
+    The caller fetches network payloads first. Both stores remain locked across
+    local apply, so publication cannot observe a corrected source without the
+    invalidation, including A -> B -> A within one running attempt.
+    """
+    with _registration_transaction() as (crm_mod, data, store):
+        before = {p["id"]: _registration_source_token(p, data, crm_mod) for p in store["profiles"]}
+        try:
+            yield crm_mod
+        finally:
+            crm_mod.reset_cache()
+            fresh = crm_mod.store_read()
+            changed = False
+            for profile in store["profiles"]:
+                after = _registration_source_token(profile, fresh, crm_mod)
+                if before.get(profile["id"]) != after:
+                    protected = bool(after and not after[2]) and any(
+                        d.get("id") == after[0] and d.get("stage") in _PROTECTED_REGISTRATION_STAGES
+                        for d in fresh.get("devices", []))
+                    _invalidate_profile_identity(profile, clear_result=not protected)
+                    changed = True
+                if after is not None or before.get(profile["id"]) is not None:
+                    previous = copy.deepcopy(profile)
+                    try:
+                        _refresh_profile_identity(profile, fresh, crm_mod)
+                    except RegistrationIdentityError as exc:
+                        _invalidate_profile_identity(profile)
+                        profile["runtime_error"] = str(exc)
+                    changed = changed or previous != profile
+            if changed:
+                save_store(store)
+
+
+def _cloud_apply_snapshot(runtime, snapshot):
+    from cloud_sync import apply
+    config = runtime["config"]
+    with _cloud_registration_apply() as crm_mod:
+        versions_path = _cloud_versions_path()
+        versions = _load_cloud_versions(versions_path)
+        apply.apply_snapshot(snapshot, store=apply.FileStore(crm_mod._store_path()),
+                             source_installation_id=snapshot.get("source_installation_id")
+                                 or config.source_installation_id,
+                             versions=versions, dirty=_cloud_dirty_set(runtime.get("outbox")))
+        _save_cloud_versions(versions, versions_path)
+    if snapshot.get("source_installation_id"):
+        config.source_installation_id = snapshot["source_installation_id"]
+    runtime["client"].commit_bootstrap(snapshot)
+
+
 def cloud_pull_step(runtime=None):
     """Run one pull cycle: bootstrap snapshot if cursor == 0, else pull_all.
 
@@ -2811,52 +3128,30 @@ def cloud_pull_step(runtime=None):
         raise LeaseExpiredError()
 
     import crm as crm_mod
-    store = FileStore(crm_mod._store_path())
-    versions_path = _cloud_versions_path()
-    versions = _load_cloud_versions(versions_path)
-    dirty = _cloud_dirty_set(outbox)
-    source_installation_id = getattr(config, "source_installation_id", None)
-
-    pulled_pages = 0
     with crm_mod.STORE_LOCK:
-        store_path = crm_mod._store_path()
-        store_missing = _local_store_is_empty(store_path)
-        if store_missing or getattr(config, "dataset_epoch", None) is None:
-            snapshot = client.bootstrap()
-            snap_install_id = snapshot.get("source_installation_id") or source_installation_id
-            try:
-                apply.apply_snapshot(
-                    snapshot,
-                    store=store,
-                    source_installation_id=snap_install_id,
-                    versions=versions,
-                    dirty=dirty,
-                )
-            except RemoteNotReadyError:
-                return {"pulled": 0, "skipped": "remote_not_ready"}
-            if snapshot.get("source_installation_id"):
-                config.source_installation_id = snapshot["source_installation_id"]
-            # Cross-file commit order is deliberate: local CRM bytes first
-            # (inside apply_snapshot), then row versions, and only then the
-            # cursor/epoch marker. A crash can cause a harmless re-bootstrap,
-            # but can never make a restart skip an unapplied snapshot.
+        bootstrap_needed = (_local_store_is_empty(crm_mod._store_path())
+                            or getattr(config, "dataset_epoch", None) is None)
+    # HTTP fetching never holds CRM/profile locks. Dirty rows and versions are
+    # reloaded only after entering the transaction that applies each payload.
+    if bootstrap_needed:
+        snapshot = client.bootstrap()
+        try:
+            _cloud_apply_snapshot(runtime, snapshot)
+        except RemoteNotReadyError:
+            return {"pulled": 0, "skipped": "remote_not_ready"}
+        return {"pulled": 1}
+
+    def _handler(page):
+        with _cloud_registration_apply() as locked_crm:
+            versions_path = _cloud_versions_path()
+            versions = _load_cloud_versions(versions_path)
+            apply.apply_changes(
+                page, store=FileStore(locked_crm._store_path()),
+                source_installation_id=getattr(config, "source_installation_id", None),
+                versions=versions, dirty=_cloud_dirty_set(outbox))
             _save_cloud_versions(versions, versions_path)
-            client.commit_bootstrap(snapshot)
-            pulled_pages = 1
-        else:
-            def _handler(page):
-                apply.apply_changes(
-                    page,
-                    store=store,
-                    source_installation_id=config.source_installation_id or source_installation_id,
-                    versions=versions,
-                    dirty=dirty,
-                )
-                _save_cloud_versions(versions, versions_path)
 
-            pulled_pages = client.pull_all(_handler)
-
-    return {"pulled": pulled_pages}
+    return {"pulled": client.pull_all(_handler)}
 
 
 def cloud_conflicts_payload(runtime=None):
@@ -2898,7 +3193,7 @@ def _apply_conflict_server_record(runtime, entity, record_id, server_record,
     import crm as crm_mod
     config = runtime.get("config")
     source_installation_id = getattr(config, "source_installation_id", None)
-    with crm_mod.STORE_LOCK:
+    with _cloud_registration_apply():
         doc = crm_mod._store_read()
         if not isinstance(doc, dict):
             doc = {}
@@ -2943,8 +3238,7 @@ def _apply_conflict_server_record(runtime, entity, record_id, server_record,
                 rec = server_record
 
             if rec is None:
-                # Could not resolve foreign keys safely; do not corrupt local store
-                return
+                raise RegistrationIdentityError("The server correction could not be mapped safely; conflict remains unresolved")
 
             if entity == "settings":
                 if isinstance(rec, dict):
@@ -3109,11 +3403,12 @@ def cloud_run_import():
             merged_count = 0
 
             for ent_name, ent_canon, id_key in [
-                ("customers", "customers", "id"),
-                ("owners", "owners", "id"),
-                ("identities", "identities", "id"),
-                ("devices", "crm_devices", "id"),
                 ("periods", "periods", "id"),
+                ("customers", "customers", "id"),
+                ("identities", "identities", "id"),
+                ("clerks", "clerks", "id"),
+                ("owners", "owners", "id"),
+                ("devices", "crm_devices", "id"),
             ]:
                 items = local_data.get(ent_name) or []
                 for item in items:
@@ -3137,6 +3432,16 @@ def cloud_run_import():
                         tx_rec["seq"] = seq
                         _cloud_enqueue_mutation("customer_transactions", f"{cid}/{seq}", tx_rec, kind="upsert")
                         merged_count += 1
+
+            for clerk in local_data.get("clerks") or []:
+                if isinstance(clerk, dict):
+                    clerk_id = clerk.get("id")
+                    for tx in clerk.get("transactions") or []:
+                        tx_id = tx.get("id")
+                        if tx_id:
+                            tx_rec = {**tx, "clerk_id": clerk_id}
+                            _cloud_enqueue_mutation("clerk_transactions", tx_id, tx_rec, kind="upsert")
+                            merged_count += 1
 
             if local_data.get("settings"):
                 _cloud_enqueue_mutation("settings", "settings/settings", local_data["settings"], kind="upsert")
@@ -3567,15 +3872,12 @@ def load_crm_logs(limit=300):
 def crm_state_payload():
     """crm store + joined per-device estelam results for /crm-state."""
     import crm as crm_mod
-    data = crm_mod.store_read()
+    with crm_mod.STORE_LOCK:
+        data = crm_mod._store_read(strict=True)
+        store = current_profile_store()
     est = estelam_load()
     est_by_id = {str(d.get("id")): d for d in est.get("devices", [])}
-    pay_by_pid = {}
-    try:
-        store = load_store()
-        pay_by_pid = {str(p.get("id")): p for p in store.get("profiles", [])}
-    except Exception:
-        pay_by_pid = {}
+    pay_by_pid = {str(p.get("id")): p for p in store.get("profiles", [])}
     enriched = []
     for device in data.get("devices", []):
         row = dict(device)
@@ -3592,11 +3894,21 @@ def crm_state_payload():
             {"has_gomrok_screenshot": bool(est_row.get(_SHOT_FIELD["gomrok"])),
              "has_hamta_screenshot": bool(est_row.get(_SHOT_FIELD["hamta"]))})
         profile = pay_by_pid.get(str(device.get("profile_id") or ""))
+        if profile:
+            try:
+                bound = _profile_device(profile, data)
+                if bound is None or bound.get("id") != device.get("id"):
+                    profile = None
+            except RegistrationIdentityError:
+                profile = None
         row["pay"] = {k: (profile or {}).get(k, "" if k != "browser_visible"
                                              else False) for k in
                       ("run_status", "runner_pid", "browser_visible",
                        "payment_link", "receipt_screenshot",
-                       "payment_screenshot", "registration_status")}
+                       "payment_screenshot", "registration_status", "identity_review_required", "runtime_error")}
+        row["pay"]["can_retry"] = bool(
+            device.get("stage") == "payment" and profile and not store.get("recovery_required")
+            and _profile_start_error(profile, device) is None)
         enriched.append(row)
     out = dict(data)
     out["devices"] = enriched
@@ -3781,77 +4093,97 @@ def crm_start_inquiry(device_id, service="gomrok", origin="manual",
     return result
 
 
+def _draft_registration_identity(device, data, crm_mod):
+    """An incomplete owner may be copied for review, never used to submit."""
+    owners = [o for o in data.get("owners", []) if o.get("id") == device.get("owner_id")]
+    if len(owners) != 1 or sum(d.get("owner_id") == device.get("owner_id")
+                               for d in data.get("devices", [])) != 1:
+        raise RegistrationIdentityError("Registration owner link is missing or ambiguous")
+    owner = owners[0]
+    fields = _profile_material({**owner, "imeis": [device.get(k) for k in ("serial1", "serial2")
+                                                 if device.get(k)]},
+                               str(device.get("id")), str(device.get("owner_id")))
+    fields.update(title=" — ".join(value for value in (
+        str(device.get("name") or "").strip(),
+        " ".join(str(owner.get(k) or "").strip() for k in ("first_name", "last_name")).strip()) if value),
+                  stage=str(device.get("stage") or "new"))
+    return fields
+
+
 def crm_ensure_registration_profile(device_id):
-    """At handover: link the site-1 profile or create one (review F9).
-    Dedupe first — an operator-registered device links to its EXISTING
-    profile instead of creating a duplicate. Returns the profile id or "".
+    """Bind one local profile to one device and refresh every unpaid input.
+
+    Opaque profile IDs copied from another PC are not identity. A deterministic
+    device-scoped local ID repairs dropped links without touching unrelated
+    manual profiles. Partial or ambiguous serial matches require operator review.
     """
-    import crm as crm_mod
-    data = crm_mod.store_read()
-    device = next((d for d in data.get("devices", [])
-                   if d.get("id") == device_id), None)
-    if not device:
-        return ""
-    if device.get("profile_id"):
-        store = load_store()
-        if next((p for p in store.get("profiles", [])
-                 if p.get("id") == device["profile_id"]), None):
-            return device["profile_id"]          # already linked (idempotent)
-    owner = next((o for o in data.get("owners", [])
-                  if o.get("id") == device.get("owner_id")), None)
-    serial1 = str(device.get("serial1") or "").strip()
-    store = load_store()
-    profile = None
-    # Dedupe is SERIAL-ONLY by design (production fix 2026-09-15): matching a
-    # profile by the passenger's national code could link a profile whose
-    # imeis belong to a DIFFERENT device — the robot would then register the
-    # wrong IMEI. The same passenger on a new device intentionally gets a
-    # fresh profile. (The old national clause here was dead code — a
-    # misplaced parenthesis made the generator always truthy — and was
-    # removed rather than activated.)
-    if serial1:
-        profile = next((p for p in store.get("profiles", [])
-                        if serial1 in (p.get("imeis") or [])), None)
-    if profile is None:
-        profile = {
-            "id": uuid.uuid4().hex[:12],
-            "title": f"{device.get('name')} — "
-                     f"{(owner or {}).get('first_name', '')} "
-                     f"{(owner or {}).get('last_name', '')}".strip(" —"),
-            "national": (owner or {}).get("national", ""),
-            "birth": (owner or {}).get("birth", ""),
-            "mobile": (owner or {}).get("mobile", ""),
-            "passport": str((owner or {}).get("passport") or "").strip(),
-            "imeis": [s for s in (serial1, device.get("serial2") or "") if s],
-            "enabled": False,
-            "registration_status": "pending",
-        }
-        store.setdefault("profiles", []).append(profile)
+    with _registration_transaction() as (crm_mod, data, store):
+        devices = [d for d in data.get("devices", []) if d.get("id") == device_id]
+        if not devices:
+            return ""
+        if len(devices) != 1:
+            raise RegistrationIdentityError("Ambiguous CRM device identity")
+        device = devices[0]
+        profiles = store.get("profiles", [])
+        if str(device.get("stage")) in _PROTECTED_REGISTRATION_STAGES:
+            existing = [p for p in profiles if p.get("id") == device.get("profile_id")
+                        or p.get("crm_device_id") == device_id]
+            return existing[0]["id"] if len(existing) == 1 else ""
+        identity, errors = crm_mod.registration_identity(device_id)
+        draft = bool(errors or identity is None) and str(device.get("stage")) not in _REGISTRATION_STAGES
+        if errors or identity is None:
+            if not draft:
+                raise RegistrationIdentityError("; ".join(errors) or "Invalid registration identity")
+            identity = _draft_registration_identity(device, data, crm_mod)
+        reverse = [p for p in profiles if p.get("crm_device_id") == device_id]
+        if len(reverse) > 1:
+            raise RegistrationIdentityError("Multiple local profiles are bound to this CRM device")
+        serials = set(identity["imeis"])
+        overlaps = [p for p in profiles if serials.intersection(
+            crm_mod.normalize_digits(v).strip() for v in p.get("imeis", []))]
+        profile = reverse[0] if reverse else None
+        if profile is None:
+            if len(overlaps) > 1:
+                raise RegistrationIdentityError("Ambiguous serial/profile binding; review the case")
+            if overlaps:
+                candidate = overlaps[0]
+                if (set(_profile_material(candidate)["imeis"]) != serials
+                        or candidate.get("crm_device_id") not in ("", device_id)):
+                    raise RegistrationIdentityError("Conflicting serial/profile binding; review the case")
+                bound = [d for d in data.get("devices", [])
+                         if d.get("profile_id") == candidate.get("id") and d.get("id") != device_id]
+                if bound:
+                    raise RegistrationIdentityError("This profile belongs to another CRM device")
+                profile = candidate
+            else:
+                local_id = uuid.uuid5(uuid.NAMESPACE_URL, "irica:registration:" + str(device_id)).hex[:16]
+                if any(p.get("id") == local_id for p in profiles):
+                    raise RegistrationIdentityError("Conflicting deterministic registration profile ID")
+                profile = _clean_profile({"id": local_id, "enabled": False,
+                                          "crm_device_id": device_id,
+                                          **{k: copy.deepcopy(identity[k]) for k in _IDENTITY_FIELDS + ("title",)}})
+                profiles.append(profile)
+        if any(p is not profile and p.get("id") == profile.get("id") for p in profiles):
+            raise RegistrationIdentityError("Duplicate local registration profile ID")
+        # Reject an explicit local link that is also owned by another CRM case.
+        if any(d.get("id") != device_id and d.get("profile_id") == profile["id"]
+               for d in data.get("devices", [])):
+            raise RegistrationIdentityError("Ambiguous CRM/profile binding; review the case")
+        profile["crm_device_id"] = device_id
+        if draft:
+            if _profile_material(profile, device_id, identity["owner_id"]) != {
+                    k: identity[k] for k in _profile_material(profile, device_id, identity["owner_id"])}:
+                _invalidate_profile_identity(profile)
+            for field in _IDENTITY_FIELDS + ("title",):
+                profile[field] = copy.deepcopy(identity[field])
+            profile["identity_fingerprint"] = ""
+        else:
+            _refresh_profile_identity(profile, data, crm_mod)
+        device["profile_id"] = profile["id"]
+        device["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
         save_store(store)
-        crm_mod.crm_log("info", "profile_created", device_id=device_id,
-                        profile_id=profile["id"])
-    else:
-        # Fill-once passport (v1.5 item 11): an EMPTY profile passport takes
-        # the attached owner's; a non-empty value is NEVER overwritten (the
-        # operator's manual entry wins). Idempotent — after the first fill
-        # the profile side is non-empty and this becomes a no-op.
-        owner_passport = str((owner or {}).get("passport") or "").strip()
-        if owner_passport and not str(profile.get("passport") or "").strip():
-            profile["passport"] = owner_passport
-            save_store(store)
-            crm_mod.crm_log("info", "profile_passport_filled",
-                            device_id=device_id, profile_id=profile["id"])
-        crm_mod.crm_log("info", "profile_linked", device_id=device_id,
-                        profile_id=profile["id"])
-    with crm_mod.STORE_LOCK:
-        data = crm_mod.store_read()
-        dev = next((d for d in data.get("devices", [])
-                    if d.get("id") == device_id), None)
-        if dev:
-            dev["profile_id"] = profile["id"]
-            dev["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            crm_mod.store_write(data)
-    return profile["id"]
+        crm_mod.store_write(data)
+        return profile["id"]
 
 
 HANDOFF_STAGES = ("handed", "to_payment", "payment", "payment_done", "done")
@@ -3964,6 +4296,8 @@ def crm_html_to_pdf(html, timeout_s=60):
 
 _CRM_SCHEDULER_THREAD = None
 _CRM_SCHEDULER_STOP = threading.Event()
+_CRM_SCHEDULER_LOCK = threading.RLock()
+_CRM_SCHEDULER_RESTART = False
 
 
 def _crm_scheduler_loop():
@@ -3981,21 +4315,48 @@ def _crm_scheduler_loop():
                 pass
 
 
+def _crm_scheduler_entry():
+    global _CRM_SCHEDULER_THREAD, _CRM_SCHEDULER_RESTART
+    try:
+        _crm_scheduler_loop()
+    finally:
+        with _CRM_SCHEDULER_LOCK:
+            if _CRM_SCHEDULER_THREAD is threading.current_thread():
+                _CRM_SCHEDULER_THREAD = None
+                restart = (_CRM_SCHEDULER_RESTART and not _CRM_SCHEDULER_STOP.is_set()
+                           and not _MAINTENANCE_DRAINING.is_set())
+                _CRM_SCHEDULER_RESTART = False
+                if restart:
+                    _CRM_SCHEDULER_THREAD = threading.Thread(
+                        target=_crm_scheduler_entry, name="crm-scheduler", daemon=True)
+                    _CRM_SCHEDULER_THREAD.start()
+
+
 def crm_scheduler_start():
-    global _CRM_SCHEDULER_THREAD
+    global _CRM_SCHEDULER_THREAD, _CRM_SCHEDULER_RESTART
     if os.environ.get("IRICA_CRM_SCHEDULER_OFF") == "1":
         return None
-    if _CRM_SCHEDULER_THREAD and _CRM_SCHEDULER_THREAD.is_alive():
+    with _CRM_SCHEDULER_LOCK:
+        if _MAINTENANCE_DRAINING.is_set():
+            return None
+        if _CRM_SCHEDULER_THREAD and _CRM_SCHEDULER_THREAD.is_alive():
+            if _CRM_SCHEDULER_STOP.is_set():
+                _CRM_SCHEDULER_RESTART = True
+                _CRM_SCHEDULER_STOP.clear()
+            return _CRM_SCHEDULER_THREAD
+        _CRM_SCHEDULER_STOP.clear()
+        _CRM_SCHEDULER_RESTART = False
+        _CRM_SCHEDULER_THREAD = threading.Thread(target=_crm_scheduler_entry,
+                                               name="crm-scheduler", daemon=True)
+        _CRM_SCHEDULER_THREAD.start()
         return _CRM_SCHEDULER_THREAD
-    _CRM_SCHEDULER_STOP.clear()
-    _CRM_SCHEDULER_THREAD = threading.Thread(target=_crm_scheduler_loop,
-                                             name="crm-scheduler", daemon=True)
-    _CRM_SCHEDULER_THREAD.start()
-    return _CRM_SCHEDULER_THREAD
 
 
 def crm_scheduler_stop():
-    _CRM_SCHEDULER_STOP.set()
+    global _CRM_SCHEDULER_RESTART
+    with _CRM_SCHEDULER_LOCK:
+        _CRM_SCHEDULER_RESTART = False
+        _CRM_SCHEDULER_STOP.set()
 
 
 def crm_scheduler_tick(origin="scheduler"):
@@ -4051,7 +4412,7 @@ def crm_auto_advance_scan():
         stage = device.get("stage")
         attempts = int(device.get("advance_attempts") or 0)
         is_new = stage == "handed" and str(device.get("id")) in advanced_ids
-        is_retry = stage == "to_payment" and attempts > 0 and attempts < 6
+        is_retry = stage in ("to_payment", "payment") and attempts > 0 and attempts < 6
         if is_new:
             with crm_mod.STORE_LOCK:
                 fresh = crm_mod.store_read()
@@ -4077,19 +4438,14 @@ def crm_auto_advance_scan():
             crm_mod.crm_log("error", "auto_advance_gave_up",
                             device_id=device["id"])
             continue
-        profile_id = crm_ensure_registration_profile(device["id"])
-        if not profile_id:
-            errors.append({"device_id": device["id"],
-                           "error": "پروفایل ثبت‌نام ساخته نشد"})
-            continue
-        status, payload = start_profile(profile_id)
+        status, payload = start_crm_payment(device["id"])
+        profile_id = (payload or {}).get("profile_id", "")
         if status == 200:
             with crm_mod.STORE_LOCK:
                 fresh = crm_mod.store_read()
                 dev = next((d for d in fresh.get("devices", [])
                             if d.get("id") == device.get("id")), None)
-                if dev:
-                    dev["stage"] = "payment"
+                if dev and dev.get("stage") == "payment":
                     dev["advance_attempts"] = 0
                     dev["payment_started_at"] = time.strftime(
                         "%Y-%m-%d %H:%M:%S")
@@ -4462,14 +4818,7 @@ def start_estelam_process(device_id=None, service="gomrok", person=None,
         value = str((person or {}).get(key) or "").strip()
         if value:
             child_env["IRICA_PERSON_" + key.upper()] = value
-    log_file = open(ROBOT_LOG_PATH, "a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(command, cwd=HERE, env=child_env,
-                                   stdin=subprocess.DEVNULL,
-                                   stdout=log_file, stderr=log_file)
-    finally:
-        log_file.close()
-    return {"pid": process.pid}
+    return _spawn_root_robot(command, child_env)
 
 
 def estelam_start(device_id=None, service="gomrok", actor=None):
@@ -4506,9 +4855,11 @@ def estelam_start(device_id=None, service="gomrok", actor=None):
                    if str(d.get("status") or "pending") in ("pending", "error", "")]
     if not targets:
         return {"ok": False, "errors": ["دستگاهی برای استعلام وجود ندارد"]}
-    runtime = start_estelam_process(device_id, service=service,
-                                    person=data.get("person") or {},
-                                    actor=actor)
+    try:
+        runtime = start_estelam_process(device_id, service=service,
+                                        person=data.get("person") or {}, actor=actor)
+    except (OSError, RuntimeError, ValueError):
+        return {"ok": False, "errors": ["Cannot start an inquiry while the runner or update guard is unavailable"]}
     data = estelam_load()
     data["run_pid"] = runtime.get("pid")
     data["run_device_id"] = str(device_id or "")
@@ -5402,7 +5753,8 @@ PAGE_HEAD = """<!DOCTYPE html>
             <h1 class="panel-title">داشبورد مدیریت پرونده‌ها</h1>
           </div>
         </div>
-        <div class="head-actions">
+        <div class="head-actions irica-maint-host">
+          __MAINTENANCE_ACTIONS__
           <a href="/" class="home-btn" title="بازگشت به انتخاب سامانه" aria-label="بازگشت به انتخاب سامانه"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span>سامانه‌ها</span></a>
           <a href="/crm" class="home-btn" title="مدیریت مشتریان و پرونده‌ها" aria-label="مدیریت مشتریان و پرونده‌ها"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>CRM</span></a>
           <button type="button" id="theme-toggle" class="theme-btn" onclick="toggleTheme()"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg><span>حالت تاریک</span></button>
@@ -6495,6 +6847,11 @@ function fetchCloudConflicts(){
       CLOUD_CONFLICTS_FETCHING=false;
       if(d&&d.ok&&Array.isArray(d.conflicts)){
         CLOUD_CONFLICTS_CACHE=d.conflicts;
+        if(d.conflicts.length===0&&CLOUD.last&&Number(CLOUD.last.conflicts||0)>0){
+          CLOUD.last.conflicts=0;
+          var cEl=document.getElementById('cloud-conflicts');
+          if(cEl)cEl.textContent=toFa(0);
+        }
         var el=document.getElementById('cloud-conflicts-view');
         if(el)renderCloudConflicts(el,CLOUD.last);
       }
@@ -6639,7 +6996,7 @@ PAGE_TAIL = """
 
 
 def render_page():
-    store = load_store()
+    store = current_profile_store()
     logs = load_logs()
     js = PAGE_JS
     js = js.replace("__STORE_JSON__", json.dumps(store, ensure_ascii=False))
@@ -6649,7 +7006,7 @@ def render_page():
     head = PAGE_HEAD.replace("__VERSION__", version)
     tail = PAGE_TAIL.replace("__VERSION__", version)
     html = head + js + tail
-    return with_csrf_bootstrap(html).encode("utf-8")
+    return with_csrf_bootstrap(with_maintenance_ui(html)).encode("utf-8")
 
 
 HOME_PAGE = """<!doctype html>
@@ -6888,9 +7245,9 @@ LAUNCH_PAGE = r"""<!DOCTYPE html>
   <button class="btn b-open2" id="btn-open" onclick="location.href='/site-1'">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="m12 2 8 5H4l8-5Z"/></svg>
     پنل قدیمی رجیستری</button>
-  <button class="btn b-driver" id="btn-driver">
+  <button type="button" lang="fa" dir="rtl" class="btn b-driver" id="btn-driver" onclick="location.href='/site-1'">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-    به‌روزرسانی درایور مرورگر</button>
+    بررسی به‌روزرسانی‌ها</button>
   <button class="btn b-stop" id="btn-stop">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
     بستن سرویس</button>
@@ -6931,34 +7288,6 @@ document.getElementById('btn-stop').onclick=function(){
     document.getElementById('off-msg').style.display='block';
   }).catch(function(){
     b.disabled=false; b.innerHTML=orig;
-  });
-};
-document.getElementById('btn-driver').onclick=function(){
-  var b=this; var orig=b.innerHTML; var note=document.getElementById('drv-note');
-  var msgs={
-    'updated':['درایور مرورگر به‌روز شد','var(--ok)'],
-    'up-to-date':['درایور مرورگر از قبل به‌روز بود','var(--ok)'],
-    'disabled':['به‌روزرسانی خودکار درایور غیرفعال است','var(--muted)'],
-    'no-browser-version':['نسخه Chrome نصب‌شده خوانده نشد','var(--danger)'],
-    'busy':['یک به‌روزرسانی درایور در حال اجراست؛ چند لحظه بعد دوباره تلاش کنید','var(--muted)'],
-    'driver-in-use':['فایل درایور در حال استفاده است؛ ابتدا ربات‌ها را ببندید و دوباره تلاش کنید','var(--danger)']
-  };
-  b.disabled=true; b.textContent='در حال به‌روزرسانی…';
-  note.style.display='none'; note.removeAttribute('title');
-  fetch('/driver-update',{method:'POST'}).then(function(r){return r.json()}).then(function(res){
-    b.disabled=false; b.innerHTML=orig;
-    var pair=msgs[res.status]||['به‌روزرسانی درایور ناموفق بود؛ اتصال پروکسی را بررسی کنید','var(--danger)'];
-    var text=pair[0]+(res.version?' (نسخه '+res.version+')':'');
-    if(res.status==='updated'||res.status==='up-to-date'){text+=' ✓';}
-    note.textContent=text;
-    note.title=res.detail||'';
-    note.style.color=pair[1];
-    note.style.display='block';
-  }).catch(function(){
-    b.disabled=false; b.innerHTML=orig;
-    note.textContent='ارتباط با سرویس برقرار نشد';
-    note.style.color='var(--danger)';
-    note.style.display='block';
   });
 };
 </script>
@@ -7408,7 +7737,8 @@ ESTELAM_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="irica-version">نسخه __VERSION__</div>
     <div class="runpill" id="top-run-pill"><span class="rp-dot"></span><span class="rp-t">در حال بارگذاری…</span></div>
-    <div class="tb-tools">
+    <div class="tb-tools irica-maint-host">
+      __MAINTENANCE_ACTIONS__
       <div class="wbar">
         <span class="wlab">عرض کادر:</span>
         <button type="button" class="wbtn" data-w="1080" onclick="setWrapW(1080)">معمولی</button>
@@ -8233,7 +8563,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
   /* v1.4.1: page width is operator-controlled (--crm-w, set from the
      header «عرض» popover) and capped by the viewport so it can never
      overflow. */
-  .wrap{width:min(var(--crm-w,1240px),98vw);margin:0 auto}
+  .wrap{width:min(var(--crm-w,1240px),100%);margin:0 auto}
   /* v1.3.7 header nav: the two panel links are real navigation buttons,
      not bare text; account actions sit behind a hairline divider. */
   .headnav{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -8517,7 +8847,7 @@ CRM_PAGE = r"""<!DOCTYPE html>
      compact aside captions (history + summary rail) share one smaller cut */
   .crm-aside .history h3,.devrail h4{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--muted)}
   .crm-aside .history .kbd{margin-bottom:4px;line-height:1.7}
-  @media (max-width:1100px){.crm-cols{grid-template-columns:1fr}.crm-aside .history{position:static;max-height:260px}}
+  @media (max-width:1100px){.crm-cols{grid-template-columns:minmax(0,1fr)}.crm-aside .history{position:static;max-height:260px}}
   /* v1.3.4 (operator request): the KPI strip and the devices summary rail
      render in the aside above the history card, so the case table owns the
      full main column. On the narrow desktop aside the four KPIs become a
@@ -8883,7 +9213,8 @@ CRM_PAGE = r"""<!DOCTYPE html>
       <a class="navlink" href="/site-2"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>پنل استعلام‌ها</a>
       <a class="navlink" href="/site-1"><svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.7 2.6 4 5.7 4 9s-1.3 6.4-4 9c-2.7-2.6-4-5.7-4-9s1.3-6.4 4-9z"/></svg>سامانه مدیریت گمرک</a>
     </nav>
-    <div class="headacts">
+    <div class="headacts irica-maint-host">
+      __MAINTENANCE_ACTIONS__
       <button class="iconbtn cloud-pill mute" id="crmCloudPill" onclick="setTab('cloud')" title="وضعیت سرور ابری" style="margin-inline-end:4px"><span id="crmCloudPillIcon"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg></span><span id="crmCloudPillText">سرور ابری</span></button>
       <div class="wwrap">
         <button class="iconbtn" id="widthBtn" aria-expanded="false" aria-haspopup="true" title="عرض صفحه"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg> عرض</button>
@@ -11019,6 +11350,7 @@ function caseDetail(id, silent){
         +(busy?'<span class="pill warn">ربات پرداخت در حال اجرا</span>':'')
         +(busy?'<button class="btn mini danger" onclick="payStop(\''+d.id+'\')">'+ICONS.stop+' توقف ربات پرداخت</button>':'')
         +(busy?'<button class="btn mini ghost" onclick="payBrowser(\''+d.id+'\','+(!pay.browser_visible)+')">'+(pay.browser_visible?ICONS.eyeOff+' مخفی کردن مرورگر':ICONS.eye+' نمایش مرورگر')+'</button>':'')
+        +(pay.can_retry?'<button type="button" lang="fa" dir="rtl" class="btn mini primary" onclick="devTick(\''+d.id+'\',\'__start_payment\')">'+ICONS.play+' تلاش دوباره برای ثبت</button>':'')
         +(pay.payment_link?'<a class="btn mini primary" target="_blank" href="'+esc(pay.payment_link)+'">'+ICONS.link+' لینک پرداخت</a>':'')
         +(pay.receipt_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=receipt">'+ICONS.receipt+' رسید</a>':'')
         +(pay.payment_screenshot?'<a class="btn mini ghost" target="_blank" href="/artifact?id='+encodeURIComponent(d.profile_id)+'&kind=payment">'+ICONS.card+' اسکرین پرداخت</a>':'')
@@ -12693,6 +13025,11 @@ function fetchCloudConflicts(){
       CLOUD_CONFLICTS_FETCHING=false;
       if(d&&d.ok&&Array.isArray(d.conflicts)){
         CLOUD_CONFLICTS_CACHE=d.conflicts;
+        if(d.conflicts.length===0&&CLOUD.last&&Number(CLOUD.last.conflicts||0)>0){
+          CLOUD.last.conflicts=0;
+          var cEl=document.getElementById('cloud-conflicts');
+          if(cEl)cEl.textContent=fa(0);
+        }
         var el=document.getElementById('cloud-conflicts-view');
         if(el)renderCloudConflicts(el,CLOUD.last);
       }
@@ -13891,8 +14228,8 @@ setInterval(loadCloudStatus, 4000);
 
 def render_crm_page(actor="system"):
     """CRM page; __ACTOR__ becomes the logged-in user chip in the header."""
-    return with_csrf_bootstrap(
-        CRM_PAGE.replace("__ACTOR__", str(actor or "system")))
+    return with_csrf_bootstrap(with_maintenance_ui(
+        CRM_PAGE.replace("__ACTOR__", str(actor or "system"))))
 
 
 def render_estelam_page():
@@ -13905,7 +14242,7 @@ def render_estelam_page():
     html = html.replace("__BADGE_JSON__",
                         json.dumps(ESTELAM_BADGE_FA, ensure_ascii=False))
     html = html.replace("__VERSION__", app_version_text() or "—")
-    return with_csrf_bootstrap(html).encode("utf-8")
+    return with_csrf_bootstrap(with_maintenance_ui(html)).encode("utf-8")
 
 
 TX_ARTIFACT_SUBDIR = "tx_artifacts"
@@ -14451,81 +14788,16 @@ class Handler(BaseHTTPRequestHandler):
         self._json(payload)
 
     def _crm_start_payment(self, device_id):
-        """Advance to payment. Explicit linked profile_id ONLY (review F18/F9):
-        start_profile() with no id pool-claims ANY free profile."""
+        status, payload = start_crm_payment(device_id, actor=self.actor)
+        if status != 200:
+            self._json({"ok": False, "errors": [payload.get("error", "Registration start failed")]}, status)
+            return
         import crm as crm_mod
         data = crm_mod.store_read()
-        device = next((d for d in data.get("devices", [])
-                       if d.get("id") == device_id), None)
-        if not device:
-            self._json({"ok": False, "errors": ["دستگاه پیدا نشد"]}, 404)
-            return
-        profile_id = str(device.get("profile_id") or "").strip()
-        if profile_id:
-            # Stale link (v1.5 review item 11): a profile_id pointing at a
-            # profile that no longer exists in the store must self-heal the
-            # same way as a missing one — otherwise start_profile answers an
-            # English 404 "profile not found" instead of the actionable
-            # Persian path below.
-            store = load_store()
-            if not next((p for p in store.get("profiles", [])
-                         if p.get("id") == profile_id), None):
-                profile_id = ""
-        if not profile_id:
-            # Self-heal (v1.5 item 11): cases that skipped past handover
-            # (stage_skip) or lost their linked profile reach payment without
-            # a registration profile. Bounded retries + a surfaced reason
-            # (production fix 2026-09-15): the old code swallowed the
-            # exception, so a persistent cause (e.g. profiles.json held open
-            # by another process) was indistinguishable from a missing
-            # passenger. Only with a passenger attached: without an owner the
-            # ensure could mint nothing but a national-less profile the robot
-            # rejects anyway, so the actionable 400 below names the real
-            # recovery. F5 stays intact: the heal produces an EXPLICIT device
-            # link; there is still no pool claim and no auto-advance
-            # semantics change.
-            healed = ""
-            ensure_exc = None
-            if str(device.get("owner_id") or "").strip():
-                for attempt in range(3):
-                    try:
-                        healed = str(
-                            crm_ensure_registration_profile(device_id)
-                            or "").strip()
-                        ensure_exc = None
-                        break
-                    except Exception as exc:
-                        ensure_exc = exc
-                    if attempt < 2:
-                        time.sleep(0.5 * (attempt + 1))
-            if not healed:
-                if ensure_exc is not None:
-                    crm_mod.crm_log("error", "profile_ensure_failed",
-                                    device_id=device_id, phase="payment",
-                                    detail=repr(ensure_exc)[:300])
-                reason = ""
-                if ensure_exc is not None:
-                    reason = " — علت: " + str(ensure_exc)[:160]
-                self._json({"ok": False,
-                            "errors": ["پروفایل ثبت‌نام برای این دستگاه ساخته نشده است — "
-                                       "ابتدا مسافر را به پرونده متصل کنید "
-                                       "(در صورت نیاز پرونده را به گام «اتصال مسافر» برگردانید)"
-                                       + reason]}, 400)
-                return
-            profile_id = healed
-        status, payload = start_profile(profile_id, actor=self.actor)
-        if status != 200:
-            crm_mod.crm_log("error", "payment_start_failed", device_id=device_id,
-                            profile_id=profile_id, detail=str(payload))
-            message = "شروع ربات انجام نشد"
-            if isinstance(payload, dict):
-                message = str(payload.get("error") or message)
-            self._json({"ok": False, "errors": [message]}, status)
-            return
-        device, errors = crm_mod.advance(device_id, "start_payment")
+        device = next((d for d in data.get("devices", []) if d.get("id") == device_id), None)
         crm_mod.crm_log("info", "payment_started", device_id=device_id,
-                        profile_id=profile_id)
-        self._json({"ok": True, "device": device, "pid": payload.get("pid")})
+                        profile_id=payload.get("profile_id"))
+        self._json({"ok": True, "device": device, "pid": payload["pid"]})
 
     def _crm_report_telegram(self, full_data):
         import crm as crm_mod
@@ -14886,17 +15158,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, report.encode("utf-8"), "text/html; charset=utf-8")
 
     def _state_json(self, code=200):
-        """load_store-e amn baraye route-haye read: agar file lahze-i kharab bood,
-        be jaye 500/khali, akharin store-e salem barmigardanad (UI khali nashavad)."""
         try:
-            self._json(load_store(), code)
-        except StoreUnreadableError:
-            cached = _LAST_GOOD_STORE.get(PROFILES_PATH)
-            if cached is not None:
-                self._json(cached, code)
-            else:
-                # hich manba'-e salemi nist: 503 ba flag ta JS store-e fe'li ra negah darad.
-                self._json({"error": "store temporarily unreadable", "retry": True}, 503)
+            self._json(current_profile_store(), code)
+        except (OSError, RuntimeError, ValueError):
+            self._json({"error": "Current registration state could not be verified", "retry": True}, 503)
 
     # ------------------------------------------------------------- gate
     # v1.9: /sfx/* is public on purpose — the login page plays the login cues
@@ -15005,12 +15270,14 @@ class Handler(BaseHTTPRequestHandler):
             if self._csrf_rejected(_cookie_token(self.headers)):
                 self._json({"ok": False, "errors": [_CSRF_REJECT]}, 403)
                 return False
-            if route in ("/api/check-updates", "/api/update-chromedriver", "/api/health-check"):
+            if route in ("/api/check-updates", "/api/health-check", "/api/update-app",
+                         "/api/update-chromedriver", "/api/maintenance/check", "/driver-update"):
                 client_ip = getattr(self, "client_address", ("", 0))[0]
-                if client_ip not in ("127.0.0.1", "::1", "localhost", "testclient"):
-                    self._json({"ok": False, "errors": ["دسترسی فقط از طریق لوکال مجاز است"]}, 403)
+                if client_ip not in ("127.0.0.1", "::1"):
+                    self._json({"ok": False, "errors": ["Maintenance is available from loopback only."]}, 403)
                     return False
-                return True
+                if route in ("/api/check-updates", "/api/health-check"):
+                    return True
         if method == "GET":
             if route == "/login":
                 self._send(200, render_login_page())
@@ -15090,6 +15357,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                _schedule_login_maintenance_check()
                 try:
                     import crm as crm_mod
                     crm_mod.crm_log("info", "login_ok", user=username)
@@ -15194,28 +15462,16 @@ class Handler(BaseHTTPRequestHandler):
                             "errors": ["ثبت دستگاه در سرور ناموفق بود"]}, 502)
                 return
 
-        # Initial bootstrap snapshot if fresh account
+        # Bootstrap fetching is outside both locks; application and attempt
+        # invalidation use the same transaction as ordinary cloud pulls.
         if getattr(config, "dataset_epoch", None) is None:
             try:
                 snapshot = client.bootstrap()
-                import crm as crm_mod
-                from cloud_sync import apply
-                from cloud_sync.importer import FileStore
-                store = FileStore(crm_mod._store_path())
-                versions_path = _cloud_versions_path()
-                versions = _load_cloud_versions(versions_path)
-                dirty = _cloud_dirty_set(runtime.get("outbox"))
-                apply.apply_snapshot(
-                    snapshot,
-                    store=store,
-                    source_installation_id=config.source_installation_id,
-                    versions=versions,
-                    dirty=dirty,
-                )
-                _save_cloud_versions(versions, versions_path)
-                client.commit_bootstrap(snapshot)
+                _cloud_apply_snapshot(runtime, snapshot)
             except Exception:
-                pass
+                self._json({"ok": False,
+                            "errors": ["Cloud bootstrap could not be applied safely; sign-in was not completed"]}, 503)
+                return
 
         global _CLOUD_ACTOR, _CLOUD_MUST_CHANGE, _CLOUD_ROLE
         user_info = login_payload.get("user") if isinstance(login_payload, dict) else {}
@@ -15260,6 +15516,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        _schedule_login_maintenance_check()
 
     def _handle_logout(self):
         token = _cookie_token(self.headers)
@@ -15280,10 +15537,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def do_GET(self):
+    def _maintenance_error(self):
+        self.log_error("Maintenance request failed; refresh status before retrying.")
         try:
+            self._json({"ok": False, "errors": ["Maintenance request failed. Refresh status before retrying."]}, 500)
+        except OSError:
+            self.close_connection = True
+
+    def do_GET(self):
+        from urllib.parse import urlsplit
+        self._maintenance_route = False
+        try:
+            self._maintenance_route = urlsplit(self.path).path in (
+                "/api/maintenance", "/api/check-updates", "/api/health-check")
             self._do_get_body()
         except Exception as exc:
+            if self._maintenance_route:
+                self._maintenance_error()
+                return
             # v1.7: mirrors do_POST's safety net. A GET route that raised used
             # to abort the socket mid-response, so the browser reported a raw
             # "TypeError: Failed to fetch" (e.g. a period report whose id no
@@ -15395,9 +15666,10 @@ class Handler(BaseHTTPRequestHandler):
             pid, kind = (q.get("id") or [""])[0], (q.get("kind") or [""])[0]
             key = "receipt_screenshot" if kind == "receipt" else "payment_screenshot"
             try:
-                profiles = load_store().get("profiles", [])
-            except StoreUnreadableError:
-                profiles = (_LAST_GOOD_STORE.get(PROFILES_PATH) or {}).get("profiles", [])
+                profiles = current_profile_store().get("profiles", [])
+            except (OSError, RuntimeError, ValueError):
+                self._json({"error": "Current registration artifacts could not be verified"}, 503)
+                return
             profile = next((p for p in profiles if p.get("id") == pid), None)
             path = os.path.realpath((profile or {}).get(key) or "")
             # Screenshots now live in the data directory. Paths recorded by an
@@ -15517,6 +15789,8 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlsplit(self.path).query)
             force_direct = bool((query.get("force_direct") or ["0"])[0] in ("1", "true", "yes"))
             self._json(check_system_updates(force_direct=force_direct))
+        elif route == "/api/maintenance":
+            self._json(maintenance_status())
         elif route == "/api/health-check":
             self._json(check_services_health())
         elif route == "/api/proxy-config":
@@ -15526,6 +15800,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         from urllib.parse import urlsplit
+        self._maintenance_route = urlsplit(self.path).path in (
+            "/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/driver-update")
         try:
             self._consume_body()
         except RequestBodyRejected as rejected:
@@ -15543,6 +15819,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._do_post_body()
         except Exception as exc:
+            if self._maintenance_route:
+                self._maintenance_error()
+                return
             # v1.7: a route exception used to abort the socket mid-response,
             # so the browser reported a raw "TypeError: Failed to fetch" while
             # the store write had already succeeded (the operator saw "saved
@@ -15560,26 +15839,38 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _do_post_body(self):
-        if self.path == "/driver-update":
-            # Operator-triggered repair of the ChromeDriver the robots launch.
-            # Deliberately bypasses the auto-update latch and cooldown: a person
-            # clicked the button and is waiting for the verdict. captcha_collector
-            # owns driver resolution, so it is imported here rather than
-            # duplicating those rules in the panel.
-            #
-            # Handled before load_store(): repairing the driver has nothing to
-            # do with the profile store, and were profiles.json momentarily
-            # unreadable the route would answer 500 and the page would report a
-            # proxy problem. Every outcome here leaves as JSON -- the page reads
-            # the verdict to say what happened, so a raised exception must
-            # arrive as a status it understands, never as an HTML error body.
+        from urllib.parse import urlsplit
+        route = urlsplit(self.path).path
+        if route in ("/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/driver-update"):
             try:
-                import captcha_collector
-                result = captcha_collector.update_chromedriver_now()
-            except Exception as exc:
-                result = {"status": "failed", "detail": str(exc),
-                          "target": "", "version": ""}
-            self._json(result)
+                payload = self._read_json()
+            except (ValueError, UnicodeDecodeError):
+                self._json({"ok": False, "errors": ["The maintenance body must be a JSON object."]}, 400)
+                return
+            allowed = ({"force"} if route == "/api/maintenance/check" else
+                       {"offer_id"} if route == "/api/update-app" else {"offer_id", "consent"})
+            if not isinstance(payload, dict) or set(payload) != allowed:
+                self._json({"ok": False, "errors": ["The maintenance request fields are invalid."]}, 400)
+                return
+            if route == "/api/maintenance/check":
+                if type(payload["force"]) is not bool:
+                    self._json({"ok": False, "errors": ["force must be a boolean."]}, 400)
+                    return
+                self._json(maintenance_check(force=payload["force"]), 202)
+                return
+            offer_id = payload.get("offer_id")
+            if (not isinstance(offer_id, str) or not offer_id or not offer_id.isascii()
+                    or len(offer_id) > 128 or offer_id.strip() != offer_id):
+                self._json({"ok": False, "errors": ["Check again and select the current update offer."]}, 400)
+                return
+            if route == "/api/update-app":
+                result = confirm_application_update(offer_id)
+            else:
+                if payload.get("consent") is not True:
+                    self._json({"ok": False, "errors": ["Explicit boolean consent is required."]}, 400)
+                    return
+                result = run_chromedriver_update(offer_id=offer_id, consent=True)
+            self._json(result, 202 if result.get("ok") else 409)
             return
         try:
             store = load_store()
@@ -15593,65 +15884,24 @@ class Handler(BaseHTTPRequestHandler):
             store = {"profiles": [dict(p) for p in cached["profiles"]],
                      "active_id": cached["active_id"]}
         if self.path == "/save":
-            data = self._read_json()
-            pid = (data.get("id") or "").strip()
-            found = False
-            for i, p in enumerate(store["profiles"]):
-                if p["id"] == pid:
-                    data["id"] = pid
-                    data = sync_shared_identity(merge_profile_update(p, data))
-                    store["profiles"][i] = data
-                    found = True
-                    break
-            if not found:
-                data["id"] = pid or None
-                store["profiles"].append(data)
-            # Route-level passport validation (v1.5 item 11): the field is
-            # OPTIONAL — empty always passes; a non-empty value must be 5-20
-            # latin letters/digits (after strip+upper). Deliberately NOT in
-            # _clean_profile/save_store so legacy stores keep loading/saving
-            # unchanged; only operator edits through this route are checked.
-            candidate_passport = str(data.get("passport") or "").strip().upper()
-            if candidate_passport and \
-                    not re.fullmatch(r"[A-Z0-9]{5,20}", candidate_passport):
-                self._json({"error": "شمارهٔ گذرنامه باید ۵ تا ۲۰ کاراکتر حرف یا رقم لاتین باشد"}, 400)
-                return
-            # profile-i ke zakhire shod ra ACTIVE mikonim
-            store["active_id"] = pid or store["profiles"][-1].get("id") or ""
-            clean = save_store(store)
-            # active_id-e vaghe'i ba'd az tamiz-shodan
-            # The title is operator data and can be Persian: on a cp1252
-            # console this print raises UnicodeEncodeError inside the handler
-            # thread and the client would get a connection drop instead of
-            # the saved store. Diagnostics must never break the response
-            # (v1.5 review item 10).
             try:
-                print(f">>> Zakhire shod: profile={data.get('title')!r} "
-                      f"active={clean['active_id']}")
-            except UnicodeEncodeError:
-                pass
+                clean = save_profile_update(self._read_json())
+            except RegistrationIdentityError as exc:
+                self._json({"error": str(exc)}, 409)
+                return
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            except (OSError, RuntimeError, TimeoutError):
+                self._json({"error": "Cannot save the profile safely; retry after the active operation"}, 503)
+                return
             self._json(clean)
 
         elif self.path == "/activate":
-            data = self._read_json()
-            store["active_id"] = (data.get("id") or "").strip()
-            clean = save_store(store)
-            # active_id comes from the operator's payload: on a cp1252
-            # console an unencodable id would raise UnicodeEncodeError inside
-            # the handler thread and drop the response. Diagnostics must
-            # never break the route (same guard as /save, v1.5 item 10/12).
-            try:
-                print(f">>> Faal shod: {clean['active_id']}")
-            except UnicodeEncodeError:
-                pass
-            self._json(clean)
+            self._json(update_profile_collection("activate", self._read_json()))
 
         elif self.path == "/toggle":
-            data = self._read_json()
-            for p in store["profiles"]:
-                if p["id"] == str(data.get("id") or "") and p.get("run_status") != "busy":
-                    p["enabled"] = bool(data.get("enabled"))
-            self._json(save_store(store))
+            self._json(update_profile_collection("toggle", self._read_json()))
 
         elif self.path == "/start":
             data = self._read_json()
@@ -15668,8 +15918,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/start2-manual":
             try:
                 runtime = start_site2_manual_process(actor=self.actor)
-            except (OSError, ValueError):
-                self._json({"error": "شروع ربات سایت دوم انجام نشد"}, 500)
+            except (OSError, RuntimeError, ValueError):
+                self._json({"error": "Cannot start site-2 while the runner or update guard is unavailable"}, 503)
             else:
                 self._json({"ok": True, "pid": runtime["pid"]})
 
@@ -15704,7 +15954,11 @@ class Handler(BaseHTTPRequestHandler):
             if missing:
                 self._json({"error": "اطلاعات هویتی ناقص است", "missing": missing}, 422)
                 return
-            runtime = start_exitban_process(profile_id, actor=self.actor)
+            try:
+                runtime = start_exitban_process(profile_id, actor=self.actor)
+            except (OSError, RuntimeError, ValueError):
+                self._json({"error": "Cannot start an exit-ban inquiry while the update guard is unavailable"}, 503)
+                return
             self._json({"ok": True, "profile_id": profile_id, "pid": runtime["pid"], "submitted": False})
 
         elif self.path == "/exitban-result":
@@ -15735,10 +15989,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(load_store())
 
         elif self.path == "/new":
-            store["profiles"].append(_clean_profile({}))
-            store["active_id"] = store["profiles"][-1]["id"]
-            clean = save_store(store)
-            self._json(clean)
+            self._json(update_profile_collection("new"))
 
         elif self.path == "/clone":
             data = self._read_json()
@@ -15754,15 +16005,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(payload, 200 if ok else 409)
 
         elif self.path == "/delete":
-            data = self._read_json()
-            pid = (data.get("id") or "").strip()
-            store["profiles"] = [p for p in store["profiles"] if p["id"] != pid]
-            if not store["profiles"]:
-                store["profiles"] = [_clean_profile({})]
-            if store.get("active_id") == pid:
-                store["active_id"] = store["profiles"][0]["id"]
-            clean = save_store(store)
-            self._json(clean)
+            try:
+                self._json(update_profile_collection("delete", self._read_json()))
+            except RegistrationIdentityError as exc:
+                self._json({"error": str(exc)}, 409)
 
         elif self.path == "/browser-visibility":
             data = self._read_json()
@@ -15849,10 +16095,6 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json() if self.headers.get("Content-Length") else {}
             force_direct = bool(data.get("force_direct"))
             self._json(check_system_updates(force_direct=force_direct))
-        elif self.path == "/api/update-chromedriver":
-            data = self._read_json() if self.headers.get("Content-Length") else {}
-            force_direct = bool(data.get("force_direct"))
-            self._json(run_chromedriver_update(force_direct=force_direct))
         elif self.path == "/api/health-check":
             self._json(check_services_health())
         elif self.path == "/api/proxy-config":
@@ -16215,11 +16457,129 @@ def _panel_already_running(timeout=1.5):
     return "سامانه مدیریت گمرک" in body and "/site-1" in body
 
 
+class _MaintenanceRejectedHandler(Handler):
+    def _gate(self, route):
+        self.close_connection = True
+        self._json({"ok": False, "errors": ["The panel is preparing an update."]}, 503)
+        return False
+
+
 class PanelHTTPServer(ThreadingHTTPServer):
-    # Windows SO_REUSEADDR (the socketserver default) silently allows a second
-    # bind of the same listening port -> two panels racing on one socket.
-    # Refuse reuse so a second bind fails loudly instead.
     allow_reuse_address = False
+
+    def __init__(self, *args, **kwargs):
+        self._request_cv = threading.Condition()
+        self._active_requests = 0
+        self._rejected_requests = set()
+        self._maintenance = False
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        with self._request_cv:
+            if self._maintenance:
+                self._rejected_requests.add(request)
+            else:
+                self._active_requests += 1
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_finished(request)
+            raise
+
+    def finish_request(self, request, client_address):
+        with self._request_cv:
+            rejected = request in self._rejected_requests
+        if rejected:
+            request.settimeout(2.0)
+            _MaintenanceRejectedHandler(request, client_address, self)
+        else:
+            super().finish_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_finished(request)
+
+    def _request_finished(self, request):
+        with self._request_cv:
+            if request in self._rejected_requests:
+                self._rejected_requests.remove(request)
+            else:
+                self._active_requests -= 1
+            self._request_cv.notify_all()
+
+    def begin_maintenance(self, timeout):
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._request_cv:
+            self._maintenance = True
+            while self._active_requests:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._maintenance = False
+                    self._request_cv.notify_all()
+                    return False
+                self._request_cv.wait(remaining)
+            return True
+
+    def end_maintenance(self):
+        with self._request_cv:
+            self._maintenance = False
+            self._request_cv.notify_all()
+
+
+def prepare_application_update_shutdown(timeout=10.0):
+    if not _UPDATE_SHUTDOWN_LOCK.acquire(blocking=False):
+        return False
+    server, drained, stopped, ready = _ACTIVE_HTTP_SERVER, False, False, False
+    deadline = time.monotonic() + min(10.0, max(0.0, timeout))
+    try:
+        if server is None or not server.begin_maintenance(timeout=max(0.0, deadline - time.monotonic())):
+            return False
+        drained = True
+        _MAINTENANCE_DRAINING.set()
+        workers = (_CLOUD_WORKER_THREAD, _CRM_SCHEDULER_THREAD, _TELEGRAM_BOOTSTRAP_THREAD)
+        cloud_worker_stop()
+        crm_scheduler_stop()
+        stopped = True
+        for worker in workers:
+            if worker is not None:
+                if worker is threading.current_thread():
+                    return False
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+                if worker.is_alive():
+                    return False
+        import crm as crm_mod
+        remaining = max(0.0, deadline - time.monotonic())
+        if not crm_mod.STORE_LOCK.acquire(timeout=remaining):
+            return False
+        try:
+            with _locked_store(timeout=max(0.0, deadline - time.monotonic())):
+                if time.monotonic() >= deadline:
+                    return False
+        finally:
+            crm_mod.STORE_LOCK.release()
+        _SHUTDOWN_REQUESTED.set()
+        ready = True
+        return True
+    except (OSError, RuntimeError, TimeoutError):
+        return False
+    finally:
+        try:
+            if drained and not ready:
+                _MAINTENANCE_DRAINING.clear()
+                try:
+                    if stopped:
+                        for start in (cloud_worker_start, crm_scheduler_start):
+                            try:
+                                start()
+                            except (OSError, RuntimeError):
+                                import logging
+                                logging.getLogger(__name__).error("Maintenance worker recovery failed: %s", start.__name__)
+                finally:
+                    server.end_maintenance()
+        finally:
+            _UPDATE_SHUTDOWN_LOCK.release()
 
 
 def _announce_seeded_accounts(seeded):
@@ -16256,6 +16616,7 @@ def _announce_seeded_accounts(seeded):
 
 
 def main():
+    global _ACTIVE_HTTP_SERVER, _TELEGRAM_BOOTSTRAP_THREAD
     if _panel_already_running():
         url = f"http://{HOST}:{PORT}"
         print(f">>> Panel-e digari hamin port ast: {url}")
@@ -16285,6 +16646,7 @@ def main():
                 pass
             return
         raise
+    _ACTIVE_HTTP_SERVER = srv
     load_store()  # motmaen sho profiles.json +inputs.json sakhte/sync shode-and
     clear_stale_busy_profiles()
     clean_project_root()
@@ -16293,8 +16655,9 @@ def main():
     # returns None until a base URL is configured, so a fresh install starts
     # no network worker at all.
     cloud_worker_start()
-    threading.Thread(target=_startup_telegram_bootstrap, daemon=True,
-                     name="telegram-api-health").start()
+    _TELEGRAM_BOOTSTRAP_THREAD = threading.Thread(
+        target=_startup_telegram_bootstrap, daemon=True, name="telegram-api-health")
+    _TELEGRAM_BOOTSTRAP_THREAD.start()
     print(f">>> Panel bala amad: {url}")
     print(f">>> Tanzimat va dade-ha: {DATA_DIR}")
     if _MIGRATED_FILES:
@@ -16324,6 +16687,11 @@ def main():
     except KeyboardInterrupt:
         print("\n>>> Panel baste shod.")
         srv.shutdown()
+    finally:
+        cloud_worker_stop()
+        crm_scheduler_stop()
+        srv.server_close()
+        _ACTIVE_HTTP_SERVER = None
 
 
 if __name__ == "__main__":
@@ -16674,9 +17042,12 @@ function renderUpdatesContent(d, wasDirect){
       +'</div>';
   }
 
-  if(d.notice){
-    h+='<div class="diag-banner '+(needsUpd?'warn':'ok')+'">'+esc(d.notice)+'</div>';
-  }
+  var updateNotice=d.ok!==true
+    ?"بررسی نسخه ناموفق بود؛ اتصال اینترنت و تنظیمات ارتباط را بررسی کنید."
+    :d.action_required==="up_to_date"
+      ?"درایور نصب‌شده با نسخهٔ کروم سازگار و به‌روز است."
+      :"نسخهٔ سازگار درایور در دسترس است؛ برای بررسی و تأیید نصب وارد شوید.";
+  h+='<div class="diag-banner '+(d.ok!==true||needsUpd?'warn':'ok')+'">'+updateNotice+'</div>';
 
   var chromeInstalled = !!(ch.installed_version && ch.installed_version!=="یافت نشد" && ch.installed_version!=="نامشخص");
   h+='<div class="diag-card">'
@@ -16712,9 +17083,8 @@ function renderUpdatesContent(d, wasDirect){
     +'</div>';
 
   if(needsUpd || !driverInstalled){
-    h+='<button type="button" id="btnDoUpd" class="btn-action btn-success" style="width:100%;margin-top:10px;padding:10px" onclick="doUpdateChromeDriver('+(wasDirect?'true':'false')+')">'
-      +'بروزرسانی خودکار ChromeDriver به آخرین نسخه سازگار'
-      +'</button>';
+    h+='<a href="/site-1" lang="fa" dir="rtl" class="btn-action btn-success" style="display:block;text-align:center;margin-top:10px;padding:10px">ورود برای به‌روزرسانی</a>'
+      +'<p lang="fa" dir="rtl" class="muted">پس از ورود، بخش به‌روزرسانی‌ها را باز کنید و پیش از تأیید نصب، نسخه را بررسی کنید.</p>';
   }
 
   h+='<div style="display:flex;gap:8px;margin-top:12px">'
@@ -16723,35 +17093,6 @@ function renderUpdatesContent(d, wasDirect){
     +'</div>';
 
   ct.innerHTML=h;
-}
-
-function doUpdateChromeDriver(forceDirect){
-  var btn=document.getElementById("btnDoUpd");
-  if(btn){
-    btn.disabled=true;
-    btn.textContent="در حال دریافت و جایگزینی درایور...";
-  }
-  fetch("/api/update-chromedriver"+(forceDirect?"?force_direct=1":""), {method:"POST"})
-    .then(function(r){ return r.json(); })
-    .then(function(res){
-      if(res.ok){
-        alert("بروزرسانی درایور با موفقیت انجام شد: نسخه "+res.version);
-        runUpdatesCheck(forceDirect);
-      } else {
-        alert("خطا در بروزرسانی درایور: "+(res.error||"نامشخص"));
-        if(btn){
-          btn.disabled=false;
-          btn.textContent="تلاش مجدد بروزرسانی ChromeDriver";
-        }
-      }
-    })
-    .catch(function(e){
-      alert("خطا در ارتباط با سرور جهت بروزرسانی: "+e);
-      if(btn){
-        btn.disabled=false;
-        btn.textContent="تلاش مجدد بروزرسانی ChromeDriver";
-      }
-    });
 }
 
 /* Health check modal handling */
@@ -16787,70 +17128,34 @@ function runHealthCheck(){
 function renderHealthContent(d){
   var ct=document.getElementById("healthContent");
   if(!ct)return;
-  var h="";
-  var steps=d.steps||[];
   var stepMap={};
-  steps.forEach(function(s){ stepMap[s.id]=s; });
-
-  var cs=stepMap["cloud"]||d.cloud_server||{};
-  var tg=stepMap["telegram"]||d.telegram||{};
-  var prx=stepMap["proxy"]||d.proxy||{};
-
-  var overallOk = (d.overall==="ok" || d.overall_ok) && (cs.status==="ok" || cs.ok) && (tg.status==="ok" || tg.ok);
-  if(overallOk){
-    h+='<div class="diag-banner ok" style="margin-top:0">✓ همه سرویس‌های اساسی فعال و آماده به‌کار هستند.</div>';
-  } else {
-    h+='<div class="diag-banner warn" style="margin-top:0">برخی از سرویس‌ها نیازمند توجه، بررسی یا تنظیم هستند.</div>';
-  }
-
-  // 1. Cloud Server
-  var csOk = cs.status==="ok" || cs.ok;
-  var csPill = csOk ? '<span class="diag-pill ok">متصل</span>' : '<span class="diag-pill err">خطا در اتصال</span>';
-  h+='<div class="diag-card">'
-    +'<div class="diag-row">'
-    +'<div><strong>۱. اتصال به سرور ابری</strong><div class="sub" style="margin:2px 0 0;text-align:right">سرور پایگاه داده و همگام‌سازی مرکزی</div></div>'
-    +'<div>'+csPill+'</div>'
-    +'</div>'
-    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
-    +'وضعیت: '+esc(cs.message||(csOk?'ارتباط پایدار است':'ناموفق'))
-    +(cs.latency_ms?' ('+cs.latency_ms+' میلی‌ثانیه)':'')
-    +'</div>'
-    +'</div>';
-
-  // 2. Telegram
-  var tgOk = tg.status==="ok" || tg.ok;
-  var tgNotCfg = tg.status==="not_configured" || (!tg.configured && !tgOk);
-  var tgPill = tgOk ? '<span class="diag-pill ok">متصل</span>' : (tgNotCfg ? '<span class="diag-pill muted">تنظیم نشده</span>' : '<span class="diag-pill err">خطا در اتصال</span>');
-  h+='<div class="diag-card">'
-    +'<div class="diag-row">'
-    +'<div><strong>۲. اتصال به سرویس تلگرام</strong><div class="sub" style="margin:2px 0 0;text-align:right">پیام‌رسان اطلاع‌رسانی و ارسال عکس</div></div>'
-    +'<div>'+tgPill+'</div>'
-    +'</div>'
-    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
-    +'وضعیت: '+esc(tg.message||(tgOk?'ارتباط با تلگرام برقرار است':(tgNotCfg?'تنظیم نشده است':'ناموفق')))
-    +(tg.latency_ms?' ('+tg.latency_ms+' میلی‌ثانیه)':'')
-    +'</div>'
-    +'</div>';
-
-  // 3. Proxy
-  var prxOk = prx.status==="ok" || prx.ok;
-  var prxNotCfg = prx.status==="not_configured" || (!prx.configured && !prxOk);
-  var prxPill = prxNotCfg ? '<span class="diag-pill muted">تنظیم نشده</span>' : (prxOk ? '<span class="diag-pill ok">متصل و فعال</span>' : '<span class="diag-pill err">خطا در اتصال</span>');
-  h+='<div class="diag-card">'
-    +'<div class="diag-row">'
-    +'<div><strong>۳. اتصال به پروکسی سامانه</strong><div class="sub" style="margin:2px 0 0;text-align:right">اینترنت آزاد (HTTP / HTTPS / SOCKS)</div></div>'
-    +'<div>'+prxPill+'</div>'
-    +'</div>'
-    +'<div style="margin-top:6px;font-size:12.5px" class="muted">'
-    +'وضعیت: '+esc(prx.message||(prxNotCfg?'پروکسی تنظیم نشده است':(prxOk?'پروکسی فعال و متصل است':'خطا در اتصال به پروکسی')))
-    +'</div>'
-    +'</div>';
-
+  (d.steps||[]).forEach(function(step){stepMap[step.id]=step;});
+  var labels={ok:"در دسترس",reachable:"در دسترس",auth_denied:"دسترسی رد شد",
+    not_configured:"تنظیم نشده",timeout:"پایان مهلت",error:"ناموفق",unknown:"نامشخص"};
+  var messages={ok:"سرویس به درخواست بررسی ارتباط پاسخ داد.",reachable:"سرویس در دسترس است؛ آمادگی برای انجام عملیات تأیید نشده است.",
+    auth_denied:"دسترسی این بررسی ارتباطی رد شده است؛ تنظیمات سرویس را بررسی کنید.",
+    not_configured:"این سرویس تنظیم نشده است.",timeout:"مهلت پاسخ سرویس تمام شد؛ ارتباط و تنظیمات سرویس را بررسی کنید.",
+    error:"بررسی ارتباط ناموفق بود؛ ارتباط و تنظیمات سرویس را بررسی کنید.",unknown:"نتیجهٔ معتبر و تأییدشده‌ای در دسترس نیست."};
+  var services=[
+    {id:"cloud",name:"سرویس ابری",scope:"فقط پاسخ HTTP بررسی شده است. ورود، پایگاه داده و همگام‌سازی بررسی نشده‌اند."},
+    {id:"telegram",name:"ارتباط تلگرام",scope:"بررسی ارتباط بدون ارسال اطلاعات ورود انجام می‌شود. آمادگی برای ارسال پیام بررسی نشده است. هیچ پیامی ارسال نشده است."},
+    {id:"proxy",name:"پروکسی اختیاری",scope:"فقط ارتباط از مسیر پروکسی تنظیم‌شده بررسی می‌شود. تنظیم‌نبودن پروکسی اختیاری خطا نیست."}
+  ];
+  var h='<div lang="fa" dir="rtl">'
+    +'<div class="diag-banner info" style="margin-top:0">فقط بررسی ارتباط انجام شده است. در دسترس بودن، آمادگی برنامه یا امکان ارسال پیام را تأیید نمی‌کند.</div>';
+  services.forEach(function(service){
+    var row=stepMap[service.id]||{};
+    var state=Object.prototype.hasOwnProperty.call(labels,row.status)?row.status:"unknown";
+    var tone=(state==="ok"||state==="reachable")?"ok":(state==="not_configured"||state==="unknown")?"muted":"err";
+    h+='<div class="diag-card"><div class="diag-row"><strong>'+service.name+'</strong>'
+      +'<span class="diag-pill '+tone+'">'+labels[state]+'</span></div>'
+      +'<p class="muted" style="margin:8px 0">'+messages[state]+'</p>'
+      +'<p class="muted" style="margin:0">'+service.scope+'</p></div>';
+  });
   h+='<div style="display:flex;gap:8px;margin-top:14px">'
-    +'<button type="button" class="btn-action btn-primary" style="flex:1" onclick="runHealthCheck()">بررسی مجدد سلامت</button>'
+    +'<button type="button" class="btn-action btn-primary" style="flex:1" onclick="runHealthCheck()">بررسی دوباره</button>'
     +'<button type="button" class="btn-action btn-secondary" style="flex:1" onclick="closeHealthModal()">بستن</button>'
-    +'</div>';
-
+    +'</div></div>';
   ct.innerHTML=h;
 }
 

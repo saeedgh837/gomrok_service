@@ -84,6 +84,7 @@ class DesktopPrivateAccountsTests(unittest.TestCase):
             patch.object(panel, "INPUTS_PATH", self.inputs_path),
             patch.object(panel, "_STORE_LOCK_PATH", self.profiles_path + ".lock"),
             patch.object(panel, "ESTELAM_PATH", os.path.join(self.tmp.name, "estelam_store.json")),
+            patch.object(panel, "_schedule_login_maintenance_check", return_value=None),
         ]
         for p in self._patches:
             p.start()
@@ -155,66 +156,79 @@ class DesktopPrivateAccountsTests(unittest.TestCase):
             "sync_device_id": "device-uuid-1234",
             "device_refresh_token": "dev-refresh-token-5678",
         }
-        mock_bootstrap_payload = {
-            "dataset_epoch": 1,
-            "cursor": 0,
-            "records": [],
-        }
-
-        mock_client = MagicMock()
-        mock_client.config = self.cfg
-        mock_client.login.return_value = mock_login_payload
-        mock_client.enroll.return_value = mock_enroll_payload
-        mock_client.bootstrap.return_value = mock_bootstrap_payload
-        mock_client.commit_bootstrap.return_value = 0
-        mock_client.vault = MagicMock()
-        mock_client.vault.has_device_credentials = False
-
-        runtime = {
-            "config": self.cfg,
-            "client": mock_client,
-            "machine": MagicMock(),
-            "lease": MagicMock(),
-            "outbox": MagicMock(),
-        }
-
-        with patch("panel._cloud_runtime", return_value=runtime), \
-             patch("panel.cloud_worker_start") as mock_start:
+        from cloud_sync import apply
+        from cloud_sync.auth import MemorySecretStore, TokenVault
+        from cloud_sync.client import SyncClient
+        snapshot = {"dataset_epoch": 1, "cursor": 0, "bootstrap_status": "done",
+                    "collections": {entity: [] for entity in apply.ENTITIES}}
+        vault = TokenVault(store=MemorySecretStore(), path=os.path.join(self.tmp.name, "synthetic_auth.dat"))
+        client = SyncClient(config=self.cfg, vault=vault)
+        runtime = {"config": self.cfg, "client": client, "machine": MagicMock(),
+                   "lease": MagicMock(), "outbox": None}
+        with patch.object(panel, "_cloud_runtime", return_value=runtime), \
+                patch.object(panel, "cloud_worker_start"), \
+                patch.object(client, "_request", side_effect=[mock_login_payload, mock_enroll_payload, snapshot]) as request, \
+                patch.object(client, "commit_bootstrap", wraps=client.commit_bootstrap) as commit, \
+                patch.object(apply, "apply_snapshot", wraps=apply.apply_snapshot) as apply_snapshot:
             status, headers, body = self._op("/login", data={
-                "username": "customer_acme",
-                "password": "Password123!",
-            })
-            self.assertEqual(status, 200, f"Expected 200 but got {status}: {body}")
-            parsed = json.loads(body)
-            self.assertTrue(parsed.get("ok"))
-            self.assertEqual(parsed.get("mode"), "cloud")
-            self.assertEqual(parsed.get("tenant_id"), tenant_uuid)
-            self.assertEqual(parsed.get("user_id"), user_uuid)
+                "username": "customer_acme", "password": "Password123!"})
+        self.assertEqual(status, 200, body)
+        parsed = json.loads(body)
+        self.assertTrue(parsed.get("ok"))
+        self.assertEqual(parsed.get("mode"), "cloud")
+        self.assertEqual(parsed.get("tenant_id"), tenant_uuid)
+        self.assertEqual(parsed.get("user_id"), user_uuid)
+        self.assertEqual([(call.args[0], call.args[1]) for call in request.call_args_list],
+                         [("POST", "/auth/login"), ("POST", "/sync-devices/self-enroll"),
+                          ("GET", "/sync/bootstrap")])
+        self.assertEqual(request.call_args_list[0].kwargs["body"],
+                         {"username": "customer_acme", "password": "Password123!"})
+        apply_snapshot.assert_called_once()
+        self.assertEqual(apply_snapshot.call_args.args[0], snapshot)
+        commit.assert_called_once_with(snapshot)
+        self.assertEqual(self.cfg.dataset_epoch, "1")
+        self.assertEqual(self.cfg.sync_device_id, mock_enroll_payload["sync_device_id"])
+        self.assertTrue(vault.has_device_credentials)
+        cookies = headers.get("_set_cookies", [])
+        self.assertTrue(any("irica_session=" in cookie for cookie in cookies))
+        profile_key = hashlib.sha256(
+            f"{self.api_base}:{tenant_uuid}:{user_uuid}".encode("utf-8")).hexdigest()
+        account_dir = os.path.join(self.tmp.name, "accounts", "v1", profile_key)
+        self.assertTrue(os.path.isdir(account_dir))
+        with open(os.path.join(account_dir, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["tenant_id"], tenant_uuid)
+        self.assertEqual(manifest["user_id"], user_uuid)
+        self.assertEqual(manifest["username"], "customer_acme")
 
-            # Assert server client login called with exact credentials
-            mock_client.login.assert_called_once_with("customer_acme", "Password123!")
-
-            # Assert self-enroll was invoked
-            mock_client.enroll.assert_called_once()
-
-            # Assert session was created and cookie issued
-            cookies = headers.get("_set_cookies", [])
-            self.assertTrue(any("irica_session=" in c for c in cookies))
-
-            # Verify profile directory created under accounts/v1/
-            profile_key = hashlib.sha256(
-                f"{self.api_base}:{tenant_uuid}:{user_uuid}".encode("utf-8")
-            ).hexdigest()
-            account_dir = os.path.join(self.tmp.name, "accounts", "v1", profile_key)
-            self.assertTrue(os.path.isdir(account_dir), f"Account dir {account_dir} not created")
-
-            manifest_path = os.path.join(account_dir, "manifest.json")
-            self.assertTrue(os.path.isfile(manifest_path))
-            with open(manifest_path, encoding="utf-8") as fh:
-                manifest = json.load(fh)
-            self.assertEqual(manifest["tenant_id"], tenant_uuid)
-            self.assertEqual(manifest["user_id"], user_uuid)
-            self.assertEqual(manifest["username"], "customer_acme")
+    def test_invalid_bootstrap_never_commits_or_creates_a_session(self):
+        from cloud_sync import apply
+        from cloud_sync.auth import MemorySecretStore, TokenVault
+        from cloud_sync.client import SyncClient
+        vault = TokenVault(store=MemorySecretStore(), path=os.path.join(self.tmp.name, "synthetic_auth.dat"))
+        client = SyncClient(config=self.cfg, vault=vault)
+        login = {"access_token": "synthetic-access", "refresh_token": "synthetic-refresh",
+                 "user_id": "11111111-2222-4333-8444-555555555555",
+                 "tenant_id": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+                 "user": {"username": "customer_acme", "role": "admin"}}
+        enroll = {"sync_device_id": "synthetic-device", "device_refresh_token": "synthetic-device-refresh"}
+        invalid = {"dataset_epoch": 1, "cursor": 0, "records": []}
+        runtime = {"config": self.cfg, "client": client, "machine": MagicMock(),
+                   "lease": MagicMock(), "outbox": None}
+        with patch.object(panel, "_cloud_runtime", return_value=runtime), \
+                patch.object(panel, "cloud_worker_start") as start, \
+                patch.object(client, "_request", side_effect=[login, enroll, invalid]), \
+                patch.object(client, "commit_bootstrap", wraps=client.commit_bootstrap) as commit, \
+                patch.object(panel_auth, "create_session", wraps=panel_auth.create_session) as session:
+            status, headers, body = self._op("/login", data={
+                "username": "customer_acme", "password": "SyntheticPassword123!"})
+        self.assertEqual(status, 503, body)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertNotIn("_set_cookies", headers)
+        self.assertIsNone(self.cfg.dataset_epoch)
+        commit.assert_not_called()
+        session.assert_not_called()
+        start.assert_not_called()
 
     def test_cloud_mode_bad_credentials_fails_closed_no_local_fallback(self):
         """Server 401 returns 401, does not check panel_users.json, leaves session unauthenticated."""

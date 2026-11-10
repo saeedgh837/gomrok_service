@@ -147,14 +147,18 @@ class TestAutoAdvanceRollback(ReviewFixUnitCase):
         self._seed_advanced_row(device)
         log_file = os.path.join(self.tmp.name, "crm_events.jsonl")
         with patch.object(panel, "estelam_is_running", return_value=False), \
-                patch.object(panel, "start_profile",
-                             return_value=(200, {"pid": 4321})), \
+                patch.object(panel, "start_profile_process",
+                             return_value={"pid": 4321}) as spawn, \
                 patch.object(crm, "log_path", return_value=log_file):
             result = panel.crm_auto_advance_scan()
         self.assertIn(device["id"], result["moved"])
         self.assertIn(device["id"], result["started"])
         self.assertEqual(result["errors"], [])
         self.assertEqual(self._stored_device(device["id"])["stage"], "payment")
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0], self._stored_device(device["id"])["profile_id"])
+        self.assertTrue(spawn.call_args.kwargs["runner_id"])
+        self.assertFalse(self._stored_device(device["id"]).get("payment_confirmed_at"))
         # No give-up may be logged: the stale pre-rollback counter is dead.
         with open(log_file, encoding="utf-8") as handle:
             events = [json.loads(line)["event"] for line in handle
@@ -241,8 +245,7 @@ class ReviewFixHttpCase(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _post(self, path, payload):
@@ -387,7 +390,7 @@ class TestStaleLinkSelfHeal(ReviewFixHttpCase):
         self.assertEqual(status, 400, body)
         errors = body.get("errors") or []
         self.assertTrue(errors, body)
-        self.assertIn("اتصال مسافر", errors[0])     # actionable Persian
+        self.assertEqual(errors[0], "Attach a passenger in CRM before starting payment registration")
         self.assertNotIn("profile not found", json.dumps(body, ensure_ascii=False))
         spawn.assert_not_called()                   # never tried the dead id
 
@@ -526,18 +529,18 @@ class TestSourceMarkers(unittest.TestCase):
         src = self._src()
         start = src.index('self.path == "/save"')
         chunk = src[start:src.index('self.path == "/activate"')]
-        self.assertIn("print(", chunk)                     # kept as diagnostic
-        self.assertIn("except UnicodeEncodeError", chunk)  # but guarded
+        self.assertIn("save_profile_update(self._read_json())", chunk)
+        self.assertNotIn("print(", chunk)
 
     # -- item 11: the self-heal also covers a stale (missing) link ---------
     def test_start_payment_heal_covers_stale_link(self):
         src = self._src()
         chunk = self._method_chunk(src, "_crm_start_payment")
-        self.assertIn("crm_ensure_registration_profile(device_id)", chunk)
-        # the heal triggers when the linked profile is gone from the store
-        self.assertIn('if not next((p for p in store.get("profiles", [])',
-                      chunk)
-        self.assertIn('profile_id = ""', chunk)
+        self.assertIn("start_crm_payment(device_id, actor=self.actor)", chunk)
+        self.assertNotIn("claim_profile(", chunk)
+        # The real stale-link recovery cases above verify atomic reconciliation.
+        self.assertIn("crm_ensure_registration_profile(device_id)",
+                      inspect.getsource(panel.start_crm_payment))
 
 
 if __name__ == "__main__":

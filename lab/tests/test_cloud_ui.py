@@ -877,6 +877,9 @@ def _raising_grant(at=None):
 
 class CloudRouteTests(_GateHarness):
     def setUp(self):
+        schedule = patch.object(panel, "_schedule_login_maintenance_check", return_value=None)
+        schedule.start()
+        self.addCleanup(schedule.stop)
         super().setUp()
         reset_cloud_panel()
         self.addCleanup(reset_cloud_panel)
@@ -1060,6 +1063,11 @@ class CloudRouteTests(_GateHarness):
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         reset_cloud_panel()
+        # Enable only this synthetic worker fixture after guarded imports.
+        # Thread tests replace the beat; direct-call tests use ungranted leases.
+        worker_switch = patch.dict(os.environ, {"IRICA_CLOUD_WORKER_OFF": "0"})
+        worker_switch.start()
+        self.addCleanup(worker_switch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(reset_cloud_panel)
@@ -1078,8 +1086,10 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(panel._cloud_configured())
         self.assertIsNone(panel.cloud_worker_start())
         self.assertIsNone(panel._CLOUD_WORKER_THREAD)
-        # The beat does not reach the network either.
-        note = panel.cloud_worker_beat()
+        # Exercise the unconfigured cached-input branch independently of the
+        # runtime builder, which intentionally seeds the default cloud origin.
+        with patch.object(panel, "_cloud_runtime", return_value=_fake_runtime()):
+            note = panel.cloud_worker_beat()
         self.assertEqual(note.get("skipped"), "not_configured")
 
     def test_configuration_starts_and_stops_the_thread(self):
@@ -1142,10 +1152,12 @@ class WorkerTests(unittest.TestCase):
                          panel.cloud_error_message("LEASE_EXPIRED"))
 
     def test_unconfigured_beat_records_no_network_attempt(self):
-        runtime = panel._cloud_runtime(refresh=True)
-        runtime["worker"].run_once = lambda **kw: (_ for _ in ()).throw(
+        worker = type("NoNetworkWorker", (), {})()
+        worker.run_once = lambda **kw: (_ for _ in ()).throw(
             AssertionError("run_once must not run without configuration"))
-        note = panel.cloud_worker_beat()
+        runtime = _fake_runtime(worker=worker)
+        with patch.object(panel, "_cloud_runtime", return_value=runtime):
+            note = panel.cloud_worker_beat()
         self.assertEqual(note.get("skipped"), "not_configured")
 
 

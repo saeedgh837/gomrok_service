@@ -43,8 +43,7 @@ class CrmApiHarness(unittest.TestCase):
 
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        _auth_harness.start_http_fixture(self, self.httpd)
 
     # -- helpers ---------------------------------------------------------
     def _open_period(self):
@@ -190,18 +189,46 @@ class TestCrmRoutes(CrmApiHarness):
         self.assertEqual(status, 200)
         self.assertEqual(body["device"]["stage"], "inquiry")
 
-    def test_start_payment_requires_profile_id(self):
-        """Review F18/F9: never pool-claim; no profile linked -> 400."""
+    def test_invalid_stage_cannot_start_payment_without_a_profile(self):
         self._open_period()
         _, body = self._post("/crm-device", {
             "action": "add", "name": "x", "serial1": "356938035643809"})
         device_id = body["device"]["id"]
-        # walk to to_payment
         for action in ("queue_inquiry", "mark_ready"):
             self._seed_green_estelam(device_id)
             self._post("/crm-tick", {"device_id": device_id, "action": action})
-        status, body = self._post("/crm-start-payment", {"device_id": device_id})
+        with patch.object(panel, "start_profile_process") as spawn, \
+                patch.object(panel, "claim_profile") as pool:
+            status, body = self._post("/crm-start-payment", {"device_id": device_id})
+        self.assertEqual(status, 409)
+        self.assertIn("stage", " ".join(body["errors"]))
+        spawn.assert_not_called()
+        pool.assert_not_called()
+
+    def test_eligible_payment_without_a_passenger_is_rejected_without_spawning(self):
+        import crm
+        self._open_period()
+        _, body = self._post("/crm-device", {
+            "action": "add", "name": "x", "serial1": "356938035643809"})
+        device_id = body["device"]["id"]
+        # Exercise recovery from an incomplete persisted eligible case.
+        with crm.STORE_LOCK:
+            data = crm.store_read()
+            device = next(row for row in data["devices"] if row["id"] == device_id)
+            device["stage"] = "to_payment"
+            crm.store_write(data)
+        with patch.object(panel, "start_profile_process") as spawn, \
+                patch.object(panel, "claim_profile") as pool:
+            status, body = self._post("/crm-start-payment", {"device_id": device_id})
         self.assertEqual(status, 400)
+        self.assertIn("Attach a passenger", " ".join(body["errors"]))
+        spawn.assert_not_called()
+        pool.assert_not_called()
+        device = next(row for row in crm.store_read()["devices"] if row["id"] == device_id)
+        self.assertEqual(device["stage"], "to_payment")
+        self.assertFalse(device.get("profile_id"))
+        self.assertFalse(device.get("payment_started_at"))
+        self.assertFalse(device.get("payment_confirmed_at"))
 
     def test_settings_roundtrip(self):
         status, body = self._post("/crm-settings", {"watch_interval_hours": 5})
@@ -268,22 +295,25 @@ class TestCrmReports(CrmApiHarness):
 
     def test_pdf_route_serves_pdf_or_html_fallback(self):
         self._seed_device()
-        try:
-            with urllib.request.urlopen(self._url("/crm-report?fmt=pdf"), timeout=90) as resp:
-                raw = resp.read()
-                ctype = resp.headers.get("Content-Type", "")
-        except urllib.error.HTTPError as error:
-            raw, ctype = error.read(), error.headers.get("Content-Type", "")
-        if "pdf" in ctype:
-            self.assertGreater(len(raw), 500)
-            self.assertEqual(raw[:4], b"%PDF")
-        else:
-            # No Edge available: the route must degrade to a printable HTML page
-            # that opens the print dialog itself.
-            self.assertIn("html", ctype)
-            page = raw.decode("utf-8")
-            self.assertIn("<table", page)
-            self.assertIn("window.print()", page)
+        fixture_pdf = b"%PDF" + bytes(600)
+        for output in (fixture_pdf, None):
+            with self.subTest(pdf=output is not None), \
+                    patch.object(panel, "crm_html_to_pdf", return_value=output) as converter:
+                with urllib.request.urlopen(self._url("/crm-report?fmt=pdf"), timeout=10) as response:
+                    self.assertEqual(response.status, 200)
+                    raw = response.read()
+                    ctype = response.headers.get("Content-Type", "")
+            converter.assert_called_once()
+            if output is not None:
+                self.assertIn("pdf", ctype)
+                self.assertEqual(raw, fixture_pdf)
+                self.assertGreater(len(raw), 500)
+                self.assertEqual(raw[:4], b"%PDF")
+            else:
+                self.assertIn("html", ctype)
+                page = raw.decode("utf-8")
+                self.assertIn("<table", page)
+                self.assertIn("window.print()", page)
 
     def test_telegram_honors_full_data_setting(self):
         self._seed_device()

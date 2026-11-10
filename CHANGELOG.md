@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.19.0] - 2026-11-10
+
+### Added
+
+- Shared Persian/RTL maintenance controls in all three authenticated panel headers, with automatic check-only application and ChromeDriver update discovery after login.
+- Explicit, version-specific installation consent, official-release SHA256 verification, private staging, native installer handoff and safe panel reopening. Active jobs are never forcibly interrupted.
+- On-demand cloud, Telegram transport and optional proxy diagnostics. Checks do not send Telegram test messages or perform customs or Hamta inquiries.
+
+### Fixed
+
+- CRM passenger corrections now refresh eligible unpaid registration attempts instead of reusing stale copied identities. Attempts submit the validated CRM passport rather than a fixed placeholder.
+- Frozen claim identities, safe submission-boundary checks and exact result ownership prevent stale cloud corrections from publishing current success. Changed unpaid prepayment results become historical evidence and allow a fresh attempt; financial completion and ledgers remain protected.
+- All ChromeDriver installation and repair paths now require explicit consent; installation routes enforce session, loopback, origin and CSRF validation.
+- Isolated Windows test fixtures now use owned socket/process lifecycles, a pinned historical source fixture and separate initial/current schema contracts.
+
+### Verification and rollout
+
+- Guarded regression: 115 modules, 2,538 tests, zero failures, 12 policy-restricted errors and four database-class skips. The guarded command remains exit 1; it is not an all-green result.
+- Separate offline Windows Sandbox verification passed 117 database tests, nine JavaScript behavior cases, all guarded blocked test IDs, ordinary installation and native self-update handoff. Counts overlap and must not be added together.
+- Existing installations need one ordinary installer upgrade before the new self-update protocol is available. Linked unattended legacy batches stop for manual review; external customs-record repair is not automated or claimed.
+- Release assets retain the exact installer and ZIP bytes tested offline. The packaged changelog is the pre-release snapshot; this repository entry and the external release notes document the final release without rebuilding executable payloads.
+
 ## [1.18.3] - 2026-11-03
 
 ### Fixed & Added

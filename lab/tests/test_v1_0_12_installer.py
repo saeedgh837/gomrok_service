@@ -52,7 +52,7 @@ class ChromedriverResolverTests(unittest.TestCase):
                               os.path.join(tmp, "missing", "chromedriver.exe")), \
                     patch.object(captcha_collector, "HERE", tmp):
                 self.assertEqual(captcha_collector.resolve_chromedriver(), bundled)
-            # 4) nothing anywhere -> empty string (selenium manager takes over)
+            # 4) no local driver is reported as missing; preflight forbids downloads
             with patch.object(captcha_collector, "CHROMEDRIVER_PATH", ""), \
                     patch.object(captcha_collector, "HERE",
                                  os.path.join(tmp, "empty")):
@@ -74,17 +74,42 @@ class ChromedriverResolverTests(unittest.TestCase):
             "152.0.7977.75", ""), "")
 
     def test_robots_use_shared_resolver(self):
-        # exitban and estelam_hamta and gomrok2 must route through the
-        # shared resolver instead of their own hardcoded paths.
+        # Existing clients resolve directly; site2 uses the explicit preflight
+        # that delegates resolution and refuses implicit Selenium downloads.
         exitban_src = open(os.path.join(os.path.dirname(panel.__file__),
                                         "exitban.py"), encoding="utf-8").read()
         self.assertIn("resolve_chromedriver", exitban_src)
         hamta_src = open(os.path.join(os.path.dirname(panel.__file__),
                                       "estelam_hamta.py"), encoding="utf-8").read()
         self.assertIn("resolve_chromedriver", hamta_src)
-        g2_src = open(os.path.join(os.path.dirname(panel.__file__),
-                                   "gomrok2.py"), encoding="utf-8").read()
-        self.assertIn("resolve_chromedriver", g2_src)
+        import gomrok2
+        from selenium import webdriver
+        with tempfile.TemporaryDirectory() as directory:
+            driver_path = os.path.join(directory, "chromedriver.exe")
+            with open(driver_path, "wb") as handle:
+                handle.write(b"synthetic driver fixture; never executable")
+            for helper, args in ((gomrok2._build_desktop_driver, ()),
+                                 (gomrok2._attach_driver, ("127.0.0.1:9222",))):
+                with self.subTest(helper=helper.__name__), \
+                        patch.object(captcha_collector, "resolve_chromedriver", return_value=driver_path) as resolve, \
+                        patch.object(captcha_collector, "check_driver_compat", return_value="") as compatible, \
+                        patch.object(captcha_collector, "update_chromedriver_now") as update, \
+                        patch.object(webdriver, "Chrome") as chrome:
+                    helper(*args)
+                resolve.assert_called_once_with()
+                compatible.assert_called_once_with(driver_path)
+                chrome.assert_called_once()
+                self.assertEqual(chrome.call_args.kwargs["service"].path, driver_path)
+                update.assert_not_called()
+                with self.subTest(helper=helper.__name__, missing=True), \
+                        patch.object(captcha_collector, "resolve_chromedriver", return_value=""), \
+                        patch.object(captcha_collector, "check_driver_compat", return_value="missing driver"), \
+                        patch.object(captcha_collector, "update_chromedriver_now") as update, \
+                        patch.object(webdriver, "Chrome") as chrome:
+                    with self.assertRaises(captcha_collector.DriverUpdateRequired):
+                        helper(*args)
+                chrome.assert_not_called()
+                update.assert_not_called()
 
 
 class VersionMismatchRobotTests(unittest.TestCase):

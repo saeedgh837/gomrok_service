@@ -59,6 +59,7 @@ var STATE={settings:{current_period_id:'p2'},periods:[],devices:[]};
 function esc(s){return String(s==null?'':s);}   // identity: fixtures are plain
 function ownerName(){return '';}                // devHay stubs; no name search
 function custName(){return '';}
+function clerkName(){return '';}
 """
 
 FIXTURES = """

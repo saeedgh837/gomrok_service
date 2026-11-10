@@ -24,6 +24,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cloud_sync import apply, ids, mapper
+import app_paths
 import crm
 import panel
 
@@ -36,12 +37,20 @@ class ClerkCloudSyncTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="irica_clerk_sync_")
         self.store_path = os.path.join(self.tmp, "crm_store.json")
+        self.old_data_dir = os.environ.get("IRICA_DATA_DIR")
         os.environ["IRICA_CRM_STORE"] = self.store_path
+        os.environ["IRICA_DATA_DIR"] = self.tmp
+        app_paths._CACHE.clear()
         self.addCleanup(self._cleanup)
 
     def _cleanup(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
         os.environ.pop("IRICA_CRM_STORE", None)
+        if self.old_data_dir is not None:
+            os.environ["IRICA_DATA_DIR"] = self.old_data_dir
+        else:
+            os.environ.pop("IRICA_DATA_DIR", None)
+        app_paths._CACHE.clear()
 
     def test_entities_contain_clerks(self):
         self.assertIn("clerks", ids.ENTITIES)
@@ -217,14 +226,14 @@ class ClerkCloudSyncTests(unittest.TestCase):
             panel._CLOUD_RUNTIME = runtime
             panel._cloud_configured = lambda: True
             from cloud_sync import config as cs_cfg
-            cs_cfg._STORE = None
             cfg_obj = cs_cfg.CloudConfig(
                 api_base="https://api.test",
                 tenant_id=TENANT,
                 sync_device_id="dev-01",
                 source_installation_id=INSTALL,
             )
-            cs_cfg.save_config(cfg_obj)
+            old_load_config = cs_cfg.load_config
+            cs_cfg.load_config = lambda: cfg_obj
 
             # Test clerk enqueue
             clerk_record = {
@@ -268,6 +277,8 @@ class ClerkCloudSyncTests(unittest.TestCase):
             self.assertEqual(op_dev["entity"], "crm_devices")
             self.assertEqual(op_dev["record"]["clerk_id"], ids.legacy_to_uuid(INSTALL, "clerks", "c1c1c1c1"))
         finally:
+            if old_load_config is not None:
+                cs_cfg.load_config = old_load_config
             panel._CLOUD_RUNTIME = old_runtime
             panel._cloud_configured = old_configured
 
@@ -302,18 +313,19 @@ class ClerkCloudSyncTests(unittest.TestCase):
         handler = MockHandler()
         old_runtime = panel._CLOUD_RUNTIME
         old_configured = panel._cloud_configured
+        old_load_config = None
         try:
             panel._CLOUD_RUNTIME = runtime
             panel._cloud_configured = lambda: True
             from cloud_sync import config as cs_cfg
-            cs_cfg._STORE = None
             cfg_obj = cs_cfg.CloudConfig(
                 api_base="https://api.test",
                 tenant_id=TENANT,
                 sync_device_id="dev-01",
                 source_installation_id=INSTALL,
             )
-            cs_cfg.save_config(cfg_obj)
+            old_load_config = cs_cfg.load_config
+            cs_cfg.load_config = lambda: cfg_obj
 
             # 1. Action: add clerk
             handler._crm_entity("/crm-clerk", {
@@ -389,8 +401,31 @@ class ClerkCloudSyncTests(unittest.TestCase):
             self.assertEqual(dummy_outbox.enqueued[5]["kind"], "delete")
 
         finally:
+            if old_load_config is not None:
+                cs_cfg.load_config = old_load_config
             panel._CLOUD_RUNTIME = old_runtime
             panel._cloud_configured = old_configured
+
+    def test_cloud_counts_trusts_outbox_when_loaded(self):
+        class DummyMachine:
+            pending_changes = 10
+            conflict_count = 115
+
+        class DummyOutbox:
+            def pending_count(self):
+                return 0
+            def conflict_count(self):
+                return 0
+
+        # When outbox is loaded and clean, conflicts must be 0 (not stale machine max 115)
+        p, c = panel._cloud_counts(DummyMachine(), DummyOutbox())
+        self.assertEqual(p, 0)
+        self.assertEqual(c, 0)
+
+        # When outbox is None, machine counters are the fallback
+        p_fallback, c_fallback = panel._cloud_counts(DummyMachine(), None)
+        self.assertEqual(p_fallback, 10)
+        self.assertEqual(c_fallback, 115)
 
 
 if __name__ == "__main__":

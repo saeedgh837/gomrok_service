@@ -226,15 +226,8 @@ class _GateHarness(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
-        self._server_thread = threading.Thread(
-            target=self.httpd.serve_forever, daemon=True)
-        self._server_thread.start()
-
-        def _stop():
-            self.httpd.shutdown()
-            self.httpd.server_close()
-            self._server_thread.join(timeout=5)
-        self.addCleanup(_stop)
+        from lab.tests import _auth_harness
+        self._server_thread = _auth_harness.start_http_fixture(self, self.httpd)
         self.base = f"http://127.0.0.1:{self.port}"
 
     # -- helpers -------------------------------------------------------
@@ -295,8 +288,16 @@ class GateTests(_GateHarness):
         self.assertEqual(status, 200)
 
     def test_font_whitelisted(self):
-        status, _h, _b = self._op("/fonts/Vazirmatn-var.woff2")
+        import panel
+        fonts = os.path.join(self.tmp.name, "fonts")
+        os.makedirs(fonts)
+        with open(os.path.join(fonts, "Vazirmatn-var.woff2"), "wb") as handle:
+            handle.write(b"wOF2-synthetic-gate-fixture")
+        with patch.object(panel, "HERE", self.tmp.name):
+            status, headers, body = self._op("/fonts/Vazirmatn-var.woff2")
         self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "font/woff2")
+        self.assertEqual(body, "wOF2-synthetic-gate-fixture")
 
     def test_api_unauthenticated_gets_401_json(self):
         status, headers, body = self._op("/state")
@@ -331,6 +332,13 @@ class GateTests(_GateHarness):
 
 
 class AuthenticatedFlowTests(_GateHarness):
+    def setUp(self):
+        import panel
+        schedule = patch.object(panel, "_schedule_login_maintenance_check", return_value=None)
+        schedule.start()
+        self.addCleanup(schedule.stop)
+        super().setUp()
+
     def test_login_sets_helthy_cookie(self):
         self.login()
         by_name = {c.split("=", 1)[0]: c for c in self.set_cookies}
@@ -449,8 +457,8 @@ class SingleInstanceProbeTests(unittest.TestCase):
         import threading
         httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         port = httpd.server_address[1]
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
+        from lab.tests import _auth_harness
+        _auth_harness.start_http_fixture(self, httpd)
         return port
 
     def test_probe_recognizes_gated_panel_via_login_page(self):
@@ -462,10 +470,14 @@ class SingleInstanceProbeTests(unittest.TestCase):
 
     def test_probe_false_for_unrelated_port(self):
         import panel
-        # nothing listens here
+        refused = urllib.error.URLError(ConnectionRefusedError("synthetic closed port"))
+        # Exercise both probe paths without connecting to an existing service.
         with patch.object(panel, "HOST", "127.0.0.1"), \
-                patch.object(panel, "PORT", 59999):
+                patch.object(panel, "PORT", 59999), \
+                patch.object(urllib.request, "urlopen", side_effect=refused) as request:
             self.assertFalse(panel._panel_already_running(timeout=0.5))
+        self.assertEqual([call.args[0] for call in request.call_args_list],
+                         ["http://127.0.0.1:59999/login", "http://127.0.0.1:59999/"])
 
     def test_server_refuses_reuse_address(self):
         import panel
@@ -483,8 +495,8 @@ class BrowserNavigationRedirectTests(unittest.TestCase):
         import panel
         httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
         port = httpd.server_address[1]
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        self.addCleanup(httpd.server_close)
+        from lab.tests import _auth_harness
+        _auth_harness.start_http_fixture(self, httpd)
         return f"http://127.0.0.1:{port}"
 
     def _status(self, base, path, accept=None, sec_mode=None, method=None,

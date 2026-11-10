@@ -1,14 +1,7 @@
-"""
-Jam'avari-ye tasavir-e captcha az safhe-ye sabt-e IMEI-ye epl.irica.gov.ir
-va zakhire be soorat-e file PNG.
+"""Collect CAPTCHA images using an explicitly installed browser driver.
 
-Pishniaz-ha (nasb-e ketabkhane-ha):
-    pip install selenium pillow
-
-Nokte: az Selenium 4 be ba'd niazi be download-e dasti-ye chromedriver nist;
-Selenium Manager be soorat-e khodkar driver-e Chrome ra modiriat mikonad.
-Faghat kafist morurgar-e Google Chrome roo-ye system nasb bashad.
-Agar server-e Google filter bood (Iran), CHROMEDRIVER_PATH ra dasti tanzim konid.
+ChromeDriver installation requires current user confirmation. Robot startup
+checks local compatibility only and never invokes Selenium Manager downloads.
 """
 
 import argparse
@@ -19,6 +12,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -67,13 +61,11 @@ MIN_DARK_RATIO = 0.15
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Manual chromedriver override. Leave empty for the normal install.
 #
-# Empty means resolve_chromedriver() picks the driver itself: the bundled copy
-# under .tools\ (which the auto-updater keeps in step with the installed Chrome),
-# falling back to Selenium Manager. Set this only to pin a driver deliberately,
-# and point it at a WRITABLE location — an override that wins resolution while
-# sitting somewhere the app cannot write (C:\ root, for instance) is a driver the
-# auto-updater can never refresh, so it silently goes stale again.
+# An existing override takes precedence over the bundled .tools copy. Driver
+# installation is available only through an explicitly confirmed manual update;
+# a missing local driver never falls back to Selenium Manager.
 CHROMEDRIVER_PATH = ""
+EDGEDRIVER_PATH = ""
 
 # Agar mikhahid mostaghiman az morurgar-e Edge estefade shavad, in ra True konid:
 USE_EDGE = False
@@ -614,7 +606,7 @@ def resolve_chromedriver():
          kept for machines that manage the driver by hand.
       2. The bundled copy in <install>\\.tools\\chromedriver.exe (shipped by
          the installer) so a fresh install needs no manual download.
-      3. Empty string -> Selenium Manager resolves/downloads the driver.
+      3. Empty string: no local driver; callers must require a confirmed update.
 
     The order matters: the override must stay first or a hand-managed newer
     driver would be shadowed by the bundled one after Chrome updates.
@@ -665,7 +657,7 @@ def _chrome_major_from_registry_or_path():
 
 
 def driver_compat_problem(driver_version="", browser_version=""):
-    """Persian warning when chromedriver and Chrome majors do not line up.
+    """English update-required warning when driver and browser majors differ.
 
     Arguments accept either a version STRING ("152.0.7977.83") or a path to
     an exe whose --version output carries the number. Empty/unknown versions
@@ -691,36 +683,24 @@ def driver_compat_problem(driver_version="", browser_version=""):
     browser_major = int(browser_match.group(1))
     if driver_major == browser_major:
         return ""
-    return (f"هشدار نسخه: ChromeDriver نسخه {driver_major} است اما Chrome "
-            f"نسخه {browser_major} — ربات ممکن است باز نشود. لطفاً chromedriver "
-            f"متناسب با Chrome {browser_major} را جایگزین کنید.")
+    return (f"ChromeDriver update required: local driver major {driver_major} "
+            f"does not match Chrome {browser_major}. Confirm a driver update "
+            "in the panel before starting the robot.")
 
 
 # ---------------------------------------------------------------------------
-# Automatic ChromeDriver update (v1.11)
-# ---------------------------------------------------------------------------
-# A Chrome auto-update leaves the bundled driver a major behind and every robot
-# dies with SessionNotCreatedException. On the first mismatch a process sees, we
-# try to fetch the driver matching the installed Chrome from Chrome-for-Testing
-# through the Cloudflare proxy (see chromedriver_updater). This is best effort
-# by design: the attempt is latched to one per process, cooled down across
-# processes, and guarded by an OS-held lock so only one process downloads at a
-# time, because twenty robots starting at once must not each pull 11 MB through
-# the same tunnel, and a failed update must never block a launch.
+# Read-only compatibility checks and explicitly confirmed ChromeDriver updates.
+# Legacy cooldown helpers remain readable for older callers, but neither a
+# cooldown marker nor a process latch can authorize an executable installation.
 _DRIVER_UPDATE_LATCH = {"done": False}
 # Held for the duration of a manual update, so two clicks (or two tabs) cannot
 # both pull the archive through the one tunnel at once.
 _DRIVER_UPDATE_BUSY = threading.Lock()
 DRIVER_UPDATE_COOLDOWN_SECONDS = 900
 DRIVER_UPDATE_MARKER = "driver_update_last.json"
-# Cross-process single-flight. The marker above only stops an attempt that
-# STARTS during the cooldown: two processes that read it in the same instant both
-# see "not cooling down" and both pull the archive through the one tunnel. The
-# cooldown makes that rare, not impossible. This file is the actual mutual
-# exclusion, and it is held by the OS rather than by a heuristic: a byte-range
-# lock is released the instant the holding process exits, so a killed robot can
-# never leave the update wedged the way a lock file with a staleness rule could.
-DRIVER_UPDATE_LOCK = "driver_update.lock"
+# Executable-resource named mutexes provide cross-process exclusion independent
+# of IRICA_DATA_DIR. Every primary and secondary destination is locked before a
+# confirmed install, so overlapping update sets cannot race backup or rollback.
 # Wall-clock budget for the automatic attempt. It runs on the launch path, so a
 # slow or half-dead tunnel must give up long before the robot's own timeout.
 DRIVER_UPDATE_AUTO_BUDGET_SECONDS = 90
@@ -730,7 +710,8 @@ def _driver_update_targets(resolved):
     """(primary, extras): the driver that launches, plus copies kept in step.
 
     The explicit override is refreshed when the file exists but is never
-    created — a machine with no override must keep Selenium Manager's fallback.
+    created. Missing drivers are installed only into the bundled location after
+    current explicit confirmation.
     """
     bundled = os.path.join(HERE, ".tools", "chromedriver.exe")
     override = str(globals().get("CHROMEDRIVER_PATH", "") or "").strip()
@@ -749,71 +730,79 @@ def _driver_update_marker_path():
         return ""
 
 
-def _driver_update_lock_path():
-    """The lock file, beside the marker rather than from app_paths directly.
+def _driver_update_mutex_names(target_exe, extra_targets=()):
+    """Ordered kernel-object names for canonical executable destinations.
 
-    Deriving the directory from the marker path keeps the two in one place: a
-    test that redirects the marker to a temp directory redirects the lock with
-    it, so no test run can create a lock file in the live data directory.
+    Data directories and cooldown markers are deliberately excluded: separate
+    app instances can write the same installed driver using different stores.
+    One name per destination also serializes partially overlapping target sets.
     """
-    marker = _driver_update_marker_path()
-    if not marker:
-        return ""
-    return os.path.join(os.path.dirname(marker), DRIVER_UPDATE_LOCK)
+    paths = {os.path.normcase(os.path.realpath(os.path.abspath(path)))
+             for path in (target_exe, *(extra_targets or ())) if path}
+    if not paths:
+        raise ValueError("A driver executable target is required")
+    return tuple(sorted(
+        "Local\\IRICA_ChromeDriver_" + hashlib.sha256(path.encode("utf-8")).hexdigest()
+        for path in paths))
+
+
+def _driver_update_mutex_api():
+    """Typed Windows named-mutex API; unsupported platforms fail closed."""
+    if os.name != "nt":
+        raise OSError("Driver installation requires Windows resource locks")
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    signatures = {
+        "CreateMutexW": ([ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR], wintypes.HANDLE),
+        "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+        "ReleaseMutex": ([wintypes.HANDLE], wintypes.BOOL),
+        "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(api, name)
+        function.argtypes = arguments
+        function.restype = result
+    return api
 
 
 @contextlib.contextmanager
-def _driver_update_single_flight():
-    """Yield True when this process may be the one to run an update.
+def _driver_update_single_flight(target_exe, extra_targets=()):
+    """Non-blocking exclusion across all canonical executable destinations.
 
-    Yields False when another process already holds the lock, so the caller
-    makes no attempt and the cooldown-less path cannot become a download storm.
-    The lock is a byte range held by the kernel, which releases it the moment
-    the holder exits -- including a robot killed mid-update, which is why no
-    staleness rule is needed and a wedged lock is not possible.
-
-    Failing to OPEN the lock file is not the same as failing to LOCK it. An
-    unopenable file means no process can hold it, so the update proceeds and
-    prints one line: refusing would disable self-repair for good on a machine
-    whose data directory is read-only, and concurrency here is safe anyway
-    (every install is verified and atomically replaced). Failing to lock a file
-    that did open means somebody holds it, or the platform denies byte-range
-    locking; both are answered by not attempting.
+    Acquire in deterministic order, release every partial acquisition on failure,
+    and accept abandoned mutexes after a holder exits. No lock file, marker or
+    per-user data directory can partition exclusion for the same executable.
     """
     try:
-        import msvcrt
-    except ImportError:
-        # Not Windows: nothing to coordinate with, and the module must still
-        # import and run.
-        yield True
+        names = _driver_update_mutex_names(target_exe, extra_targets)
+        api = _driver_update_mutex_api()
+    except (ImportError, OSError, TypeError, ValueError):
+        yield False
         return
-    path = _driver_update_lock_path()
-    if not path:
-        yield True
-        return
-    try:
-        handle = os.open(path, os.O_RDWR | os.O_CREAT)
-    except OSError as exc:
-        print("!!! Could not open the ChromeDriver update lock: " + str(exc))
-        yield True
-        return
+    handles, owned = [], set()
+    acquired = False
     try:
         try:
-            # One byte, non-blocking: refusal is immediate, never a retry loop
-            # that would hold a robot start while another process downloads.
-            msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+            for name in names:
+                handle = api.CreateMutexW(None, False, name)
+                if not handle:
+                    break
+                handles.append(handle)
+                # WAIT_OBJECT_0 or WAIT_ABANDONED: both grant mutex ownership.
+                if api.WaitForSingleObject(handle, 0) not in (0, 0x80):
+                    break
+                owned.add(handle)
+            else:
+                acquired = True
         except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            try:
-                msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
+            acquired = False
+        yield acquired
     finally:
-        os.close(handle)
+        for handle in reversed(handles):
+            if handle in owned:
+                api.ReleaseMutex(handle)
+            api.CloseHandle(handle)
 
 
 def _driver_update_cooling_down():
@@ -880,95 +869,71 @@ def _mark_driver_update_attempt():
 
 
 def maybe_update_chromedriver(driver_path, browser_major):
-    """Best-effort auto-update of the driver about to launch. Never raises.
+    """Read local compatibility only; never download, start a proxy or write.
 
-    Returns the updater result dict, or None when no attempt was made (already
-    attempted in this process, cooling down, or nothing to compare against)."""
-    if not driver_path or not browser_major:
-        return None
-    if _DRIVER_UPDATE_LATCH["done"]:
-        return None
-    # Claimed before the cooldown check so two threads cannot both decide to
-    # start a download, then handed back when no attempt is made: cooling down
-    # is not an attempt, and a process that lives for days (the panel) would
-    # otherwise lose its one shot for good the first time a robot started while
-    # another process's cooldown was still running.
-    _DRIVER_UPDATE_LATCH["done"] = True
-    if _driver_update_cooling_down():
-        _DRIVER_UPDATE_LATCH["done"] = False
-        return None
-    # Cross-process single-flight. The cooldown above makes two processes racing
-    # unlikely; this makes it impossible, so twenty robots starting together can
-    # never each pull the archive through the one tunnel. A process that loses
-    # the race makes no attempt, so it must hand the latch back exactly like the
-    # cooldown branch: this process may still get its one shot later.
-    with _driver_update_single_flight() as may_update:
-        if not may_update:
-            _DRIVER_UPDATE_LATCH["done"] = False
-            return None
-        # Import BEFORE the attempt is recorded. A build that shipped without
-        # this module would otherwise burn the cooldown marker and return None
-        # in silence: the operator sees no driver repair for the next
-        # DRIVER_UPDATE_COOLDOWN_SECONDS and nothing anywhere says why. Read
-        # first, so a missing module costs no cooldown and leaves a trace.
-        try:
-            import chromedriver_updater
-        except ImportError as exc:
-            print("!!! ChromeDriver auto-update is unavailable, so the driver "
-                  "cannot repair itself after a Chrome update: " + str(exc))
-            return None
-        _mark_driver_update_attempt()
-        primary, extras = _driver_update_targets(driver_path)
-        try:
-            return chromedriver_updater.update_chromedriver(
-                target_exe=primary, expected_major=int(browser_major),
-                extra_targets=extras,
-                total=DRIVER_UPDATE_AUTO_BUDGET_SECONDS)
-        except Exception as exc:  # a repair must never take the launch path down
-            return {"status": "failed", "detail": str(exc), "target": primary,
-                    "version": ""}
-
-
-def update_chromedriver_now(driver_path=""):
-    """Manual driver update behind the launch page's button. Never raises.
-
-    Unlike maybe_update_chromedriver this ignores both the per-process latch and
-    the cross-process cooldown: the operator asked for it explicitly and nothing
-    is waiting on the result. The cooldown marker is deliberately left alone, so
-    a manual attempt that fails still leaves the next robot start free to repair
-    the driver by itself.
-
-    Returns the updater result dict ({status, detail, target, version}), which
-    the panel renders as-is. A second caller arriving while one update is in
-    flight gets {"status": "busy"} instead of a queued second download.
-
-    It does take the cross-process lock. Bypassing the cooldown is about not
-    being *refused* for having tried recently; it is not licence to download
-    alongside a robot that is already downloading. A manual click that lands on
-    a running automatic attempt is answered "busy" rather than sharing the
-    tunnel with it.
+    The historical name is retained for callers, but a mismatch or a missing
+    driver now returns an actionable ``consent-required`` result every time.
+    Neither old cooldown markers nor process latches carry user approval.
     """
+    result = {"status": "consent-required", "target": driver_path or "",
+              "version": "", "detail": ""}
+    driver_major = _read_major_version(driver_path) if driver_path else None
+    if driver_major is None:
+        result["detail"] = (
+            "ChromeDriver update required: local driver is missing or unreadable. "
+            "Confirm a driver update in the panel before starting the robot.")
+    elif not browser_major:
+        result["status"] = "no-browser-version"
+        result["detail"] = "Installed Chrome major is unknown; verify Chrome before updating."
+    elif driver_major != browser_major:
+        result["detail"] = driver_compat_problem(str(driver_major), str(browser_major))
+    else:
+        result["status"] = "up-to-date"
+        result["version"] = str(driver_major)
+        result["detail"] = "The local ChromeDriver major matches installed Chrome."
+    return result
+
+
+def update_chromedriver_now(driver_path="", *, consent=False,
+                            proxy_override=None, allow_direct=False,
+                            desired_version=None):
+    """Install only with current explicit consent and one shared install lock.
+
+    ``consent`` must be the boolean True for this request; no approval is saved.
+    With consent and no ``desired_version``, resolve the latest CfT patch for
+    installed Chrome even when the local driver's major already matches.
+    Returns {status, detail, target, version}; concurrent callers receive busy.
+    """
+    if consent is not True:
+        return {"status": "consent-required", "target": driver_path or "",
+                "version": "", "detail": "Confirm the ChromeDriver update before installation."}
     if not _DRIVER_UPDATE_BUSY.acquire(blocking=False):
         return {"status": "busy",
-                "detail": "a driver update is already running",
+                "detail": "A driver update is already running.",
                 "target": driver_path, "version": ""}
     try:
-        with _driver_update_single_flight() as may_update:
+        target = driver_path or resolve_chromedriver()
+        if not target:
+            target = os.path.join(HERE, ".tools", "chromedriver.exe")
+        # Resolve once. Lock and install exactly the same destination snapshot.
+        primary, extras = _driver_update_targets(target)
+        extras = tuple(extras)
+        with _driver_update_single_flight(primary, extras) as may_update:
             if not may_update:
                 return {"status": "busy",
-                        "detail": "a driver update is already running",
-                        "target": driver_path, "version": ""}
-            return _update_chromedriver_now_locked(driver_path)
+                        "detail": "The executable update guard is unavailable or another driver update is running. Retry after it finishes.",
+                        "target": target, "version": ""}
+            return _update_chromedriver_now_locked(
+                primary, extra_targets=extras, consent=True,
+                proxy_override=proxy_override, allow_direct=allow_direct,
+                desired_version=desired_version)
     finally:
         _DRIVER_UPDATE_BUSY.release()
 
 
-def _update_chromedriver_now_locked(driver_path):
-    target = driver_path or resolve_chromedriver()
-    if not target:
-        # No override and nothing bundled: install into the writable copy every
-        # install ships, so a repair creates the driver instead of doing nothing.
-        target = os.path.join(HERE, ".tools", "chromedriver.exe")
+def _update_chromedriver_now_locked(target, *, extra_targets=(), consent=False,
+                                    proxy_override=None, allow_direct=False,
+                                    desired_version=None):
     browser_major = _chrome_major_from_registry_or_path()
     if not browser_major:
         return {"status": "no-browser-version",
@@ -979,11 +944,12 @@ def _update_chromedriver_now_locked(driver_path):
     except ImportError as exc:
         return {"status": "failed", "detail": str(exc), "target": target,
                 "version": ""}
-    primary, extras = _driver_update_targets(target)
+    primary, extras = target, extra_targets
     try:
         result = chromedriver_updater.update_chromedriver(
             target_exe=primary, expected_major=int(browser_major),
-            extra_targets=extras)
+            extra_targets=extras, consent=consent, proxy_override=proxy_override,
+            allow_direct=allow_direct, desired_version=desired_version)
     except Exception as exc:  # the route must answer, not drop the connection
         return {"status": "failed", "detail": str(exc), "target": primary,
                 "version": ""}
@@ -992,45 +958,70 @@ def _update_chromedriver_now_locked(driver_path):
     return result
 
 
-def check_driver_compat(driver_path=""):
-    """Log (and return) the compat warning for a resolved chromedriver path.
+class DriverUpdateRequired(RuntimeError):
+    """A local driver must be installed or repaired with explicit consent."""
 
-    Browser version is read from the Windows registry; on failure the check
-    stays silent — this is a warning channel, never a blocker. When a genuine
-    mismatch is found the driver is first given one bounded chance to repair
-    itself; if that works the warning is unnecessary and is not printed."""
-    problem = ""
+
+def check_driver_compat(driver_path=""):
+    """Return an actionable English local-compatibility problem, or empty text.
+
+    This check never installs, starts a proxy or asks Selenium to find a driver.
+    A missing or unreadable driver is an update requirement, not permission to
+    invoke Selenium Manager. Unknown browser versions cannot authorize repair.
+    """
     driver_path = driver_path or resolve_chromedriver()
-    if driver_path:
-        browser_major = _chrome_major_from_registry_or_path()
-        if browser_major:
-            driver_major = _read_major_version(driver_path)
-            if driver_major and driver_major != browser_major:
-                problem = driver_compat_problem(str(driver_major),
-                                                str(browser_major))
-                if problem:
-                    result = maybe_update_chromedriver(driver_path, browser_major)
-                    if result and result.get("status") == "updated":
-                        print(">>> " + str(result.get("detail") or ""))
-                    elif result and result.get("status") == "failed":
-                        print("!!! ChromeDriver auto-update failed: "
-                              + str(result.get("detail") or ""))
-                    if _read_major_version(driver_path) == browser_major:
-                        problem = ""
+    browser_major = _chrome_major_from_registry_or_path()
+    if not driver_path:
+        problem = ("ChromeDriver update required: no local driver was found. "
+                   "Confirm a driver update in the panel before starting the robot.")
+    else:
+        driver_major = _read_major_version(driver_path)
+        if driver_major is None:
+            problem = ("ChromeDriver update required: the local driver version is unreadable. "
+                       "Confirm a driver update in the panel before starting the robot.")
+        elif not browser_major:
+            problem = ("Chrome version could not be verified. Verify the local Chrome "
+                       "installation before starting the robot; no driver update was attempted.")
+        else:
+            problem = driver_compat_problem(str(driver_major), str(browser_major))
     if problem:
         print("!!! " + problem)
     return problem
 
 
+def require_compatible_chromedriver(driver_path=""):
+    """Return an existing compatible driver path or raise before Selenium runs."""
+    resolved = driver_path or resolve_chromedriver()
+    problem = check_driver_compat(resolved)
+    if problem:
+        raise DriverUpdateRequired(problem)
+    if not resolved or not os.path.isfile(resolved):
+        raise DriverUpdateRequired(
+            "ChromeDriver update required: the local driver is missing. "
+            "Confirm a driver update in the panel before starting the robot.")
+    return resolved
+
+
+def require_local_edgedriver():
+    """Require a manually installed Edge driver; never use Selenium Manager."""
+    override = str(globals().get("EDGEDRIVER_PATH", "") or "").strip()
+    for candidate in (override, os.path.join(HERE, ".tools", "msedgedriver.exe"),
+                      shutil.which("msedgedriver")):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    raise DriverUpdateRequired(
+        "Edge requires a manually installed compatible msedgedriver. Install it "
+        "manually in .tools or set EDGEDRIVER_PATH; automatic driver downloads are disabled.")
+
+
 def build_chrome(user_agent=None):
-    """Sakht-e driver-e Chrome (ba driver-e dasti dar soorat-e tanzim-e CHROMEDRIVER_PATH)."""
+    """Build Chrome only with an existing, locally verified compatible driver."""
     options = Options()
     # baraye ejra bedun-e namayesh-e panjere, khat-e zir ra az comment kharej konid:
     # options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
 
-    resolved_driver = resolve_chromedriver()
-    check_driver_compat(resolved_driver)
+    resolved_driver = require_compatible_chromedriver()
 
     if MOBILE_EMULATION:
         # Emulation-e mobile-e Chrome (daghighan hamon-e DevTools ba resolution-e mobile).
@@ -1047,21 +1038,16 @@ def build_chrome(user_agent=None):
         if user_agent:
             options.add_argument(f"--user-agent={user_agent}")
 
-    # Launch exactly the driver resolve_chromedriver() picked, not the raw
-    # override: when CHROMEDRIVER_PATH points at a file that is not there, the
-    # bundled copy (or Selenium Manager) must take over. Passing the unprobed
-    # global sent Selenium a nonexistent path and broke every robot even with a
-    # perfectly good bundled driver. The check above and this launch must agree
-    # on one path, or the compat warning describes a driver nobody starts.
-    if resolved_driver:
-        service = ChromeService(executable_path=resolved_driver)
-        return webdriver.Chrome(service=service, options=options)
-    return webdriver.Chrome(options=options)
+    # An explicit local Service path prevents Selenium Manager auto-downloads.
+    service = ChromeService(executable_path=resolved_driver)
+    return webdriver.Chrome(service=service, options=options)
 
 
 def build_edge(user_agent=None):
-    """Sakht-e driver-e Edge be onvan-e jaygozin (driver-ash ma'moolan dar Iran ghabel-e download ast)."""
+    """Build Edge only with a manually installed local driver."""
     from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.edge.service import Service as EdgeService
+    driver_path = require_local_edgedriver()
     options = EdgeOptions()
     # options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
@@ -1078,15 +1064,14 @@ def build_edge(user_agent=None):
         if user_agent:
             options.add_argument(f"--user-agent={user_agent}")
 
-    return webdriver.Edge(options=options)
+    return webdriver.Edge(service=EdgeService(executable_path=driver_path), options=options)
 
 
 def build_driver(user_agent=None):
-    """
-    Sakht-e driver-e morurgar ba modiriat-e khata-ye download-e driver.
-    Ebteda Chrome, va dar soorat-e shekast be tor-e khodkar Edge emtehan mishavad.
-    Zoom-e site (SITE_ZOOM) roo-ye har navigation e'mal mishavad va scroll-e
-    dasti (drag ba mouse) baraye baznagari-ye karbar faal mishavad.
+    """Build a local browser without any implicit executable installation.
+
+    A Chrome policy refusal is terminal. Other launch failures may use Edge
+    only when a local Edge driver was installed manually.
     """
     def prepare(driver):
         return install_manual_scroll(install_site_zoom(driver))
@@ -1096,20 +1081,24 @@ def build_driver(user_agent=None):
 
     try:
         return prepare(build_chrome(user_agent))
+    except DriverUpdateRequired:
+        # A policy refusal cannot authorize a different browser's auto-fetch.
+        raise
     except Exception as e:
-        print("!!! Sakht-e driver-e Chrome namovaffagh bood:")
+        print("!!! Chrome could not be started:")
         print(f"    {e}")
-        print(">>> Talash baraye estefade az morurgar-e Edge be onvan-e jaygozin ...")
+        print(">>> Trying Edge with a manually installed local driver.")
         try:
             return prepare(build_edge(user_agent))
+        except DriverUpdateRequired:
+            raise
         except Exception as e2:
-            print("!!! Sakht-e driver-e Edge ham namovaffagh bood:")
+            print("!!! Edge could not be started:")
             print(f"    {e2}")
             raise SystemExit(
-                "\n=== Hich driver-i dar dastres nist. Rah-hal-ha ===\n"
-                "  1) VPN/proxy ra roshan konid ta Selenium betavanad driver ra download konad.\n"
-                "  2) ya chromedriver motenaseb ba version-e Chrome khod ra dasti download konid,\n"
-                "     va dar bala-ye file meghdar-e CHROMEDRIVER_PATH ra tanzim konid.\n"
+                "No compatible local browser driver could be started. Confirm a "
+                "ChromeDriver update in the panel, or manually install a matching "
+                "Chrome/Edge driver before retrying. Automatic downloads are disabled."
             )
 
 

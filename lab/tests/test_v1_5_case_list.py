@@ -179,7 +179,7 @@ class PreservedMarkerTests(unittest.TestCase):
         self.assertNotIn("devicesRailHtml()", body)
         self.assertIn(".crm-cols{display:grid", self.src)
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.src)
-        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:1fr}",
+        self.assertIn("@media (max-width:1100px){.crm-cols{grid-template-columns:minmax(0,1fr)}",
                       self.src)
 
     def test_focus_flash_css(self):

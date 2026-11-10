@@ -1,22 +1,15 @@
-"""Ad-hoc test runner for the panel/robot unit tests (no pytest needed).
+"""Compatible front door for isolated panel/robot unittest modules.
 
-Lives under lab/scripts/ because panel.clean_project_root() deletes any
-`_verify_*.py` / `hermes-verify-*.py` left in the project root.
+Use the bundled interpreter; each selected module runs in a fresh guarded child.
 
-    python lab/scripts/run_panel_tests.py [test_module ...]
+    python -I -B lab/scripts/run_panel_tests.py [test_module ...]
 """
-import os
-import shutil
+import argparse
+import importlib.util
+from pathlib import Path
 import sys
-import tempfile
-import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-TESTS = os.path.join(ROOT, "lab", "tests")
-for path in (ROOT, TESTS):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+HERE = Path(__file__).resolve().parent
 
 DEFAULT = [
     "test_profile_pool", "test_runtime_heartbeat", "test_profile_success",
@@ -164,6 +157,7 @@ DEFAULT = [
     "test_cloud_ui",
     "test_cloud_conflicts",
     "test_cloud_integration",
+    "test_server_crm_v2_authority",
     # v1.15.1: the panel's own finance transport producers. The v1.15.0
     # outbox tests built their operations by hand, so nothing noticed that the
     # route could never stamp the marker (both branches read the ledger entry
@@ -174,45 +168,54 @@ DEFAULT = [
     "test_private_accounts",
     "test_desktop_private_accounts",
     "test_legacy_shared_reset",
+    "test_app_updater",
+    "test_direct_job_admission",
+    "test_driver_consent",
+    "test_installer_handoff",
+    "test_isolated_test_runner",
+    "test_maintenance_api",
+    "test_maintenance_gate",
+    "test_maintenance_packaging",
+    "test_maintenance_preview",
+    "test_maintenance_service",
+    "test_maintenance_shutdown",
+    "test_maintenance_ui",
+    "test_registration_attempts",
+    "test_registration_identity",
+    "test_release_probe",
+    "test_service_health",
 ]
 
-names = sys.argv[1:] or DEFAULT
+def _load_supervisor():
+    """Load only the fixed stdlib-only supervisor, never an application module."""
+    script = HERE / "run_isolated_tests.py"
+    spec = importlib.util.spec_from_file_location("_irica_isolated_supervisor", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The isolated test supervisor could not be loaded")
+    supervisor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(supervisor)
+    return supervisor
 
-# Keep the whole run out of the operator's live data directory. Modules that
-# patch their own paths are unaffected; a module that forgets to now writes
-# into a throwaway directory instead of real data (test_crm_inquiry_pool was
-# appending "inquiry started" records to the live estelam log this way). This
-# must happen before anything imports app_paths, whose data_dir() is cached on
-# its first call.
-SCRATCH = tempfile.mkdtemp(prefix="irica_tests_")
-os.environ["IRICA_DATA_DIR"] = SCRATCH
-print("data dir for this run:", SCRATCH)
 
-loader = unittest.TestLoader()
-suite = unittest.TestSuite()
-missing = []
-hollow = []
-for name in names:
-    if not os.path.exists(os.path.join(TESTS, name + ".py")):
-        missing.append(name)
-        continue
-    loaded = loader.loadTestsFromName(name)
-    # A module that is listed but yields no test cases is a hole in the suite:
-    # a script-style module (tests as plain functions, run by its own
-    # _run_all()) silently collects zero here. Fail the run rather than print
-    # OK over it — a dropped or mis-shaped module must not pass unnoticed.
-    if loaded.countTestCases() == 0:
-        hollow.append(name)
-    suite.addTests(loaded)
-if missing:
-    print("MISSING (listed, file not present):", ", ".join(missing))
-if hollow:
-    print("EMPTY (listed, collected no tests):", ", ".join(hollow))
-result = unittest.TextTestRunner(verbosity=2).run(suite)
-ok = result.wasSuccessful() and not missing and not hollow
-if ok:
-    shutil.rmtree(SCRATCH, ignore_errors=True)
-else:
-    # Anything a test wrote while failing is still here to look at.
-    print("kept for debugging:", SCRATCH)
-sys.exit(0 if ok else 1)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("modules", nargs="*", help="Bare test module names; default: full panel suite")
+    parser.add_argument("--timeout", type=float, default=180.0, help="Hard timeout per module, seconds")
+    parser.add_argument("--report", type=Path, help="Optional sanitized JSON result outside app data")
+    arguments = parser.parse_args(argv)
+    forwarded = [*(arguments.modules or DEFAULT), "--timeout", str(arguments.timeout)]
+    if arguments.report is not None:
+        forwarded.extend(["--report", str(arguments.report)])
+    supervisor = _load_supervisor()
+    previous_argv = sys.argv
+    try:
+        sys.argv = [str(supervisor.SCRIPT), *forwarded]
+        # The supervisor imports no product code and launches every module with
+        # this interpreter and -I -B. It owns missing/empty-suite failure checks.
+        return supervisor.main()
+    finally:
+        sys.argv = previous_argv
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

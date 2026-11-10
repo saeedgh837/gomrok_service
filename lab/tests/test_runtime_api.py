@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -7,16 +8,19 @@ from unittest.mock import patch
 import panel
 
 
+def _ready_profile(profile_id, title, **overrides):
+    profile = {"id": profile_id, "title": title, "national": "0012345679",
+               "birth": "1370/01/01", "mobile": "09120000000", "passport": "PP0000001",
+               "imeis": ["123456789012345"], "registration_status": "pending"}
+    profile.update(overrides)
+    return profile
+
+
 class RuntimeApiTests(unittest.TestCase):
     def test_spawned_robot_claims_the_exact_complete_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             profiles_path = os.path.join(tmp, "profiles.json")
-            profile = {
-                "id": "p2", "title": "Selected", "national": "0012345678",
-                "birth": "1370/1/1", "mobile": "09120000000",
-                "imeis": ["123456789012345"], "enabled": False,
-                "registration_status": "pending",
-            }
+            profile = _ready_profile("p2", "Selected", enabled=False)
             with open(profiles_path, "w", encoding="utf-8") as f:
                 json.dump({"active_id": "p1", "profiles": [
                     {"id": "p1", "title": "Other"}, profile,
@@ -34,7 +38,7 @@ class RuntimeApiTests(unittest.TestCase):
             path = os.path.join(tmp, "profiles.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"active_id": "p1", "profiles": [
-                    {"id": "p1", "title": "A"}, {"id": "p2", "title": "B"}
+                    _ready_profile("p1", "A"), _ready_profile("p2", "B")
                 ]}, f)
             with patch.object(panel, "PROFILES_PATH", path), \
                     patch.object(panel, "INPUTS_PATH", os.path.join(tmp, "inputs.json")), \
@@ -47,8 +51,8 @@ class RuntimeApiTests(unittest.TestCase):
             path = os.path.join(tmp, "profiles.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"active_id": "p1", "profiles": [
-                    {"id": "p1", "title": "A", "enabled": True},
-                    {"id": "p2", "title": "B", "enabled": False},
+                    _ready_profile("p1", "A", enabled=True),
+                    _ready_profile("p2", "B", enabled=False),
                 ]}, f)
             with patch.object(panel, "PROFILES_PATH", path), \
                     patch.object(panel, "INPUTS_PATH", os.path.join(tmp, "inputs.json")), \
@@ -91,17 +95,33 @@ class RuntimeApiTests(unittest.TestCase):
             gomrok.sys.stdout.write(">>> Profile claim shod: 'موئمن صالحی' | status=BUSY\n")
             gomrok.sys.stdout.flush()
 
-    @unittest.skipUnless(os.name == "nt", "Windows process-tree behavior")
+    @unittest.skipUnless(os.name == "nt", "Windows process termination behavior")
     def test_stop_terminates_real_worker_process(self):
-        proc = panel.subprocess.Popen([panel.ROBOT_PYTHON, "-c", "import time; time.sleep(60)"])
-        try:
-            self.assertTrue(panel.stop_profile_process(proc.pid))
-            proc.wait(timeout=5)
-            self.assertIsNotNone(proc.poll())
-        finally:
-            if proc.poll() is None:
-                panel.subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                     stdout=panel.subprocess.DEVNULL, stderr=panel.subprocess.DEVNULL)
+        worker = os.path.join(os.path.dirname(__file__), "test_maintenance_gate.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            command = [sys.executable, "-I", "-B", worker, "--gate-worker", "wait",
+                       tmp, os.path.join(tmp, "jobs.json")]
+            proc = panel.subprocess.Popen(command, stdin=panel.subprocess.PIPE)
+
+            def terminate_owned_worker(args, **kwargs):
+                self.assertEqual(args, ["taskkill", "/PID", str(proc.pid), "/T", "/F"])
+                self.assertFalse(kwargs.get("check"))
+                # Keep the OS adapter bound to this child's retained process handle.
+                self.assertIsNone(proc.poll())
+                proc.terminate()
+                proc.wait(timeout=5)
+                self.assertIsNotNone(proc.poll())
+                return panel.subprocess.CompletedProcess(args, 0)
+
+            try:
+                with patch.object(panel.subprocess, "run", side_effect=terminate_owned_worker):
+                    self.assertTrue(panel.stop_profile_process(proc.pid))
+                self.assertIsNotNone(proc.poll())
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+                proc.stdin.close()
 
     def test_stop_releases_the_requested_profile_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,8 +148,8 @@ class RuntimeApiTests(unittest.TestCase):
             profiles_path = os.path.join(tmp, "profiles.json")
             with open(profiles_path, "w", encoding="utf-8") as f:
                 json.dump({"active_id": "p1", "profiles": [
-                    {"id": "p1", "title": "A", "national": "0012345678", "birth": "1370/1/1", "imeis": ["123456789012345"], "enabled": False, "registration_status": "pending"},
-                    {"id": "p2", "title": "B", "national": "0012345679", "birth": "1370/1/2", "imeis": ["123456789012346"], "enabled": False, "registration_status": "pending"},
+                    _ready_profile("p1", "A", enabled=False),
+                    _ready_profile("p2", "B", enabled=False, imeis=["123456789012346"]),
                 ]}, f)
             with patch.multiple(panel, PROFILES_PATH=profiles_path,
                                 INPUTS_PATH=os.path.join(tmp, "inputs.json"),
@@ -138,26 +158,26 @@ class RuntimeApiTests(unittest.TestCase):
                 status, payload = panel.start_profile("p2")
                 self.assertEqual(status, 200)
                 self.assertEqual(payload["profile_id"], "p2")
-                start.assert_called_once_with("p2", actor=None)
                 profile = next(p for p in panel.load_store()["profiles"] if p["id"] == "p2")
+                start.assert_called_once_with("p2", actor=None, runner_id=profile["runner_id"])
+                self.assertTrue(profile["attempt_reserved"])
                 self.assertEqual(profile["runner_pid"], 4321)
 
     def test_start_rejects_incomplete_profile_before_spawning(self):
         with tempfile.TemporaryDirectory() as tmp:
             profiles_path = os.path.join(tmp, "profiles.json")
             with open(profiles_path, "w", encoding="utf-8") as f:
-                json.dump({"active_id": "p1", "profiles": [{
-                    "id": "p1", "title": "A", "national": "0012345678",
-                    "birth": "1370/1/1", "mobile": "09120000000", "imeis": [],
-                    "enabled": True, "registration_status": "pending",
-                }]}, f)
+                json.dump({"active_id": "p1", "profiles": [
+                    _ready_profile("p1", "A", imeis=[], enabled=True),
+                ]}, f)
             with patch.multiple(panel, PROFILES_PATH=profiles_path,
                                 INPUTS_PATH=os.path.join(tmp, "inputs.json"),
                                 _STORE_LOCK_PATH=profiles_path + ".lock"), \
                     patch.object(panel, "start_profile_process") as start:
                 status, payload = panel.start_profile("p1")
                 self.assertEqual(status, 422)
-                self.assertIn("سریال", "، ".join(payload["missing"]))
+                self.assertIn("imeis", payload["error"])
+                self.assertEqual(panel.load_store()["profiles"][0]["run_status"], "idle")
                 start.assert_not_called()
 
     def test_manual_manage_profile_can_start_without_automatic_fields(self):
@@ -180,18 +200,16 @@ class RuntimeApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             profiles_path = os.path.join(tmp, "profiles.json")
             with open(profiles_path, "w", encoding="utf-8") as f:
-                json.dump({"active_id": "p1", "profiles": [{
-                    "id": "p1", "title": "A", "national": "0012345678",
-                    "birth": "1370/1/1", "imeis": ["123456789012345"],
-                    "enabled": True, "registration_status": "pending",
-                }]}, f)
+                json.dump({"active_id": "p1", "profiles": [
+                    _ready_profile("p1", "A", enabled=True),
+                ]}, f)
             with patch.multiple(panel, PROFILES_PATH=profiles_path,
                                 INPUTS_PATH=os.path.join(tmp, "inputs.json"),
                                 _STORE_LOCK_PATH=profiles_path + ".lock"), \
                     patch.object(panel, "start_profile_process", side_effect=OSError("spawn failed")):
                 status, payload = panel.start_profile("p1")
-                self.assertEqual(status, 500)
-                self.assertEqual(payload["error"], "شروع ربات انجام نشد")
+                self.assertEqual(status, 503)
+                self.assertEqual(payload["error"], "Cannot start registration safely; check the local runner or update guard")
                 profile = panel.load_store()["profiles"][0]
                 self.assertEqual(profile["run_status"], "idle")
                 self.assertEqual(profile["runner_pid"], 0)

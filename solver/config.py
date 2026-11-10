@@ -32,7 +32,8 @@ DATA_DIR = ROOT / "data"
 IMAGES_DIR = DATA_DIR / "images"          # synthetic training images
 LABELS_CSV = DATA_DIR / "labels.csv"      # columns: filename,text
 CKPT_DIR = ROOT / "checkpoints"
-CKPT_DIR.mkdir(exist_ok=True, parents=True)
+if not CKPT_DIR.is_dir():
+    CKPT_DIR.mkdir(exist_ok=True, parents=True)
 
 # Real captcha images collected by the scraper (for fine-tune + eval).
 REAL_DIR = ROOT.parent / "captchas_irica"

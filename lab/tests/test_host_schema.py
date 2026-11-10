@@ -1,8 +1,8 @@
 """Host schema contract (workstream F) — the drift test for the MySQL side.
 
-Proves that host/migrations/001_initial.sql, host/src/Schema.php and the
-grants on the local verification database all say the same thing, so the PHP
-API and the SQL cannot silently diverge (spec §13.1, §12).
+Proves that the ordered host migrations, the tables mapped by host/src/Schema.php
+and the local verification grants agree, without conflating the initial baseline
+with later operational tables (spec §13.1, §12).
 
 What it covers
   * Schema.php vs information_schema.columns, exactly: no extra column, no
@@ -91,7 +91,16 @@ CRITICAL_FKS = (
 )
 
 EXPECTED_TABLES = 20
-EXPECTED_COLUMNS = 270
+EXPECTED_COLUMNS = 273
+INITIAL_TABLES = 18
+INITIAL_COLUMNS = 237
+SUPPORT_TABLES = {
+    "record_presence", "legacy_import_jobs", "legacy_import_records",
+    "legacy_import_decisions", "legacy_import_verifications", "account_workspaces",
+    "login_names", "platform_operator_state", "platform_operators",
+    "operator_sessions", "account_provisions",
+}
+INTERNAL_FKS = {("sync_devices", "owner_user_id", "users", "id")}
 
 _scratch = []          # temp directories to remove at the end
 _passwords = set()     # secrets that must never appear in any assertion text
@@ -455,16 +464,19 @@ def _create_database(name):
              " COLLATE utf8mb4_unicode_ci;" % name, database=None)
 
 
-def _apply_migration(database, fresh=False):
-    """Apply 001_initial.sql to `database`; drop+recreate it when `fresh`.
-
-    Returns (stdout, stderr, returncode) of the CLI apply. The SQL is fed on
-    stdin, never as an argument.
-    """
+def _apply_migration(database, fresh=False, current=False):
+    """Apply the initial baseline or the full ordered migration chain."""
     if fresh:
         _create_database(database)
-    with open(SCHEMA_SQL, encoding="utf-8") as handle:
-        sql = handle.read()
+    files = [SCHEMA_SQL]
+    if current:
+        files = [os.path.join(MIGRATIONS, name)
+                 for name in sorted(os.listdir(MIGRATIONS)) if name.endswith(".sql")]
+    statements = []
+    for path in files:
+        with open(path, encoding="utf-8") as handle:
+            statements.append(handle.read())
+    sql = "\n".join(statements)
     command = [
         _mariadb_bin(), "-h", DB_HOST, "-P", str(_port()), "-u", "root",
         "--protocol=TCP", "--ssl=FALSE", "--default-character-set=utf8mb4",
@@ -481,12 +493,7 @@ def _apply_migration(database, fresh=False):
 
 
 def _ensure_schema():
-    """Make sure `irica_test` carries the current 001_initial.sql.
-
-    The database is a disposable verification sandbox, so a database whose
-    column count no longer matches Schema.php is rebuilt from the migration
-    rather than left to fail the drift test with a stale-by-one-column error.
-    """
+    """Keep the disposable database aligned with the current migration chain."""
     if _ensured["done"]:
         return
     if not _database_exists(DB_NAME):
@@ -497,20 +504,21 @@ def _ensure_schema():
         " WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = 'customers';" % DB_NAME)
     stale = False
     if present == "1":
-        declared = sum(len(columns)
-                       for columns in _schema_dump()["columns"].values())
+        columns = _schema_dump()["columns"]
+        declared = sum(len(values) for values in columns.values()) + len(INTERNAL_FKS)
+        tables = ",".join("'%s'" % table for table in sorted(columns))
         actual = int(_sql_value(
             "SELECT COUNT(*) FROM information_schema.COLUMNS"
-            " WHERE TABLE_SCHEMA = '%s';" % DB_NAME))
+            " WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME IN (%s);" % (DB_NAME, tables)))
         stale = declared != actual
     else:
         stale = True
     if stale:
         _create_database(DB_NAME)
-        _stdout, stderr, code = _apply_migration(DB_NAME)
+        _stdout, stderr, code = _apply_migration(DB_NAME, current=True)
         if code != 0:
             raise AssertionError(
-                "001_initial.sql does not apply to %s: %s" % (DB_NAME, stderr))
+                "Current migrations do not apply to %s: %s" % (DB_NAME, stderr))
     _ensured["done"] = True
 
 
@@ -550,10 +558,15 @@ class HostSchemaTest(unittest.TestCase):
         for row in _column_fingerprint(DB_NAME):
             actual.setdefault(row["t"], {})[row["c"]] = row
 
-        self.assertEqual(sorted(declared), sorted(actual),
-                         "table list differs between Schema.php and the "
-                         "database")
+        self.assertEqual(len(declared), EXPECTED_TABLES)
+        self.assertEqual(sum(len(columns) for columns in declared.values()), EXPECTED_COLUMNS)
+        self.assertEqual(set(actual), set(declared) | SUPPORT_TABLES,
+                         "unexpected declared or operational table inventory")
+        for table, column, _target, _key in INTERNAL_FKS:
+            self.assertEqual(actual[table][column]["sql"], "char(36)")
+            self.assertEqual(actual[table][column]["null"], "YES")
 
+        internal_columns = {(table, column) for table, column, _target, _key in INTERNAL_FKS}
         problems = []
         for table in sorted(declared):
             for column, spec in declared[table].items():
@@ -582,7 +595,7 @@ class HostSchemaTest(unittest.TestCase):
                         "%s.%s: Schema.php declares no default, database has %r"
                         % (table, column, found_default))
             for column in actual[table]:
-                if column not in declared[table]:
+                if column not in declared[table] and (table, column) not in internal_columns:
                     problems.append("%s.%s: present in the database, missing "
                                     "from Schema.php" % (table, column))
 
@@ -682,14 +695,16 @@ class HostSchemaTest(unittest.TestCase):
             % DB_NAME)
         actual = {(r["t"], r["c"], r["rt"], r["rc"]) for r in rows}
 
+        declared_actual = {ref for ref in actual
+                           if ref[0] in declared_payload["tables"] and ref not in INTERNAL_FKS}
         self.assertEqual(
-            declared - actual, set(),
+            declared - declared_actual, set(),
             "Schema.php declares foreign keys the database does not have")
         self.assertEqual(
-            actual - declared, set(),
-            "the database has foreign keys Schema.php does not declare")
+            declared_actual - declared, set(),
+            "the database has undeclared foreign keys on mapped columns")
 
-        for expected in CRITICAL_FKS:
+        for expected in CRITICAL_FKS + tuple(INTERNAL_FKS):
             self.assertIn(expected, actual,
                           "critical foreign key missing: %s" % (expected,))
 
@@ -705,13 +720,15 @@ class HostSchemaTest(unittest.TestCase):
                 (table, "tenant_id", "tenants", "id"), actual,
                 "%s.tenant_id has no foreign key to tenants.id" % table)
 
-        # Every declared FK target must exist in the schema.
+        database_columns = {}
+        for row in _column_fingerprint(DB_NAME):
+            database_columns.setdefault(row["t"], set()).add(row["c"])
         for table, column, ref_table, ref_column in declared:
-            self.assertIn(ref_table, declared_payload["tables"],
+            self.assertIn(ref_table, database_columns,
                           "%s.%s references unknown table %s"
                           % (table, column, ref_table))
             self.assertIn(ref_column,
-                          declared_payload["columns"][ref_table],
+                          database_columns[ref_table],
                           "%s.%s references unknown column %s.%s"
                           % (table, column, ref_table, ref_column))
 
@@ -729,7 +746,7 @@ class HostSchemaTest(unittest.TestCase):
         bad = [r for r in engines
                if r["e"] != "InnoDB" or not str(r["c"]).startswith("utf8mb4")]
         self.assertEqual(bad, [], "tables not on utf8mb4/InnoDB: %s" % bad)
-        self.assertEqual(len(engines), EXPECTED_TABLES,
+        self.assertEqual(len(engines), EXPECTED_TABLES + len(SUPPORT_TABLES),
                          "unexpected table count")
 
         cursor = _sql_json(
@@ -952,7 +969,7 @@ class HostSchemaTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM information_schema.TABLES"
                 " WHERE TABLE_SCHEMA = 'irica_test_mig_a' AND TABLE_TYPE"
                 " = 'BASE TABLE';"),
-            str(EXPECTED_TABLES), "unexpected table count after apply")
+            str(INITIAL_TABLES), "unexpected initial table count after apply")
 
         _stdout, stderr, code = _apply_migration("irica_test_mig_a")
         self.assertNotEqual(code, 0,
@@ -979,9 +996,9 @@ class HostSchemaTest(unittest.TestCase):
             left, right,
             "001_initial.sql produced different structures on two fresh "
             "databases")
-        self.assertEqual(len(left["tables"]), EXPECTED_TABLES)
-        self.assertEqual(len(left["columns"]), EXPECTED_COLUMNS)
-        self.assertGreater(len(left["indexes"]), EXPECTED_TABLES)
+        self.assertEqual(len(left["tables"]), INITIAL_TABLES)
+        self.assertEqual(len(left["columns"]), INITIAL_COLUMNS)
+        self.assertGreater(len(left["indexes"]), INITIAL_TABLES)
         self.assertGreater(len(left["foreign_keys"]), 30)
 
     # -- Database.php -------------------------------------------------------

@@ -107,6 +107,15 @@ class VersionAndUrlTests(unittest.TestCase):
             "https://storage.googleapis.com/chrome-for-testing-public/"
             "153.0.8010.52/win32/chromedriver-win32.zip")
 
+    def test_version_and_download_url_require_ascii_digits(self):
+        for base in (0x0660, 0x06F0, 0xFF10):
+            translated = "154.0.8037.92".translate(
+                str.maketrans("0123456789", "".join(chr(base + i) for i in range(10))))
+            with self.subTest(base=base):
+                self.assertIsNone(upd._version_key(translated))
+                with self.assertRaises(ValueError):
+                    upd.cft_zip_url(translated)
+
     def test_cft_zip_url_rejects_empty_version(self):
         with self.assertRaises(ValueError):
             upd.cft_zip_url("")
@@ -252,6 +261,37 @@ class ProxyMandatoryTests(unittest.TestCase):
         self.assertEqual(upd.proxy_url(), "http://127.0.0.1:18081")
         self.assertEqual(upd.proxy_url(port=9090), "http://127.0.0.1:9090")
 
+    def test_explicit_direct_pins_transport_and_ignores_ambient_credentials(self):
+        ambient = {
+            "HTTP_PROXY": "http://unrelated-proxy.invalid:8080",
+            "HTTPS_PROXY": "http://unrelated-proxy.invalid:8080",
+            "ALL_PROXY": "socks5://unrelated-proxy.invalid:1080",
+            "NO_PROXY": "", "no_proxy": "",
+            "REQUESTS_CA_BUNDLE": "unrelated-ca.pem",
+            "CURL_CA_BUNDLE": "unrelated-ca.pem",
+            "NETRC": "unrelated-credentials.netrc",
+        }
+        for proxy in (None, "", "   "):
+            with self.subTest(proxy=proxy), patch.dict(os.environ, ambient), \
+                    patch("requests.Session") as session_cls:
+                session = session_cls.return_value
+                session.get.return_value = _FakeResponse(b"DIRECT")
+                body = upd.http_get_bytes(
+                    "https://x.test/payload", proxy=proxy, allow_direct=True,
+                    timeout=5, auth=("unrelated", "credential"),
+                    cert="unrelated-client.pem", params={"unexpected": "value"},
+                    verify=False)
+                self.assertEqual(body, b"DIRECT")
+                self.assertIs(session.trust_env, False)
+                session_cls.assert_called_once_with()
+                session.get.assert_called_once_with(
+                    "https://x.test/payload", proxies={}, verify=True,
+                    timeout=5, stream=True)
+                kwargs = session.get.call_args.kwargs
+                for forbidden in ("auth", "cert", "params"):
+                    self.assertNotIn(forbidden, kwargs)
+                session.close.assert_called_once_with()
+
     def test_the_fetch_pins_the_proxy_and_ignores_the_environment(self):
         """The proxy is the only route that can work from this host (a direct
         request gets 403 from CfT), so the call must name it explicitly and
@@ -274,6 +314,7 @@ class ProxyMandatoryTests(unittest.TestCase):
                          {"http": "http://127.0.0.1:18081",
                           "https": "http://127.0.0.1:18081"})
         self.assertTrue(kwargs["stream"])
+        self.assertIs(kwargs["verify"], True)
 
 
 # --------------------------------------------------------------------------
@@ -320,6 +361,17 @@ class _FakeConnectProxy:
 
 
 class ProxyProbeTests(unittest.TestCase):
+    def _closed_probe(self, port):
+        # A closed fixture's port might be reused by a real local forwarder.
+        # The isolated runner simulates exactly one refusal, recording the
+        # fixture provenance; it never opens a connection to that closed port.
+        import sys
+        from contextlib import nullcontext
+        runner = sys.modules.get("run_isolated_tests")
+        if runner is not None and runner._POLICY is not None:
+            return runner._POLICY.expect_closed_fixture_probe(("127.0.0.1", port))
+        return nullcontext()
+
     def test_listening_port_is_detected(self):
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
@@ -336,7 +388,8 @@ class ProxyProbeTests(unittest.TestCase):
         srv.bind(("127.0.0.1", 0))
         port = srv.getsockname()[1]
         srv.close()
-        self.assertFalse(upd.is_port_listening("127.0.0.1", port, timeout=0.5))
+        with self._closed_probe(port):
+            self.assertFalse(upd.is_port_listening("127.0.0.1", port, timeout=0.5))
 
     def test_ready_needs_a_tunnel_not_just_an_open_port(self):
         proxy = _FakeConnectProxy(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -361,7 +414,8 @@ class ProxyProbeTests(unittest.TestCase):
         srv.bind(("127.0.0.1", 0))
         port = srv.getsockname()[1]
         srv.close()
-        self.assertFalse(upd.proxy_ready("127.0.0.1", port, timeout=0.5))
+        with self._closed_probe(port):
+            self.assertFalse(upd.proxy_ready("127.0.0.1", port, timeout=0.5))
 
 
 # --------------------------------------------------------------------------
@@ -679,7 +733,7 @@ class OrchestrationTests(unittest.TestCase):
                 raise AssertionError("must not touch the network")
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154,
+                target_exe=target, consent=True, expected_major=154,
                 fetcher=boom, probe=lambda *a: True, env={"IRICA_NO_DRIVER_UPDATE": "1"})
             self.assertEqual(res["status"], "disabled")
             with open(target, "rb") as f:
@@ -724,7 +778,7 @@ class OrchestrationTests(unittest.TestCase):
                     return 154 if stream.read() == b"NEW" else 153
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154,
+                target_exe=target, consent=True, expected_major=154,
                 read_major=read_major,
                 read_version=lambda path: "154.0.8037.92",
                 fetcher=rec, probe=lambda *a: True, env={})
@@ -754,8 +808,9 @@ class OrchestrationTests(unittest.TestCase):
                 f.write(b"OLD")
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154,
+                target_exe=target, consent=True, expected_major=154,
                 read_major=lambda p: 153,
+                read_version=lambda p: "153.0.8010.52",
                 fetcher=FetchRecorder(fail_times=99), probe=lambda *a: True,
                 backoff=0, env={})
             self.assertEqual(res["status"], "failed")
@@ -770,8 +825,9 @@ class OrchestrationTests(unittest.TestCase):
                 f.write(b"OLD")
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154,
+                target_exe=target, consent=True, expected_major=154,
                 read_major=lambda p: 153,
+                read_version=lambda p: "153.0.8010.52",
                 fetcher=FetchRecorder(), probe=lambda *a: False,
                 spawn_proxy=lambda *a, **k: False, env={})
             self.assertEqual(res["status"], "failed")
@@ -795,8 +851,9 @@ class OrchestrationTests(unittest.TestCase):
             })
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=153,
-                read_major=lambda p: 152, fetcher=rec,
+                target_exe=target, consent=True, expected_major=153,
+                read_major=lambda p: 152,
+                read_version=lambda p: "152.0.7977.75", fetcher=rec,
                 probe=lambda *a: True, env={})
             self.assertEqual(res["status"], "failed", res)
             self.assertIn("153", res["detail"])
@@ -821,7 +878,7 @@ class OrchestrationTests(unittest.TestCase):
                     return 154 if stream.read() == b"NEW" else 153
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154, read_major=read_major,
+                target_exe=target, consent=True, expected_major=154, read_major=read_major,
                 read_version=lambda path: "154.0.8037.92",
                 fetcher=rec, probe=lambda *a: True, env={})
             self.assertEqual(res["status"], "updated", res)
@@ -847,7 +904,7 @@ class OrchestrationTests(unittest.TestCase):
                               side_effect=PermissionError(
                                   "the process cannot access the file")):
                 res = upd.update_chromedriver(
-                    target_exe=target, expected_major=154,
+                    target_exe=target, consent=True, expected_major=154,
                     read_major=lambda p: 153,
                     read_version=lambda p: "153.0.8010.52",
                     fetcher=rec, probe=lambda *a: True, env={})
@@ -903,8 +960,9 @@ class OrchestrationTests(unittest.TestCase):
                 return json.dumps(LAST_KNOWN_GOOD).encode()
 
             res = upd.update_chromedriver(
-                target_exe=target, expected_major=154,
-                read_major=lambda p: 153, fetcher=fetch,
+                target_exe=target, consent=True, expected_major=154,
+                read_major=lambda p: 153,
+                read_version=lambda p: "153.0.8010.52", fetcher=fetch,
                 probe=lambda *a: True, env={}, backoff=0)
             self.assertEqual(res["status"], "failed", res)
             self.assertIn("could not download", res["detail"])
@@ -924,8 +982,9 @@ class OrchestrationTests(unittest.TestCase):
             with patch.object(upd, "install_from_zip",
                               side_effect=OSError("no space left on device")):
                 res = upd.update_chromedriver(
-                    target_exe=target, expected_major=154,
-                    read_major=lambda p: 153, fetcher=rec,
+                    target_exe=target, consent=True, expected_major=154,
+                    read_major=lambda p: 153,
+                    read_version=lambda p: "153.0.8010.52", fetcher=rec,
                     probe=lambda *a: True, env={})
             self.assertEqual(res["status"], "failed", res)
             self.assertIn("no space", res["detail"])
@@ -947,8 +1006,9 @@ class OrchestrationTests(unittest.TestCase):
             with patch.object(upd.time, "monotonic",
                               side_effect=lambda: clock["now"]):
                 res = upd.update_chromedriver(
-                    target_exe=target, expected_major=154,
-                    read_major=lambda p: 153, fetcher=fetch,
+                    target_exe=target, consent=True, expected_major=154,
+                    read_major=lambda p: 153,
+                    read_version=lambda p: "153.0.8010.52", fetcher=fetch,
                     probe=lambda *a: True, env={}, total=90.0, backoff=0)
             self.assertEqual(res["status"], "failed", res)
             # two 60s requests fit the 90s budget; the loop stops there rather
@@ -986,7 +1046,7 @@ class OrchestrationTests(unittest.TestCase):
             with patch.object(upd.time, "monotonic",
                               side_effect=lambda: clock["now"]):
                 res = upd.update_chromedriver(
-                    target_exe=target, expected_major=154,
+                    target_exe=target, consent=True, expected_major=154,
                     read_major=read_major,
                     read_version=lambda p: "154.0.8037.92",
                     fetcher=fetch, probe=lambda *a: True, env={}, total=90.0)
@@ -997,6 +1057,195 @@ class OrchestrationTests(unittest.TestCase):
             for allowance in downloads:
                 self.assertLessEqual(allowance, 90.0)
                 self.assertLess(allowance, upd.DOWNLOAD_TIMEOUT)
+
+
+class ExactPatchUpdateTests(unittest.TestCase):
+    current_version = "154.0.8037.50"
+    latest_version = "154.0.8037.92"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target = os.path.join(self.tmp.name, "chromedriver.exe")
+        with open(self.target, "wb") as handle:
+            handle.write(self.current_version.encode("ascii"))
+
+    def read_version(self, path):
+        with open(path, "rb") as handle:
+            body = handle.read()
+        return self.latest_version if body == b"NEW" else body.decode("ascii")
+
+    def read_major(self, path):
+        return upd.major_of(self.read_version(path))
+
+    def update(self, *, catalogue_version=None, **options):
+        payload = {"channels": {"Stable": {"version": (
+            catalogue_version or self.latest_version)}}}
+        rec = FetchRecorder(mapping={
+            upd.CFT_LAST_KNOWN_GOOD_URL: json.dumps(payload).encode(),
+            "chromedriver-win64.zip": _zip_bytes(),
+        })
+        result = upd.update_chromedriver(
+            self.target, 154, read_major=self.read_major, read_version=self.read_version,
+            fetcher=rec, probe=lambda *a: True, env={}, backoff=0, **options)
+        return result, rec
+
+    def assert_original_preserved(self):
+        with open(self.target, "rb") as handle:
+            self.assertEqual(handle.read(), self.current_version.encode("ascii"))
+        self.assertFalse(os.path.exists(self.target + ".bak"))
+
+    def test_confirmed_same_major_patch_is_installed(self):
+        result, rec = self.update(consent=True)
+        self.assertEqual(result["status"], "updated", result)
+        self.assertEqual(result["version"], self.latest_version)
+        self.assertEqual(len(rec.calls), 2)
+        with open(self.target, "rb") as handle:
+            self.assertEqual(handle.read(), b"NEW")
+        with open(self.target + ".bak", "rb") as handle:
+            self.assertEqual(handle.read(), self.current_version.encode("ascii"))
+
+    def test_compatible_read_only_default_never_fetches_a_patch(self):
+        result, rec = self.update()
+        self.assertEqual(result["status"], "up-to-date")
+        self.assertEqual(rec.calls, [])
+        self.assert_original_preserved()
+
+    def test_unconfirmed_exact_patch_requires_consent_without_network(self):
+        result, rec = self.update(desired_version=self.latest_version)
+        self.assertEqual(result["status"], "consent-required")
+        self.assertEqual(rec.calls, [])
+        self.assert_original_preserved()
+
+    def test_confirmed_exact_version_skips_catalogue_and_verifies_payload(self):
+        result, rec = self.update(consent=True, desired_version=self.latest_version)
+        self.assertEqual(result["status"], "updated", result)
+        self.assertEqual([call["url"] for call in rec.calls],
+                         [upd.cft_zip_url(self.latest_version)])
+
+    def test_already_installed_exact_version_never_downloads(self):
+        result, rec = self.update(consent=True, desired_version=self.current_version)
+        self.assertEqual(result["status"], "up-to-date")
+        self.assertEqual(result["version"], self.current_version)
+        self.assertEqual(rec.calls, [])
+        self.assert_original_preserved()
+
+    def test_catalogue_equal_version_is_not_reinstalled(self):
+        result, rec = self.update(consent=True, catalogue_version=self.current_version)
+        self.assertEqual(result["status"], "up-to-date", result)
+        self.assertEqual(len(rec.calls), 1)
+        self.assert_original_preserved()
+
+    def test_wrong_major_and_malformed_desired_versions_are_rejected(self):
+        for desired in ("153.0.8037.92", "154", "154.0.8037.92/../../evil", "", 154):
+            with self.subTest(desired=desired):
+                result, rec = self.update(consent=True, desired_version=desired)
+                self.assertEqual(result["status"], "failed", result)
+                self.assertEqual(rec.calls, [])
+                self.assert_original_preserved()
+
+    def test_non_ascii_desired_versions_are_rejected_before_download(self):
+        for base in (0x0660, 0x06F0, 0xFF10):
+            desired = self.latest_version.translate(
+                str.maketrans("0123456789", "".join(chr(base + i) for i in range(10))))
+            with self.subTest(base=base):
+                result, rec = self.update(consent=True, desired_version=desired)
+                self.assertEqual(result["status"], "failed", result)
+                self.assertEqual(rec.calls, [])
+                self.assert_original_preserved()
+
+    def test_exact_and_catalogue_downgrades_are_rejected(self):
+        older = "154.0.8037.49"
+        for options in ({"desired_version": older}, {"catalogue_version": older}):
+            with self.subTest(options=options):
+                result, rec = self.update(consent=True, **options)
+                self.assertEqual(result["status"], "failed", result)
+                self.assertIn("downgrade", result["detail"].lower())
+                self.assertFalse([c for c in rec.calls if c["url"].endswith(".zip")])
+                self.assert_original_preserved()
+
+    def test_newer_major_local_driver_cannot_be_downgraded(self):
+        self.current_version = "155.0.9000.1"
+        with open(self.target, "wb") as handle:
+            handle.write(self.current_version.encode("ascii"))
+        result, rec = self.update(consent=True)
+        self.assertEqual(result["status"], "failed", result)
+        self.assertIn("downgrade", result["detail"].lower())
+        self.assertEqual(rec.calls, [])
+        self.assert_original_preserved()
+
+    def test_catalogue_failure_preserves_a_compatible_driver(self):
+        rec = FetchRecorder(fail_times=99)
+        result = upd.update_chromedriver(
+            self.target, 154, consent=True, read_major=self.read_major,
+            read_version=self.read_version, fetcher=rec, probe=lambda *a: True,
+            env={}, backoff=0, attempts=2)
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(len(rec.calls), 2)
+        self.assertIn("resolve", result["detail"])
+        self.assert_original_preserved()
+
+    def test_wrong_exact_payload_preserves_the_original(self):
+        result = upd.update_chromedriver(
+            self.target, 154, consent=True, desired_version=self.latest_version,
+            read_major=lambda p: 154, read_version=lambda p: self.current_version,
+            fetcher=FetchRecorder(mapping={"chromedriver-win64.zip": _zip_bytes()}),
+            probe=lambda *a: True, env={})
+        self.assertEqual(result["status"], "failed", result)
+        self.assertIn("expected", result["detail"])
+        self.assert_original_preserved()
+
+    def test_failed_post_install_check_restores_the_original(self):
+        def read_major(path):
+            if path == self.target and self.read_version(path) == self.latest_version:
+                return None
+            return self.read_major(path)
+
+        result = upd.update_chromedriver(
+            self.target, 154, consent=True, desired_version=self.latest_version,
+            read_major=read_major, read_version=self.read_version,
+            fetcher=FetchRecorder(mapping={"chromedriver-win64.zip": _zip_bytes()}),
+            probe=lambda *a: True, env={})
+        self.assertEqual(result["status"], "failed", result)
+        with open(self.target, "rb") as handle:
+            self.assertEqual(handle.read(), self.current_version.encode("ascii"))
+        self.assertIn("restored", result["detail"].lower())
+
+    def test_failed_post_install_check_removes_a_new_driver_without_an_original(self):
+        os.remove(self.target)
+
+        def read_major(path):
+            return None if path == self.target else self.read_major(path)
+
+        result = upd.update_chromedriver(
+            self.target, 154, consent=True, desired_version=self.latest_version,
+            read_major=read_major, read_version=self.read_version,
+            fetcher=FetchRecorder(mapping={"chromedriver-win64.zip": _zip_bytes()}),
+            probe=lambda *a: True, env={})
+        self.assertEqual(result["status"], "failed", result)
+        self.assertFalse(os.path.exists(self.target))
+
+    def test_confirmed_missing_driver_installation_succeeds(self):
+        os.remove(self.target)
+        result, rec = self.update(consent=True, desired_version=self.latest_version)
+        self.assertEqual(result["status"], "updated", result)
+        self.assertEqual(len(rec.calls), 1)
+        self.assertFalse(os.path.exists(self.target + ".bak"))
+        with open(self.target, "rb") as handle:
+            self.assertEqual(handle.read(), b"NEW")
+
+    def test_secondary_same_major_patch_is_refreshed_without_downgrade(self):
+        older = os.path.join(self.tmp.name, "older.exe")
+        newer = os.path.join(self.tmp.name, "newer.exe")
+        for path, version in ((older, "154.0.8037.48"), (newer, "154.0.8037.99")):
+            with open(path, "wb") as handle:
+                handle.write(version.encode("ascii"))
+        result, _ = self.update(consent=True, extra_targets=(older, newer))
+        self.assertEqual(result["status"], "updated", result)
+        with open(older, "rb") as handle:
+            self.assertEqual(handle.read(), b"NEW")
+        with open(newer, "rb") as handle:
+            self.assertEqual(handle.read(), b"154.0.8037.99")
 
 
 if __name__ == "__main__":

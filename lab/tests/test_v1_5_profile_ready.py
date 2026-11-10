@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
-"""v1.5 item 11 — registration profile exists from passenger-connect time.
+"""Registration profiles are linked at passenger attachment and healed at start.
 
-The registration profile is created/linked at ATTACH time (primary layer,
-hooked into /crm-tick attach_owner) with the existing handover/auto-advance
-ensure as the backstop. Profile records and the site-1 form gain an
-OPTIONAL passport (never required, never blocking; fill-once from the
-attached owner, never overwritten). /crm-start-payment self-heals skip-
-shaped cases and answers the genuinely-impossible no-owner shape with an
-actionable Persian error naming the recovery (no stray profile minted).
+CRM identity is authoritative for linked unpaid profiles, including the actual
+passport. Manual unlinked profiles retain optional passport storage, while a
+linked registration attempt must reject incomplete canonical identity before
+spawning. Financial history must remain unchanged by failed preparation.
 """
 import json
 import os
@@ -85,8 +82,17 @@ class ProfileReadyHttpHarness(unittest.TestCase):
         self.httpd = panel.ThreadingHTTPServer(("127.0.0.1", 0),
                                                panel.Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.addCleanup(self.httpd.server_close)
+        self.server_thread = threading.Thread(
+            target=self.httpd.serve_forever, daemon=True)
+        self.server_thread.start()
+        self.addCleanup(self._stop_server)
+
+    def _stop_server(self):
+        # Stop the accept loop before closing its socket on Windows.
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.server_thread.join(timeout=5)
+        self.assertFalse(self.server_thread.is_alive())
 
     # -- helpers ---------------------------------------------------------
     def _post(self, path, payload):
@@ -183,7 +189,7 @@ class TestAttachCreatesProfile(ProfileReadyHttpHarness):
         existing = {"id": "p-manual", "title": "old manual entry",
                     "national": OWNER_FIELDS["national"],
                     "birth": "1375/04/29", "mobile": "09121234567",
-                    "imeis": [SERIAL1], "enabled": True}
+                    "imeis": [SERIAL1, SERIAL2], "enabled": True}
         with open(self.profiles, "w", encoding="utf-8") as handle:
             json.dump({"active_id": "", "profiles": [existing]}, handle)
         device, owner = self._device_with_owner_at_ready()
@@ -199,11 +205,11 @@ class TestAttachCreatesProfile(ProfileReadyHttpHarness):
                       if d["id"] == device["id"])
         self.assertEqual(stored["profile_id"], "p-manual")
 
-    def test_attach_never_overwrites_existing_passport(self):
+    def test_attach_reconciles_existing_passport_from_authoritative_crm_owner(self):
         existing = {"id": "p-manual", "title": "old manual entry",
                     "national": OWNER_FIELDS["national"],
                     "birth": "1375/04/29", "mobile": "09121234567",
-                    "imeis": [SERIAL1], "passport": "ZZ9999999",
+                    "imeis": [SERIAL1, SERIAL2], "passport": "ZZ9999999",
                     "enabled": True}
         with open(self.profiles, "w", encoding="utf-8") as handle:
             json.dump({"active_id": "", "profiles": [existing]}, handle)
@@ -213,7 +219,9 @@ class TestAttachCreatesProfile(ProfileReadyHttpHarness):
             "owner_id": owner["id"]})
         self.assertEqual(status, 200, body)
         profiles = self._read_profiles()
-        self.assertEqual(profiles[0]["passport"], "ZZ9999999")  # untouched
+        self.assertEqual(profiles[0]["passport"], OWNER_FIELDS["passport"])
+        self.assertEqual(profiles[0]["id"], "p-manual")
+        self.assertEqual(profiles[0]["crm_device_id"], device["id"])
         self.assertEqual(len(profiles), 1)
 
 
@@ -249,8 +257,31 @@ class TestStartPaymentSelfHeal(ProfileReadyHttpHarness):
         self.assertEqual(status, 400, body)
         errors = body.get("errors") or []
         self.assertTrue(errors, body)
-        self.assertIn("اتصال مسافر", errors[0])
-        self.assertEqual(self._read_profiles(), [])   # nothing minted
+        self.assertIn("attach", errors[0].lower())
+        self.assertIn("passenger", errors[0].lower())
+        self.assertEqual(self._read_profiles(), [])
+
+    def test_linked_draft_without_actual_passport_cannot_start_registration(self):
+        device = self._add_device()
+        owner = self._add_owner(passport="")
+        self._patch_device(device["id"], stage="ready_owner")
+        status, body = self._post("/crm-tick", {
+            "device_id": device["id"], "action": "attach_owner", "owner_id": owner["id"]})
+        self.assertEqual(status, 200, body)
+        stored = next(d for d in crm.store_read()["devices"] if d["id"] == device["id"])
+        self.assertEqual(stored["owner_id"], owner["id"])
+        self._patch_device(device["id"], stage="to_payment")
+        before = crm.store_read()
+        with patch.object(panel, "start_profile_process") as spawn:
+            status, body = self._post("/crm-start-payment", {"device_id": device["id"]})
+        self.assertEqual(status, 422, body)
+        self.assertIn("passport", str(body).lower())
+        spawn.assert_not_called()
+        after = crm.store_read()
+        stored = next(d for d in after["devices"] if d["id"] == device["id"])
+        self.assertEqual(stored["stage"], "to_payment")
+        self.assertFalse(stored.get("payment_confirmed_at"))
+        self.assertEqual(after["customers"], before["customers"])
 
 
 class TestAttachEnsureFailureHandling(ProfileReadyHttpHarness):
@@ -353,13 +384,13 @@ class TestSavePassportValidation(ProfileReadyHttpHarness):
         self.assertEqual(status, 200, body)
         self.assertEqual(self._read_profiles()[0]["passport"], "")
 
-    def test_malformed_passports_rejected_400_persian(self):
-        for bad in ("ab1!", "abc", "way-too-long-passport-number-1234"):
+    def test_malformed_passports_rejected_400_with_english_diagnostic(self):
+        for bad in ("ab1!", "A B", "way-too-long-passport-number-1234", "K1"):
             status, body = self._post(
                 "/save", self._new_profile_payload(passport=bad))
             self.assertEqual(status, 400, (bad, body))
-            self.assertIn("گذرنامه", str(body.get("error")))
-            self.assertEqual(self._read_profiles(), [])  # nothing stored
+            self.assertIn("passport", str(body.get("error")).lower())
+            self.assertEqual(self._read_profiles(), [])
 
 
 class TestProfileReadySourceMarkers(unittest.TestCase):
@@ -384,12 +415,13 @@ class TestProfileReadySourceMarkers(unittest.TestCase):
         self.assertIn("profile_notice", chunk)
         self.assertIn("crm_ensure_registration_profile", chunk)
 
-    def test_start_payment_contains_self_heal_call(self):
+    def test_start_payment_delegates_to_the_runtime_tested_self_heal_entrypoint(self):
+        # TestStartPaymentSelfHeal exercises real profile creation and payment
+        # state; this structural assertion only pins the HTTP delegation.
         src = panel_source()
         start = src.index("def _crm_start_payment")
         chunk = src[start:src.index("\n    def ", start + 10)]
-        self.assertIn("crm_ensure_registration_profile(device_id)", chunk)
-        self.assertIn("اتصال مسافر", chunk)        # actionable recovery
+        self.assertIn("start_crm_payment(device_id", chunk)
 
     def test_build_form_has_passport_input(self):
         body = fn_body_js(panel.PAGE_JS, "buildForm")
@@ -412,13 +444,6 @@ class TestProfileReadySourceMarkers(unittest.TestCase):
         self.assertIn("if(r.profile_notice)", body)
         # v1.3.1: the notice is named with the passenger (toastCtx)
         self.assertIn("toastCtx(oname,r.profile_notice,false)", body)
-
-    def test_start_profile_missing_list_untouched(self):
-        """Robot side out of scope: passport must not gate the robot start."""
-        src = panel_source()
-        start = src.index("def start_profile(")
-        chunk = src[start:src.index("\ndef ", start + 10)]
-        self.assertNotIn("passport", chunk)
 
 
 if __name__ == "__main__":

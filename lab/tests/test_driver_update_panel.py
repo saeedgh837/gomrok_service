@@ -1,10 +1,8 @@
-"""The launch page's driver-update button and its /driver-update route.
+"""Review-only launch navigation and authenticated consent-bound driver routes.
 
-The button is the manual repair for a Chrome update that left the bundled
-ChromeDriver a major behind: the operator asks explicitly, so the request must
-reach captcha_collector's manual entry point (which ignores the automatic
-attempt's latch and cooldown) and the verdict must come back to the page. Runs
-the real handler over HTTP with isolated stores; the updater itself is stubbed.
+Both executable route names require a live session, CSRF and an exact current
+opaque offer with boolean consent. The real HTTP/body/auth path is exercised
+with synthetic stores; only the maintenance service boundary is stubbed.
 """
 import json
 import os
@@ -28,7 +26,6 @@ if not os.environ.get("IRICA_DATA_DIR"):
         "lab/scripts/run_panel_tests.py, which points IRICA_DATA_DIR at a "
         "throwaway directory")
 
-import captcha_collector
 import panel
 
 
@@ -118,97 +115,129 @@ class DriverUpdateHarness(unittest.TestCase):
     def _post(self, path, payload=b"{}"):
         request = urllib.request.Request(self._url(path), data=payload,
                                          method="POST")
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return response.status, json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, json.loads(error.read().decode("utf-8"))
 
 
 class LaunchPageButtonTests(DriverUpdateHarness):
-    def test_the_page_offers_the_button_and_a_place_for_the_verdict(self):
+    def test_the_page_offers_browser_update_review_without_installing(self):
         html = self._page("/launch")
         self.assertIn('id="btn-driver"', html)
-        self.assertIn("به‌روزرسانی درایور مرورگر", html)
-        self.assertIn('id="drv-note"', html)
-        self.assertIn("/driver-update", html)
+        self.assertIn("بررسی به‌روزرسانی‌ها", html)
+        button = re.search(r'<button\b[^>]*id="btn-driver"[^>]*>', html)
+        self.assertIn('lang="fa"', button.group(0))
+        self.assertIn('dir="rtl"', button.group(0))
+        self.assertNotIn("/driver-update", html)
+        self.assertNotIn("/api/update-chromedriver", html)
 
     def test_the_button_sits_before_the_system_close_button(self):
         html = self._page("/launch")
         self.assertLess(html.index('id="btn-driver"'), html.index('id="btn-stop"'))
 
-    def test_the_page_can_render_every_verdict(self):
+    def test_the_review_button_navigates_to_the_authenticated_registration_panel(self):
         html = self._page("/launch")
-        for status in ("updated", "up-to-date", "disabled", "no-browser-version",
-                       "busy", "driver-in-use"):
-            # Each status must be a real row of the verdict table with a
-            # non-empty message and a colour, not merely a word that happens to
-            # occur on the page. A bare assertIn would pass if the row were
-            # deleted and the token still appeared somewhere incidental, and
-            # the button would then report a status it has no text for.
-            self.assertRegex(
-                html,
-                "'" + re.escape(status)
-                + r"':\['[^']+','var\(--[a-z]+\)'\]")
-        # Anything else (failed, an unexpected status) must still say something
-        # useful rather than leaving an empty line behind.
-        self.assertIn("به‌روزرسانی درایور ناموفق بود؛ اتصال پروکسی را بررسی کنید",
-                      html)
-        self.assertIn("ارتباط با سرویس برقرار نشد", html)
+        button = re.search(r'<button\b[^>]*id="btn-driver"[^>]*>', html)
+        self.assertIsNotNone(button)
+        handler = re.search(
+            r"document\.getElementById\('btn-driver'\)\.onclick\s*=\s*function\(\)\s*\{(.*?)\};",
+            html, re.DOTALL)
+        navigation = button.group(0) + (handler.group(1) if handler else "")
+        self.assertRegex(navigation, r"location\.(?:href\s*=|assign\s*\(|replace\s*\()\s*['\"]/site-1['\"]")
+        self.assertNotIn("var msgs=", navigation)
+        self.assertNotIn("fetch(", navigation)
 
 
 class DriverUpdateRouteTests(DriverUpdateHarness):
-    def test_the_route_reports_the_collector_verdict(self):
-        verdict = {"status": "updated", "detail": "installed chromedriver 154",
-                   "target": "C:\\x\\chromedriver.exe", "version": "154.0.8037.92"}
-        with patch.object(captcha_collector, "update_chromedriver_now",
-                          return_value=verdict) as call:
-            status, body = self._post("/driver-update")
-        self.assertEqual(status, 200)
-        self.assertEqual(body, verdict)
-        call.assert_called_once_with()
+    OFFER = {"offer_id": "opaque-driver-offer", "consent": True}
 
-    def test_a_failed_verdict_still_answers_200_so_the_page_can_report_it(self):
-        with patch.object(captcha_collector, "update_chromedriver_now",
-                          return_value={"status": "failed",
-                                        "detail": "proxy 127.0.0.1:18081 is not "
-                                                  "available",
-                                        "target": "t", "version": ""}):
-            status, body = self._post("/driver-update")
-        self.assertEqual(status, 200)
-        self.assertEqual(body["status"], "failed")
+    def test_both_routes_submit_exact_offer_and_consent_to_the_service(self):
+        accepted = {"ok": True, "driver": {"state": "installing"}}
+        for route in ("/driver-update", "/api/update-chromedriver"):
+            with self.subTest(route=route), \
+                    patch.object(panel, "run_chromedriver_update", return_value=accepted) as install:
+                status, body = self._post(route, json.dumps(self.OFFER).encode("utf-8"))
+            self.assertEqual(status, 202)
+            self.assertEqual(body, accepted)
+            install.assert_called_once_with(offer_id=self.OFFER["offer_id"], consent=True)
 
-    def test_a_raising_collector_still_answers_json(self):
-        """The page reads the verdict: an exception must still arrive as a
-        status it understands, never as an HTML error body it cannot parse."""
-        with patch.object(captcha_collector, "update_chromedriver_now",
-                          side_effect=RuntimeError("boom")):
-            status, body = self._post("/driver-update")
-        self.assertEqual(status, 200)
-        self.assertEqual(body["status"], "failed")
-        self.assertIn("boom", body["detail"])
+    def test_a_rejected_or_stale_offer_answers_409_with_service_state(self):
+        rejected = {"ok": False, "error": "Check again and confirm the current offer.",
+                    "driver": {"state": "not_checked"}}
+        with patch.object(panel, "run_chromedriver_update", return_value=rejected) as install:
+            status, body = self._post("/driver-update", json.dumps(self.OFFER).encode("utf-8"))
+        self.assertEqual(status, 409)
+        self.assertEqual(body, rejected)
+        install.assert_called_once_with(offer_id=self.OFFER["offer_id"], consent=True)
 
-    def test_an_unreadable_store_does_not_hide_the_verdict(self):
-        """Repairing the driver has nothing to do with profiles.json. Were the
-        route behind load_store(), a store fault would answer 500 and the page
-        would tell the operator to check the proxy — a wrong diagnosis."""
-        verdict = {"status": "updated", "detail": "installed chromedriver 154",
-                   "target": "C:\\x\\chromedriver.exe", "version": "154.0.8037.92"}
-        with patch.object(panel, "load_store",
-                          side_effect=panel.StoreUnreadableError("torn")), \
-                patch.object(captcha_collector, "update_chromedriver_now",
-                             return_value=verdict):
-            status, body = self._post("/driver-update")
-        self.assertEqual(status, 200)
-        self.assertEqual(body, verdict)
+    def test_a_raising_service_still_answers_sanitized_json(self):
+        with patch.object(panel, "run_chromedriver_update",
+                          side_effect=RuntimeError("private transport detail")) as install:
+            status, body = self._post("/driver-update", json.dumps(self.OFFER).encode("utf-8"))
+        self.assertEqual(status, 500)
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["errors"])
+        self.assertNotIn("private transport detail", json.dumps(body))
+        install.assert_called_once_with(offer_id=self.OFFER["offer_id"], consent=True)
+
+    def test_an_unreadable_profiles_store_does_not_hide_the_update_response(self):
+        accepted = {"ok": True, "driver": {"state": "installing"}}
+        with patch.object(panel, "load_store", side_effect=panel.StoreUnreadableError("torn")) as store, \
+                patch.object(panel, "run_chromedriver_update", return_value=accepted) as install:
+            status, body = self._post("/driver-update", json.dumps(self.OFFER).encode("utf-8"))
+        self.assertEqual(status, 202)
+        self.assertEqual(body, accepted)
+        store.assert_not_called()
+        install.assert_called_once_with(offer_id=self.OFFER["offer_id"], consent=True)
 
     def test_the_route_is_not_open_to_anonymous_callers(self):
-        # `self._original` is the un-wrapped urlopen the auth harness handed
-        # back: this request carries no session cookie.
         request = urllib.request.Request(self._url("/driver-update"),
-                                         data=b"{}", method="POST")
-        with patch.object(captcha_collector, "update_chromedriver_now") as call:
+                                         data=json.dumps(self.OFFER).encode("utf-8"), method="POST")
+        with patch.object(panel, "run_chromedriver_update") as install:
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self._original(request, timeout=10)
             self.assertEqual(caught.exception.code, 401)
-        call.assert_not_called()
+        install.assert_not_called()
+
+    def test_invalid_request_shapes_never_reach_the_install_service(self):
+        invalid = (b"", b"{}", b"[]", b"{", b'{"probe":true}',
+                   b'{"offer_id":"opaque-driver-offer"}',
+                   b'{"offer_id":"opaque-driver-offer","consent":false}',
+                   b'{"offer_id":"opaque-driver-offer","consent":1}',
+                   b'{"offer_id":"","consent":true}',
+                   b'{"offer_id":"opaque-driver-offer","consent":true,"url":"https://example.test/driver"}')
+        with patch.object(panel, "run_chromedriver_update") as install:
+            for route in ("/driver-update", "/api/update-chromedriver"):
+                for payload in invalid:
+                    with self.subTest(route=route, payload=payload):
+                        status, body = self._post(route, payload)
+                        self.assertEqual(status, 400, body)
+                        self.assertFalse(body["ok"])
+                        self.assertTrue(body["errors"])
+        install.assert_not_called()
+
+    def test_exact_consent_does_not_bypass_csrf(self):
+        request = urllib.request.Request(self._url("/driver-update"),
+                                         data=json.dumps(self.OFFER).encode("utf-8"),
+                                         headers={"Cookie": "irica_session=" + self._token}, method="POST")
+        with patch.object(panel, "run_chromedriver_update") as install:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self._original(request, timeout=10)
+            self.assertEqual(caught.exception.code, 403)
+        install.assert_not_called()
+
+    def test_exact_consent_does_not_bypass_foreign_origin_rejection(self):
+        request = urllib.request.Request(self._url("/driver-update"),
+                                         data=json.dumps(self.OFFER).encode("utf-8"),
+                                         headers={"Origin": "https://foreign.example.test"}, method="POST")
+        with patch.object(panel, "run_chromedriver_update") as install:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            self.assertEqual(caught.exception.code, 403)
+        install.assert_not_called()
 
 
 class BodyDrainTests(DriverUpdateHarness):
@@ -229,14 +258,11 @@ class BodyDrainTests(DriverUpdateHarness):
         _BodyRecordingHandler.recorded = {}
 
     def test_the_body_is_read_before_the_route_ever_sees_it(self):
-        verdict = {"status": "up-to-date", "detail": "", "target": "t",
-                   "version": "154"}
-        with patch.object(captcha_collector, "update_chromedriver_now",
-                          return_value=verdict):
-            status, body = self._post("/driver-update",
-                                      payload=b'{"probe": true}')
-        self.assertEqual(status, 200)
-        self.assertEqual(body, verdict)
+        with patch.object(panel, "run_chromedriver_update") as install:
+            status, body = self._post("/driver-update", payload=b'{"probe": true}')
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        install.assert_not_called()
         # Already drained when the gate ran, i.e. before any route had a chance
         # to return early and leave the bytes sitting in the socket.
         self.assertEqual(_BodyRecordingHandler.recorded["at_gate"],
@@ -259,17 +285,13 @@ class BodyDrainTests(DriverUpdateHarness):
         self.assertEqual(_BodyRecordingHandler.recorded["at_gate"],
                          b'{"probe": true}')
 
-    def test_a_bodyless_post_still_reaches_the_route(self):
-        """Content-Length 0 is the ordinary case for the page's own POSTs, and
-        draining must not turn it into a route that never runs."""
-        verdict = {"status": "up-to-date", "detail": "", "target": "t",
-                   "version": "154"}
-        with patch.object(captcha_collector, "update_chromedriver_now",
-                          return_value=verdict) as call:
+    def test_a_bodyless_post_reaches_validation_without_installing(self):
+        with patch.object(panel, "run_chromedriver_update") as install:
             status, body = self._post("/driver-update", payload=b"")
-        self.assertEqual(status, 200)
-        self.assertEqual(body, verdict)
-        call.assert_called_once_with()
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        install.assert_not_called()
+        self.assertEqual(_BodyRecordingHandler.recorded["at_gate"], b"")
         self.assertEqual(_BodyRecordingHandler.recorded["at_route"], b"")
         self.assertEqual(_BodyRecordingHandler.recorded["parsed"], {})
 

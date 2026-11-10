@@ -19,7 +19,8 @@ class UnusableProfileTests(unittest.TestCase):
                     "run_status": "busy", "runner_pid": 123,
                 }]}, f)
             with patch.object(panel, "PROFILES_PATH", profiles), \
-                    patch.object(panel, "INPUTS_PATH", inputs):
+                    patch.object(panel, "INPUTS_PATH", inputs), \
+                    patch.object(panel, "_STORE_LOCK_PATH", profiles + ".lock"):
                 changed = panel.mark_profile_unusable(
                     "p1", "خطا در استعلام IMEI از سامانه همتا: شناسه قبلا ثبت و فعال شده")
                 profile = panel.load_store()["profiles"][0]
@@ -28,7 +29,7 @@ class UnusableProfileTests(unittest.TestCase):
         self.assertFalse(profile["enabled"])
         self.assertEqual(profile["run_status"], "idle")
         self.assertEqual(profile["registration_status"], "blocked")
-        self.assertIn("دیگر قابل ورود نیست", profile["runtime_error"])
+        self.assertTrue(profile["runtime_error"].startswith("Profile cannot be registered: "))
 
     def test_start_rejects_unusable_profile(self):
         with patch.object(panel, "load_store", return_value={"profiles": [{
@@ -36,7 +37,7 @@ class UnusableProfileTests(unittest.TestCase):
         }]}):
             status, payload = panel.start_profile("p1")
         self.assertEqual(status, 409)
-        self.assertIn("قابل استفاده نیست", payload["error"])
+        self.assertEqual(payload["error"], "Profile is blocked; review the recorded error")
 
     def test_ui_disables_start_and_shows_block_reason(self):
         source = panel.PAGE_JS
