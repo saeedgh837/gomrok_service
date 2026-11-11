@@ -70,6 +70,7 @@ _MIGRATED_FILES = app_paths.bootstrap()
 DATA_DIR = app_paths.data_dir()
 
 import panel_auth  # noqa: E402  (needs HERE on sys.path first)
+import release_notes
 from maintenance_ui import with_maintenance_ui
 
 # The three operator accounts are NOT seeded here. robots import this module
@@ -7077,6 +7078,7 @@ h1{font-size:30px;font-weight:800;margin:0 0 6px}.sub{color:var(--muted);margin:
   <h1>سامانه مدیریت گمرک</h1>
   <p class="sub">سامانه موردنظر را انتخاب کنید</p>
   <div class="irica-version">نسخه __VERSION__</div>
+  <div class="irica-maint-host" style="display:flex;justify-content:center;margin-block-start:16px">__MAINTENANCE_ACTIONS__</div>
 </div>
 <section class="stats" id="stats" aria-label="خلاصه وضعیت">
   <div class="stat total"><div class="n" id="s-total">—</div><div class="l">کل پروفایل‌ها</div></div>
@@ -7303,7 +7305,7 @@ def render_home_page():
     html = html.replace("__VERSION_TAG__",
                         f'<span class="irica-version">نسخه {app_version_text() or "—"}</span>')
     html = html.replace("__VERSION__", app_version_text() or "—")
-    return with_csrf_bootstrap(html).encode("utf-8")
+    return with_csrf_bootstrap(with_maintenance_ui(html)).encode("utf-8")
 
 
 def render_site_two_page():
@@ -14410,7 +14412,8 @@ class Handler(BaseHTTPRequestHandler):
         # v1.3.6: pages must never come from browser cache — after a panel
         # update the operator kept seeing the previous version otherwise.
         # Static assets (fonts) keep their normal caching.
-        if ctype.startswith("text/html"):
+        if ctype.startswith("text/html") or self.path.split("?", 1)[0] in (
+                "/api/release-notes", "/api/release-notes/seen"):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -14419,6 +14422,25 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self._send(code, body, "application/json; charset=utf-8")
+
+    def _release_notes(self, *, acknowledge=False):
+        try:
+            session = self._release_notes_session
+            root = app_paths.data_dir()
+            version = app_version_text()
+            if acknowledge:
+                release_notes.acknowledge(root, session, version, self._read_json())
+                result = {"ok": True, "seen": True}
+            else:
+                result = release_notes.snapshot(root, session, version)
+        except ValueError:
+            self._json({"ok": False, "errors": ["Refresh the current release summary before acknowledging it."]}, 409)
+            return
+        except Exception:
+            self.log_error("Release-summary storage or content is unavailable")
+            self._json({"ok": False, "errors": ["The release summary could not be loaded or acknowledged. Your work can continue."]}, 503)
+            return
+        self._json(result)
 
     def _read_json(self):
         raw = self._consume_body()
@@ -15271,7 +15293,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "errors": [_CSRF_REJECT]}, 403)
                 return False
             if route in ("/api/check-updates", "/api/health-check", "/api/update-app",
-                         "/api/update-chromedriver", "/api/maintenance/check", "/driver-update"):
+                         "/api/update-chromedriver", "/api/maintenance/check", "/driver-update",
+                         "/api/release-notes/seen"):
                 client_ip = getattr(self, "client_address", ("", 0))[0]
                 if client_ip not in ("127.0.0.1", "::1"):
                     self._json({"ok": False, "errors": ["Maintenance is available from loopback only."]}, 403)
@@ -15308,6 +15331,11 @@ class Handler(BaseHTTPRequestHandler):
                            401)
             return False
         self.actor = username
+        if route in ("/api/release-notes", "/api/release-notes/seen"):
+            self._release_notes_session = panel_auth.session_data(token)
+            if self._release_notes_session is None:
+                self._json({"ok": False, "errors": ["A live session is required."]}, 401)
+                return False
         return True
 
     def _handle_login(self):
@@ -15576,7 +15604,9 @@ class Handler(BaseHTTPRequestHandler):
         route = urlsplit(self.path).path
         if not self._gate(route):
             return
-        if route in ("/", "/index.html"):
+        if route == "/api/release-notes":
+            self._release_notes()
+        elif route in ("/", "/index.html"):
             self._send(200, render_home_page())
         elif route == "/launch":
             self._send(200, render_launch_page())
@@ -15841,6 +15871,9 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post_body(self):
         from urllib.parse import urlsplit
         route = urlsplit(self.path).path
+        if route == "/api/release-notes/seen":
+            self._release_notes(acknowledge=True)
+            return
         if route in ("/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/driver-update"):
             try:
                 payload = self._read_json()

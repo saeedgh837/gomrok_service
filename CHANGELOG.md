@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.20.0] - 2026-11-11
+
+### Added
+
+- Curated Persian release highlights on the first authenticated entry, shared by the home screen and all three panels. Current and previous-release improvements are explicitly separated.
+- Durable, isolated account/release acknowledgments with atomic writes, hashed namespaces, stale-viewer binding and authenticated, no-store, CSRF-protected endpoints. Closing visible highlights acknowledges them; navigation and background requests do not.
+- Manual rereading through Updates, consistent RTL/light/dark/mobile presentation, keyboard focus management and deferred opening while another dialog or editing control is active.
+- Synthetic account, storage-error and deferred-display preview scenarios, plus a packaging gate that requires curated notes matching the exact build version.
+
+### Verification
+
+- Release-summary persistence/API, renderer, preview and packaging checks use isolated synthetic accounts and scratch state. No live customs, payment or private-account verification is performed.
+- Full regression and release-probe results are recorded with the release artifacts; policy-restricted checks are reported separately, not presented as passing.
+
 ## [1.19.0] - 2026-11-10
 
 ### Added

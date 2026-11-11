@@ -510,8 +510,10 @@ class PanelRunnerFrontDoorTests(unittest.TestCase):
     def test_default_inventory_delegates_all_modules_with_or_without_options(self):
         front = self.load_front_door()
         self.assertIn("test_server_crm_v2_authority", front.DEFAULT)
-        self.assertEqual(len(front.DEFAULT), 115)
-        self.assertEqual(len(set(front.DEFAULT)), 115)
+        self.assertIn("test_release_notes", front.DEFAULT)
+        self.assertIn("test_release_notes_api", front.DEFAULT)
+        self.assertEqual(len(front.DEFAULT), 117)
+        self.assertEqual(len(set(front.DEFAULT)), 117)
         for options, timeout in (([], "180.0"), (["--timeout", "7"], "7.0")):
             with self.subTest(options=options):
                 supervisor, observed = self.stub_supervisor()

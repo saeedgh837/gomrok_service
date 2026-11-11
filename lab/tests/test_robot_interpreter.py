@@ -104,7 +104,7 @@ class LauncherBootstrapTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         # Copy trusted source only. No installed binaries, configs or live data.
         for name in ("robot_launcher.py", "system_debug.py", "panel.py", "panel_auth.py",
-                     "maintenance_gate.py", "maintenance_ui.py", "exitban.py"):
+                     "maintenance_gate.py", "maintenance_ui.py", "release_notes.py", "exitban.py"):
             shutil.copyfile(Path(ROOT) / name, self.root / name)
         self.probe = self.root / "launcher_probe.py"
         self.probe.write_text(PROBE_SOURCE, encoding="utf-8")

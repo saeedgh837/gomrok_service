@@ -28,7 +28,9 @@ def actions_html() -> str:
         'aria-haspopup="dialog" aria-controls="irica-maint-health" aria-expanded="false">'
         + _HEALTH_ICON + '<span>سلامت سرویس‌ها</span></button>'
         '<span id="irica-maint-indicator" class="irica-maint-indicator" dir="rtl" '
-        'role="status" aria-live="polite" aria-atomic="true">بررسی نشده</span></div>'
+        'role="status" aria-live="polite" aria-atomic="true">بررسی نشده</span>'
+        '<p id="irica-maint-release-feedback" class="irica-maint-note irica-maint-release-feedback" role="status" '
+        'aria-live="polite" aria-atomic="true" hidden></p></div>'
     )
 
 
@@ -47,7 +49,7 @@ def _health_row(service: str, title: str, scope: str) -> str:
 
 
 def dialogs_html() -> str:
-    """Return two closed dialogs; they must remain direct body children."""
+    """Return closed dialogs that remain direct body children."""
     return (
         '<dialog id="irica-maint-updates" class="irica-maint-dialog" lang="fa" dir="rtl" '
         'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-updates-title" aria-describedby="irica-maint-updates-description">'
@@ -88,7 +90,9 @@ def dialogs_html() -> str:
         '<p id="irica-maint-background" class="irica-maint-note" hidden>با بستن این پنجره، نصب در پس‌زمینه ادامه پیدا می‌کند و کار سرور لغو نمی‌شود.</p>'
         '<div id="irica-maint-update-tools" class="irica-maint-dialog-footer">'
         '<button type="button" id="irica-maint-refresh" class="irica-maint-button">تازه‌سازی وضعیت</button>'
-        '<button type="button" id="irica-maint-check" class="irica-maint-button">بررسی نسخهٔ جدید</button></div>'
+        '<button type="button" id="irica-maint-check" class="irica-maint-button">بررسی نسخهٔ جدید</button>'
+        '<button type="button" id="irica-maint-release-open" class="irica-maint-button" '
+        'aria-haspopup="dialog" aria-controls="irica-maint-release" aria-expanded="false">تغییرات این نسخه</button></div>'
         '</div></dialog>'
         '<dialog id="irica-maint-health" class="irica-maint-dialog" lang="fa" dir="rtl" '
         'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-health-title" aria-describedby="irica-maint-health-description">'
@@ -105,6 +109,19 @@ def dialogs_html() -> str:
         + '<p class="irica-maint-note">آخرین بررسی: <time id="irica-maint-health-time" dir="rtl">بررسی نشده</time></p>'
         '<div class="irica-maint-dialog-footer"><button type="button" id="irica-maint-health-run" class="irica-maint-button">شروع بررسی</button></div>'
         '</div></dialog>'
+        '<dialog id="irica-maint-release" class="irica-maint-dialog irica-maint-release" lang="fa" dir="rtl" '
+        'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-release-title" aria-describedby="irica-maint-release-intro">'
+        '<div class="irica-maint-dialog-header"><div><h2 id="irica-maint-release-title" class="irica-maint-title">تازه‌های ایریکا</h2>'
+        '<p class="irica-maint-note irica-maint-release-meta">نسخهٔ نصب‌شده <bdi id="irica-maint-release-version" dir="ltr">—</bdi></p></div>'
+        '<button type="button" id="irica-maint-release-close" class="irica-maint-button">'
+        + _CLOSE_ICON + '<span>بستن</span></button></div>'
+        '<div class="irica-maint-body"><p id="irica-maint-release-intro" class="irica-maint-copy">در حال آماده‌سازی خلاصهٔ تغییرات…</p>'
+        '<div id="irica-maint-release-content" class="irica-maint-release-content"></div>'
+        '<p id="irica-maint-release-storage" class="irica-maint-notice" hidden></p>'
+        '<p id="irica-maint-release-footer" class="irica-maint-note"></p></div>'
+        '<div class="irica-maint-dialog-footer irica-maint-release-footer">'
+        '<button type="button" id="irica-maint-release-ack" class="irica-maint-button irica-maint-primary" disabled>متوجه شدم</button></div>'
+        '</dialog>'
     )
 
 
@@ -145,6 +162,23 @@ _STYLE = r"""<style id="irica-maint-style">
 .irica-maint-confirmation{display:grid;gap:12px;min-inline-size:0}
 .irica-maint-dialog-footer{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-inline-size:0}
 .irica-maint-health-row{display:grid;gap:8px;min-inline-size:0;padding-block-end:16px;border-block-end:1px solid var(--line,rgba(27,32,54,.10))}
+.irica-maint-release{inline-size:min(640px,calc(100% - 24px));font-size:14px}
+.irica-maint-release .irica-maint-dialog-header{padding-block-end:16px;border-block-end:1px solid var(--line,rgba(27,32,54,.10))}
+.irica-maint-release .irica-maint-body{gap:20px}
+.irica-maint-release .irica-maint-copy{margin:0;line-height:1.9}
+.irica-maint-release-meta{margin-block-start:6px;display:flex;align-items:center;gap:8px}
+.irica-maint-release-meta bdi{color:var(--brand,#4460e3);font-weight:700;font-variant-numeric:tabular-nums}
+.irica-maint-release-content{display:grid;gap:24px;min-inline-size:0}
+.irica-maint-release-section{display:grid;gap:14px;min-inline-size:0}
+.irica-maint-release-section-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0;color:var(--muted,#5c6484);font-size:12px;font-weight:600;line-height:1.7}
+.irica-maint-release-list{display:grid;gap:16px;margin:0;padding:0;list-style:none;min-inline-size:0}
+.irica-maint-release-item{display:grid;gap:5px;padding-inline-start:14px;border-inline-start:2px solid var(--line-strong,rgba(27,32,54,.16));min-inline-size:0}
+.irica-maint-release-section:first-child .irica-maint-release-item{border-color:var(--brand,#4460e3)}
+.irica-maint-release-item h4{margin:0;color:var(--txt,#1b2036);font-size:15px;font-weight:700;line-height:1.6}
+.irica-maint-release-item p{margin:0;color:var(--muted,#5c6484);line-height:1.9;overflow-wrap:anywhere}
+.irica-maint-release-footer{position:sticky;inset-block-end:0;padding:14px 20px;background:var(--card,#fff);border-block-start:1px solid var(--line,rgba(27,32,54,.10));justify-content:flex-end}
+.irica-maint-release-footer .irica-maint-primary{min-inline-size:148px}
+.irica-maint-release-feedback{flex-basis:100%}
 @media(max-width:480px){
 .irica-maint-dialog-header{padding:16px 16px 0;gap:8px}
 .irica-maint-body{padding:12px 16px 16px}
@@ -163,7 +197,13 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   const byId = suffix => document.getElementById('irica-maint-' + suffix);
   const updates = byId('updates');
   const health = byId('health');
-  if (!updates || !health) return;
+  const release = byId('release');
+  if (!updates || !health || !release) return;
+  const dialogControls = new Map([
+    [updates, {trigger: 'open-updates', close: 'updates-close'}],
+    [health, {trigger: 'open-health', close: 'health-close'}],
+    [release, {trigger: 'release-open', close: 'release-close'}]
+  ]);
   const progressStates = new Set(['downloading', 'verifying', 'waiting_for_idle', 'installing']);
   const knownStates = new Set(['not_checked', 'checking', 'current', 'available', 'downloading', 'verifying', 'waiting_for_idle', 'installing', 'failed']);
   const labels = {not_checked: 'بررسی نشده', checking: 'در حال بررسی', current: 'به‌روز', available: 'نسخهٔ جدید', downloading: 'در حال دریافت', verifying: 'در حال اعتبارسنجی', waiting_for_idle: 'منتظر پایان کارها', installing: 'در حال نصب', failed: 'نیاز به بررسی'};
@@ -203,6 +243,14 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   let readError = false;
   let pageStopped = false;
   let automaticCheckSent = false;
+  let releaseData = null;
+  let releaseAutoPending = true;
+  let releaseDeferred = false;
+  let releaseReadBusy = false;
+  let releaseEpoch = 0;
+  let releaseToUpdates = false;
+  let releasePresented = false;
+  let releaseWakeQueued = false;
   let revision = 0;
   let pollTimer = null;
   let pollCount = 0;
@@ -306,6 +354,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     byId('check').disabled = authExpired || mutationBusy || readBusy || working();
     byId('refresh').disabled = authExpired || readBusy || mutationBusy;
     byId('health-run').disabled = authExpired || healthBusy;
+    byId('release-open').disabled = authExpired || mutationBusy || Boolean(pending);
     text('check', mutationBusy && !installRequest ? 'در حال بررسی نسخه‌ها' : 'بررسی نسخهٔ جدید');
     text('health-run', healthBusy ? 'در حال بررسی' : 'شروع بررسی');
     byId('confirm-install').disabled = !pending || authExpired || mutationBusy || readError || !sameOffer(pending, candidate(pending.kind));
@@ -318,9 +367,16 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     else if (snapshot && (stateFor('app') === 'failed' || stateFor('driver') === 'failed')) indicator = 'نیاز به بررسی';
     else if (snapshot && stateFor('app') === 'current' && stateFor('driver') === 'current') indicator = 'به‌روز';
     text('indicator', indicator);
+    wakeRelease();
   }
   function expireAuth() {
     authExpired = true;
+    releaseAutoPending = false;
+    releaseEpoch += 1;
+    releaseReadBusy = false;
+    releasePresented = false;
+    if (release.open) closeDialog(release, true);
+    notice('release-feedback', 'نشست ورود پایان یافته است. برای دیدن خلاصهٔ تغییرات دوباره وارد شوید.');
     approved.app = null;
     approved.driver = null;
     stopPolling();
@@ -339,7 +395,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     try { return decodeURIComponent(match.slice('irica_csrf='.length)); }
     catch (_) { return ''; }
   }
-  async function api(path, method, payload, cancelWhenHidden) {
+  async function api(path, method, payload, cancelWhenHidden, keepalive = false) {
     const controller = new AbortController();
     let timedOut = false;
     if (cancelWhenHidden) reads.add(controller);
@@ -351,7 +407,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
       if (token) headers['X-CSRF-Token'] = token;
     }
     try {
-      const response = await fetch(path, {method, credentials: 'same-origin', mode: 'same-origin', headers, signal: controller.signal, ...(method === 'POST' ? {body: JSON.stringify(payload)} : {})});
+      const response = await fetch(path, {method, credentials: 'same-origin', mode: 'same-origin', headers, signal: controller.signal, ...(keepalive ? {keepalive: true} : {}), ...(method === 'POST' ? {body: JSON.stringify(payload)} : {})});
       if (response.status === 401 || response.status === 403) throw failure('auth');
       if (!response.ok) throw failure('service');
       const body = await response.json();
@@ -508,35 +564,45 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   }
   function closeDialog(dialog, restore) {
     if (dialog === updates) hideConfirmation(false);
+    if (dialog === release) {
+      releasePresented = false;
+      releaseEpoch += 1;
+      releaseReadBusy = false;
+    }
     if (activeDialog === dialog) activeDialog = null;
-    byId(dialog === updates ? 'open-updates' : 'open-health').setAttribute('aria-expanded', 'false');
+    byId(dialogControls.get(dialog).trigger).setAttribute('aria-expanded', 'false');
     if (dialog.open) dialog.close();
     const origin = returnFocus.get(dialog);
     returnFocus.delete(dialog);
     if (restore && origin && origin.isConnected && !origin.disabled) origin.focus();
+    wakeRelease();
   }
   function openDialog(dialog, trigger) {
     if (activeDialog === dialog && dialog.open) return;
     if (activeDialog) closeDialog(activeDialog, false);
     returnFocus.set(dialog, trigger);
     activeDialog = dialog;
-    byId(dialog === updates ? 'open-updates' : 'open-health').setAttribute('aria-expanded', 'true');
+    byId(dialogControls.get(dialog).trigger).setAttribute('aria-expanded', 'true');
     dialog.showModal();
-    byId(dialog === updates ? 'updates-close' : 'health-close').focus();
+    byId(dialogControls.get(dialog).close).focus();
   }
-  for (const dialog of [updates, health]) {
-    dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(dialog, true); });
+  function dismissDialog(dialog) {
+    if (dialog === release) dismissRelease();
+    else closeDialog(dialog, true);
+  }
+  for (const dialog of [updates, health, release]) {
+    dialog.addEventListener('cancel', event => { event.preventDefault(); dismissDialog(dialog); });
     dialog.addEventListener('close', () => { if (activeDialog === dialog && !dialog.open) closeDialog(dialog, true); });
     dialog.addEventListener('click', event => {
       if (event.target !== dialog) return;
       const bounds = dialog.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeDialog(dialog, true);
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismissDialog(dialog);
     });
   }
   document.addEventListener('keydown', event => {
     const dialog = activeDialog;
     if (!dialog || !dialog.open) return;
-    if (event.key === 'Escape') { event.preventDefault(); closeDialog(dialog, true); return; }
+    if (event.key === 'Escape') { event.preventDefault(); dismissDialog(dialog); return; }
     if (event.key !== 'Tab') return;
     const elements = focusables(dialog);
     if (!elements.length) { event.preventDefault(); dialog.focus(); return; }
@@ -546,6 +612,147 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     if (event.shiftKey && (document.activeElement === first || outside)) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && (document.activeElement === last || outside)) { event.preventDefault(); first.focus(); }
   });
+
+  function validRelease(body) {
+    if (typeof body.seen !== 'boolean' || typeof body.storage_warning !== 'boolean') return false;
+    if (body.notes === null) return body.notice_id === '';
+    const notes = body.notes;
+    const copy = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 1200;
+    return notes && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(notes.version) && /^[0-9a-f]{64}$/.test(body.notice_id) &&
+      copy(notes.title) && copy(notes.intro) && copy(notes.footer) && Array.isArray(notes.sections) &&
+      notes.sections.length > 0 && notes.sections.length <= 4 && notes.sections.every(section =>
+        section && copy(section.label) && version(section.version) !== 'نامشخص' && Array.isArray(section.items) &&
+        section.items.length > 0 && section.items.length <= 4 && section.items.every(item => item && copy(item.title) && copy(item.body)));
+  }
+  function renderRelease() {
+    const notes = releaseData && releaseData.notes;
+    byId('release-content').replaceChildren();
+    byId('release-ack').disabled = !notes;
+    text('release-title', notes ? notes.title : 'تازه‌های ایریکا');
+    text('release-version', notes ? notes.version : '—');
+    text('release-intro', notes ? notes.intro : 'برای این نسخه هنوز خلاصه‌ای آماده نشده است. می‌توانید کارتان را ادامه دهید.');
+    text('release-footer', notes ? notes.footer : 'این پنجره هیچ به‌روزرسانی یا نصبی را اجرا نمی‌کند.');
+    notice('release-storage', releaseData && releaseData.storage_warning ? 'وضعیت مشاهدهٔ قبلی خوانده نشد. اگر پس از بستن، ذخیره هم انجام نشود، ممکن است این خلاصه در ورود بعدی دوباره نمایش داده شود.' : '');
+    if (!notes) return;
+    for (const section of notes.sections) {
+      const group = document.createElement('section');
+      group.className = 'irica-maint-release-section';
+      const heading = document.createElement('h3');
+      heading.className = 'irica-maint-release-section-label';
+      const label = document.createElement('span');
+      label.textContent = section.label;
+      const releaseVersion = document.createElement('bdi');
+      releaseVersion.dir = 'ltr';
+      releaseVersion.textContent = section.version;
+      heading.append(label, releaseVersion);
+      const list = document.createElement('ul');
+      list.className = 'irica-maint-release-list';
+      for (const item of section.items) {
+        const row = document.createElement('li');
+        row.className = 'irica-maint-release-item';
+        const title = document.createElement('h4');
+        title.textContent = item.title;
+        const description = document.createElement('p');
+        description.textContent = item.body;
+        row.append(title, description);
+        list.append(row);
+      }
+      group.append(heading, list);
+      byId('release-content').append(group);
+    }
+    releasePresented = release.open && !document.hidden;
+  }
+  function releaseBlocked() {
+    if (document.hidden || pageStopped || authExpired || activeDialog || pending || mutationBusy || installRequest || working()) return true;
+    if (Array.from(document.querySelectorAll('dialog[open], [role="dialog"]')).some(dialog =>
+      dialog !== release && !dialog.hidden && dialog.getClientRects().length > 0 && getComputedStyle(dialog).visibility !== 'hidden')) return true;
+    const focused = document.activeElement;
+    return Boolean(focused && focused.getClientRects().length > 0 && focused.matches('a[href], button, input, textarea, select, [contenteditable="true"], [tabindex]'));
+  }
+  function wakeRelease() {
+    if (!releaseAutoPending || releaseWakeQueued || releaseReadBusy || authExpired || pageStopped) return;
+    releaseWakeQueued = true;
+    queueMicrotask(() => {
+      releaseWakeQueued = false;
+      if (!releaseAutoPending || releaseReadBusy || authExpired || pageStopped) return;
+      if (releaseBlocked()) { releaseDeferred = true; return; }
+      if (!releaseData || releaseDeferred) {
+        releaseDeferred = false;
+        void loadRelease(false);
+        return;
+      }
+      if (releaseData.seen || !releaseData.notes) { releaseAutoPending = false; return; }
+      releaseAutoPending = false;
+      releaseToUpdates = false;
+      renderRelease();
+      const origin = document.activeElement;
+      openDialog(release, origin && origin !== document.body ? origin : byId('open-updates'));
+      releasePresented = true;
+      byId('release-ack').focus();
+    });
+  }
+  async function loadRelease(manual) {
+    if (authExpired || pageStopped || (releaseReadBusy && !manual)) return;
+    const epoch = ++releaseEpoch;
+    releaseReadBusy = true;
+    try {
+      const body = await api('/api/release-notes', 'GET', null, false);
+      if (epoch !== releaseEpoch || authExpired || pageStopped) return;
+      if (!validRelease(body)) throw failure('service');
+      releaseData = body;
+      if (manual && release.open) {
+        renderRelease();
+        if (releaseData.notes && !document.hidden) byId('release-ack').focus();
+      } else if (body.seen || !body.notes) releaseAutoPending = false;
+    } catch (error) {
+      if (epoch !== releaseEpoch || pageStopped) return;
+      releaseAutoPending = false;
+      if (error && error.maintenanceFailure === 'auth') { expireAuth(); return; }
+      const message = 'خلاصهٔ تغییرات دریافت نشد. کارتان را ادامه دهید و بعداً از «به‌روزرسانی‌ها» دوباره باز کنید.';
+      notice('release-feedback', message);
+      if (manual && release.open) {
+        releaseData = null;
+        renderRelease();
+        text('release-intro', message);
+      }
+    } finally {
+      if (epoch === releaseEpoch) { releaseReadBusy = false; wakeRelease(); }
+    }
+  }
+  function openRelease() {
+    if (authExpired || pageStopped || mutationBusy || pending) return;
+    releaseAutoPending = false;
+    releaseToUpdates = updates.open;
+    releasePresented = false;
+    releaseData = null;
+    renderRelease();
+    text('release-intro', 'در حال آماده‌سازی خلاصهٔ تغییرات…');
+    text('release-footer', '');
+    openDialog(release, byId('release-open'));
+    void loadRelease(true);
+  }
+  async function acknowledgeRelease(captured) {
+    try {
+      await api('/api/release-notes/seen', 'POST', {version: captured.notes.version, notice_id: captured.notice_id}, false, true);
+      if (!authExpired && !pageStopped) notice('release-feedback', '');
+    } catch (error) {
+      if (pageStopped) return;
+      if (error && error.maintenanceFailure === 'auth') { expireAuth(); return; }
+      notice('release-feedback', 'ثبت مشاهدهٔ خلاصه انجام نشد؛ ممکن است در ورود بعدی دوباره نمایش داده شود. کارتان را می‌توانید ادامه دهید.');
+    }
+  }
+  function dismissRelease() {
+    const captured = release.open && releasePresented && !document.hidden && !authExpired && !pageStopped ? releaseData : null;
+    const back = releaseToUpdates && !authExpired && !pageStopped;
+    releaseAutoPending = false;
+    closeDialog(release, !back);
+    releaseToUpdates = false;
+    if (back) {
+      openDialog(updates, byId('open-updates'));
+      byId('release-open').focus();
+    }
+    if (captured && captured.notes && !captured.seen) void acknowledgeRelease(captured);
+  }
 
   async function runHealth() {
     if (healthBusy || authExpired || pageStopped) return;
@@ -581,6 +788,13 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   byId('open-health').addEventListener('click', () => openDialog(health, byId('open-health')));
   byId('updates-close').addEventListener('click', () => closeDialog(updates, true));
   byId('health-close').addEventListener('click', () => closeDialog(health, true));
+  byId('release-open').addEventListener('click', openRelease);
+  byId('release-close').addEventListener('click', dismissRelease);
+  byId('release-ack').addEventListener('click', dismissRelease);
+  document.addEventListener('focusout', wakeRelease);
+  const releaseObserver = new MutationObserver(wakeRelease);
+  const releaseObservation = {subtree: true, childList: true, attributes: true, attributeFilter: ['open', 'hidden', 'class', 'style', 'aria-hidden']};
+  releaseObserver.observe(document.body, releaseObservation);
   byId('confirm-cancel').addEventListener('click', () => hideConfirmation(true));
   byId('confirm-install').addEventListener('click', confirmInstallation);
   byId('app-install').addEventListener('click', () => reviewOrRetry('app'));
@@ -589,6 +803,8 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   byId('refresh').addEventListener('click', () => { void readSnapshot(false, true); });
   byId('health-run').addEventListener('click', () => { void runHealth(); });
   document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && release.open && releaseData && releaseData.notes) releasePresented = true;
+    wakeRelease();
     if (document.hidden) { stopPolling(); abortReads(); }
     else if (!authExpired && !readError && !pageStopped) {
       if (readBusy || mutationBusy) visibleRefreshPending = true;
@@ -602,10 +818,20 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     notice('notice', 'ارتباط قطع است. پس از اتصال، وضعیت را تازه‌سازی کنید؛ نصب خودکار دوباره اجرا نمی‌شود.');
     render();
   });
-  window.addEventListener('pagehide', () => { pageStopped = true; stopPolling(); abortReads(); });
+  window.addEventListener('pagehide', () => {
+    pageStopped = true;
+    releaseEpoch += 1;
+    releaseReadBusy = false;
+    releaseObserver.disconnect();
+    stopPolling();
+    abortReads();
+  });
   window.addEventListener('pageshow', () => {
     if (!pageStopped) return;
     pageStopped = false;
+    releaseObserver.observe(document.body, releaseObservation);
+    if (release.open && !authExpired) void loadRelease(true);
+    else wakeRelease();
     if (!document.hidden && !authExpired && !readError) { visibleRefreshPending = true; resumeVisibleRead(); }
   });
   render();
@@ -633,7 +859,7 @@ def with_maintenance_ui(page: str) -> str:
     body_open, body_close = boundaries["body_open"], boundaries["body_close"]
     if not (head_open.end() <= head_close.start() < head_close.end() <= body_open.start() < body_open.end() <= page.index(_MARKER) < body_close.start()):
         raise RuntimeError("Maintenance UI requires ordered head/body boundaries and a body marker")
-    if re.search(r'\bid\s*=\s*([\'"])irica-maint-(?:style|controller|updates|health)\1', page, re.IGNORECASE):
+    if re.search(r'\bid\s*=\s*([\'"])irica-maint-(?:style|controller|updates|health|release)\1', page, re.IGNORECASE):
         raise RuntimeError("Maintenance UI is already present in this document")
     page = page[:body_close.start()] + _CONTROLLER + page[body_close.start():]
     page = page[:body_open.end()] + dialogs_html() + page[body_open.end():]

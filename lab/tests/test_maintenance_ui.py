@@ -124,7 +124,7 @@ class MaintenanceRenderTests(unittest.TestCase):
     def test_dialogs_are_direct_body_children_with_no_automatic_open_state(self):
         dom = _DOM(self.rendered())
         dialogs = [node for node in dom.nodes if node["tag"] == "dialog"]
-        self.assertEqual({n["attrs"].get("id") for n in dialogs}, {"irica-maint-updates", "irica-maint-health"})
+        self.assertEqual({n["attrs"].get("id") for n in dialogs}, {"irica-maint-updates", "irica-maint-health", "irica-maint-release"})
         for node in dialogs:
             self.assertEqual(dom.nodes[node["parent"]]["tag"], "body")
             self.assertEqual(node["attrs"].get("aria-modal"), "true")
@@ -141,7 +141,7 @@ class MaintenanceRenderTests(unittest.TestCase):
         self.assertEqual(set(dom.styles), {"irica-maint-style"})
         self.assertEqual(dom.nodes[dom.by_id("irica-maint-style")["parent"]]["tag"], "head")
         self.assertEqual(dom.nodes[dom.by_id("irica-maint-controller")["parent"]]["tag"], "body")
-        for asset in ("irica-maint-style", "irica-maint-controller", "irica-maint-updates", "irica-maint-health"):
+        for asset in ("irica-maint-style", "irica-maint-controller", "irica-maint-updates", "irica-maint-health", "irica-maint-release"):
             with self.subTest(asset=asset), self.assertRaises(RuntimeError):
                 self.ui().with_maintenance_ui(_PAGE.replace("<title>", '<meta id="' + asset + '"><title>'))
 
@@ -243,6 +243,23 @@ class MaintenanceRenderTests(unittest.TestCase):
         css = _DOM(self.rendered()).styles["irica-maint-style"]
         self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*background:var\(--brand")
         self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*color:var\(--on-brand")
+
+    def test_release_summary_can_be_reread_from_updates_without_an_extra_header_button(self):
+        dom = _DOM(self.rendered())
+        dialog = dom.by_id("irica-maint-release")
+        trigger = dom.by_id("irica-maint-release-open")
+        self.assertIn(trigger, dom.descendants(dom.by_id("irica-maint-updates")))
+        self.assertEqual(trigger["attrs"].get("aria-controls"), "irica-maint-release")
+        self.assertEqual(trigger["attrs"].get("aria-haspopup"), "dialog")
+        self.assertEqual(dom.by_id("irica-maint-release-version")["tag"], "bdi")
+        self.assertEqual(dom.by_id("irica-maint-release-version")["attrs"].get("dir"), "ltr")
+        self.assertIn(dom.by_id("irica-maint-release-ack"), dom.descendants(dialog))
+        self.assertIn(dom.by_id("irica-maint-release-close"), dom.descendants(dialog))
+        self.assertNotIn("irica-maint-release-open", self.ui().actions_html())
+
+    def test_release_summary_is_absent_from_the_unauthenticated_login(self):
+        import panel
+        self.assertNotIn('id="irica-maint-release"', panel.render_login_page().decode("utf-8"))
 
     def test_controller_has_valid_javascript_syntax(self):
         dom = _DOM(self.rendered())
@@ -360,7 +377,7 @@ class IntegratedMaintenanceRenderTests(unittest.TestCase):
                 patch.object(panel, "public_telegram_config", return_value={}), \
                 patch.object(panel, "estelam_load", return_value={"devices": []}), \
                 patch.object(panel, "estelam_runtime", return_value={}):
-            pages = (panel.render_page(), panel.render_estelam_page(), panel.render_crm_page("fixture_user"))
+            pages = (panel.render_home_page(), panel.render_page(), panel.render_estelam_page(), panel.render_crm_page("fixture_user"))
         for page in pages:
             with self.subTest(panel=pages.index(page)):
                 source = page.decode("utf-8") if isinstance(page, bytes) else page

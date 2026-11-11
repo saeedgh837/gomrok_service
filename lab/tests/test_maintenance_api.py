@@ -51,9 +51,17 @@ class MaintenanceApiTests(unittest.TestCase):
             panel, "run_chromedriver_update",
             return_value={"ok": True, "driver": {"state": "installing"}})
 
+        request_done = self.request_done = threading.Event()
+
         class QuietHandler(panel.Handler):
             def log_message(self, *_):
                 pass
+
+            def do_POST(self):
+                try:
+                    super().do_POST()
+                finally:
+                    request_done.set()
 
         self.server = panel.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
         self.server.daemon_threads = True
@@ -82,12 +90,16 @@ class MaintenanceApiTests(unittest.TestCase):
                 request_headers["X-CSRF-Token"] = panel_auth.session_csrf(self.token) or ""
         request_headers.update(headers or {})
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=4)
+        if method == "POST":
+            self.request_done.clear()
         try:
             connection.request(method, route,
                                body=json.dumps(body) if body is not None else None,
                                headers=request_headers)
             response = connection.getresponse()
             raw = response.read().decode("utf-8")
+            if method == "POST":
+                self.assertTrue(self.request_done.wait(4), "The fixture POST handler did not finish")
             try:
                 payload = json.loads(raw)
             except ValueError:

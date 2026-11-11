@@ -112,6 +112,37 @@ class PreviewMaintenance:
                          "message": "The optional synthetic proxy is not configured.", "scope": "Configured proxy transport only."}]}
 
 
+class PreviewReleaseNotes:
+    scenarios = {"unseen", "seen", "new_version", "account_b", "storage_error", "blocked", "editing"}
+
+    def __init__(self, root):
+        self.root = root
+        self.counter = 0
+        self.set_scenario("unseen")
+
+    def set_scenario(self, name):
+        if name not in self.scenarios:
+            raise ValueError("Unknown release-summary preview scenario")
+        import release_notes
+        self.counter += 1
+        self.scenario = name
+        self.user = "preview_other" if name == "account_b" else "preview_user_" + str(self.counter)
+        self.session = {"mode": "standalone", "user": self.user}
+        if name in {"seen", "new_version"}:
+            release_notes.mark_seen(self.root, release_notes.subject_from_session(self.session),
+                                    "1.20.0" if name == "seen" else "1.19.0")
+
+    def snapshot(self):
+        import release_notes
+        return release_notes.snapshot(self.root, self.session, "1.20.0")
+
+    def acknowledge(self, payload):
+        import release_notes
+        if self.scenario == "storage_error":
+            raise release_notes.StorageError("Synthetic acknowledgment storage failure")
+        release_notes.acknowledge(self.root, self.session, "1.20.0", payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8769)
@@ -164,6 +195,7 @@ def main():
     for name, document in documents.items():
         (data / name).write_text(json.dumps(document), encoding="utf-8")
     fixture = PreviewMaintenance()
+    notes_fixture = PreviewReleaseNotes(data)
     panel._MAINTENANCE_SERVICE = fixture
     panel.check_services_health = fixture.health
     panel.check_system_updates = lambda **_: {"ok": True, "notice": "Sign in to review synthetic updates.",
@@ -181,17 +213,48 @@ def main():
                 return False
             return super()._gate(route)
 
+        def _send(self, code, body, ctype="text/html; charset=utf-8"):
+            if ctype.startswith("text/html") and isinstance(body, bytes):
+                marker = b'<script id="irica-maint-controller">'
+                blocker = b""
+                if notes_fixture.scenario == "blocked":
+                    blocker = (b'<dialog id="preview-existing-dialog" class="irica-maint-dialog" open>'
+                               b'<form method="dialog"><p>Synthetic existing dialog</p>'
+                               b'<button id="preview-existing-close">Close fixture</button></form></dialog>')
+                elif notes_fixture.scenario == "editing":
+                    blocker = (b'<label for="preview-editing">Synthetic editing fixture</label>'
+                               b'<input id="preview-editing" value="Unsaved fixture">'
+                               b'<script>document.getElementById("preview-editing").focus();</script>')
+                body = body.replace(marker, blocker + marker, 1)
+            return super()._send(code, body, ctype)
+
+        def _preview_session(self, *, redirect=False):
+            token = panel_auth.create_session(notes_fixture.user, mode="standalone")
+            tokens.append(token)
+            self.send_response(302 if redirect else 200)
+            self.send_header("Set-Cookie", "irica_session=" + token + "; Path=/; HttpOnly; SameSite=Strict")
+            self.send_header("Set-Cookie", "irica_csrf=" + panel_auth.session_csrf(token) + "; Path=/; SameSite=Strict")
+            self.send_header("Cache-Control", "no-store")
+            if redirect:
+                self.send_header("Location", "/index.html")
+                body = b""
+            else:
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                body = json.dumps({"ok": True, "scenario": notes_fixture.scenario}).encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _release_notes(self, *, acknowledge=False):
+            if acknowledge and notes_fixture.scenario == "storage_error":
+                self._json({"ok": False, "errors": ["Synthetic acknowledgment storage failure."]}, 503)
+                return
+            return super()._release_notes(acknowledge=acknowledge)
+
         def _do_get_body(self):
             route = urlsplit(self.path).path
-            if route == "/":
-                token = panel_auth.create_session("preview_user", mode="standalone")
-                tokens.append(token)
-                self.send_response(302)
-                self.send_header("Set-Cookie", "irica_session=" + token + "; Path=/; HttpOnly; SameSite=Strict")
-                self.send_header("Set-Cookie", "irica_csrf=" + panel_auth.session_csrf(token) + "; Path=/; SameSite=Strict")
-                self.send_header("Location", "/site-1")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+            if route == "/__preview/start" or (route == "/" and panel_auth.session_user(panel._cookie_token(self.headers)) is None):
+                self._preview_session(redirect=True)
                 return
             if route == "/__preview/state":
                 if self._gate(route):
@@ -217,11 +280,18 @@ def main():
                     return
                 fixture.set_scenario(payload["scenario"])
                 self._json({"ok": True, **fixture.audit()})
+            elif route == "/__preview/release":
+                payload = self._read_json()
+                if not isinstance(payload, dict) or set(payload) != {"scenario"} or payload["scenario"] not in notes_fixture.scenarios:
+                    self._json({"ok": False}, 400)
+                    return
+                notes_fixture.set_scenario(payload["scenario"])
+                self._preview_session()
             elif route == "/__preview/expire":
                 for token in tokens:
                     panel_auth.destroy_session(token)
                 self._json({"ok": True})
-            elif route in {"/api/maintenance/check", "/api/update-app", "/api/update-chromedriver"}:
+            elif route in {"/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/api/release-notes/seen"}:
                 super()._do_post_body()
             else:
                 self._json({"ok": False, "errors": ["Only synthetic maintenance actions are enabled in this preview."]}, 403)

@@ -25,6 +25,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import ast
 import compileall
 import hashlib
 import os
@@ -75,7 +76,7 @@ APP_FILES = [
     "panel.py", "gomrok.py", "gomrok2.py",
     "app_paths.py", "crm.py", "jalali.py", "panel_auth.py",
     "app_updater.py", "maintenance_gate.py", "installer_handoff.py",
-    "maintenance_service.py", "maintenance_ui.py",
+    "maintenance_service.py", "maintenance_ui.py", "release_notes.py",
     # Shared JSONL appender, imported lazily by panel.py and crm.py on every
     # log write. Absent from the bundle, a CLEAN install raises ImportError on
     # the first log line; an existing install only looks healthy because the
@@ -576,6 +577,29 @@ def package(stage: Path, dist: Path, version: str) -> Path:
     return archive
 
 
+def validate_release_notes(version: str) -> None:
+    if (ROOT / "VERSION").read_text(encoding="ascii").strip() != version:
+        raise ValueError("The build version must match VERSION")
+    tree = ast.parse((ROOT / "release_notes.py").read_text(encoding="utf-8"))
+    content = next((ast.literal_eval(node.value) for node in tree.body
+                    if isinstance(node, ast.Assign) and any(
+                        isinstance(target, ast.Name) and target.id == "_CONTENT"
+                        for target in node.targets)), None)
+    def nonempty(value):
+        return isinstance(value, str) and bool(value.strip())
+    if (not isinstance(content, dict) or content.get("version") != version
+            or any(not nonempty(content.get(key)) for key in ("title", "intro", "footer"))
+            or not isinstance(content.get("sections"), list) or not content["sections"]):
+        raise ValueError("Curated release notes are required for the exact build version")
+    for section in content["sections"]:
+        if (not isinstance(section, dict) or not nonempty(section.get("label"))
+                or not nonempty(section.get("version")) or not isinstance(section.get("items"), list)
+                or not section["items"] or any(not isinstance(item, dict) or
+                    not nonempty(item.get("title")) or not nonempty(item.get("body"))
+                    for item in section["items"])):
+            raise ValueError("Every release-note section must contain real user-facing changes")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
@@ -585,6 +609,7 @@ def main() -> int:
     ap.add_argument("--no-zip", action="store_true",
                     help="stage and smoke-test only, do not package")
     args = ap.parse_args()
+    validate_release_notes(args.version)
 
     dist = ROOT / "dist"
     cache = dist / ".cache"

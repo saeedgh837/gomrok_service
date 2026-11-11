@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -43,6 +44,40 @@ class MaintenancePreviewTests(unittest.TestCase):
         result = self.fixture.confirm_app(offer)
         self.assertEqual(result["app"]["state"], "waiting_for_idle")
         self.assertEqual(self.fixture.audit()["app_confirmations"], 1)
+
+    def release_fixture(self):
+        self.assertTrue(hasattr(self.module, "PreviewReleaseNotes"), "Release-summary preview scenarios are missing")
+        temporary = tempfile.TemporaryDirectory(prefix="irica-release-preview-")
+        self.addCleanup(temporary.cleanup)
+        return self.module.PreviewReleaseNotes(Path(temporary.name))
+
+    def test_release_preview_uses_real_durable_markers_without_maintenance_side_effects(self):
+        notes = self.release_fixture()
+        before = self.fixture.audit()
+        initial = notes.snapshot()
+        self.assertFalse(initial["seen"])
+        notes.acknowledge({"version": "1.20.0", "notice_id": initial["notice_id"]})
+        self.assertTrue(notes.snapshot()["seen"])
+        self.assertEqual(self.fixture.audit(), before)
+
+    def test_release_preview_can_distinguish_seen_upgrade_and_another_account(self):
+        notes = self.release_fixture()
+        for scenario, seen in (("seen", True), ("unseen", False), ("new_version", False), ("account_b", False), ("blocked", False), ("editing", False)):
+            notes.set_scenario(scenario)
+            self.assertIs(notes.snapshot()["seen"], seen)
+        initial = notes.snapshot()
+        notes.set_scenario("unseen")
+        with self.assertRaises(ValueError):
+            notes.acknowledge({"version": "1.20.0", "notice_id": initial["notice_id"]})
+
+    def test_release_preview_storage_failure_never_marks_seen(self):
+        import release_notes
+        notes = self.release_fixture()
+        notes.set_scenario("storage_error")
+        snapshot = notes.snapshot()
+        with self.assertRaises(release_notes.StorageError):
+            notes.acknowledge({"version": "1.20.0", "notice_id": snapshot["notice_id"]})
+        self.assertFalse(notes.snapshot()["seen"])
 
     def test_preview_policy_keeps_the_read_only_callback_default(self):
         source = (ROOT / "lab/scripts/run_maintenance_preview.py").read_text(encoding="utf-8")

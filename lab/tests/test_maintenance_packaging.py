@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_MODULES = ("app_updater.py", "maintenance_gate.py", "installer_handoff.py",
-                   "maintenance_service.py", "maintenance_ui.py")
+                   "maintenance_service.py", "maintenance_ui.py", "release_notes.py")
 
 
 class MaintenancePackagingTests(unittest.TestCase):
@@ -45,6 +45,13 @@ class MaintenancePackagingTests(unittest.TestCase):
                                 "The release must ship " + name)
                 self.assertEqual((self.stage / name).read_text(encoding="utf-8"),
                                  "VALUE = 'fixture'\n")
+
+    def test_release_requires_curated_content_matching_the_packaged_version(self):
+        with patch.object(self.builder, "ROOT", ROOT):
+            self.builder.validate_release_notes("1.20.0")
+            for version in ("1.19.0", "1.21.0"):
+                with self.subTest(version=version), self.assertRaises(ValueError):
+                    self.builder.validate_release_notes(version)
 
     def test_first_run_requires_explicit_driver_confirmation(self):
         self.copy_app()

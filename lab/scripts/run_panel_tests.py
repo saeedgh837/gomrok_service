@@ -182,6 +182,8 @@ DEFAULT = [
     "test_maintenance_ui",
     "test_registration_attempts",
     "test_registration_identity",
+    "test_release_notes",
+    "test_release_notes_api",
     "test_release_probe",
     "test_service_health",
 ]
