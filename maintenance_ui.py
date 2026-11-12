@@ -21,10 +21,10 @@ def actions_html() -> str:
     """Return compact secondary header controls, with no inline handlers."""
     return (
         '<div class="irica-maint-actions" lang="fa" dir="rtl">'
-        '<button type="button" id="irica-maint-open-updates" class="irica-maint-button" '
+        '<button type="button" id="irica-maint-open-updates" class="irica-maint-button irica-maint-launcher" '
         'aria-haspopup="dialog" aria-controls="irica-maint-updates" aria-expanded="false">'
         + _UPDATE_ICON + '<span>به‌روزرسانی‌ها</span></button>'
-        '<button type="button" id="irica-maint-open-health" class="irica-maint-button" '
+        '<button type="button" id="irica-maint-open-health" class="irica-maint-button irica-maint-launcher" '
         'aria-haspopup="dialog" aria-controls="irica-maint-health" aria-expanded="false">'
         + _HEALTH_ICON + '<span>سلامت سرویس‌ها</span></button>'
         '<span id="irica-maint-indicator" class="irica-maint-indicator" dir="rtl" '
@@ -43,7 +43,7 @@ def _health_row(service: str, title: str, scope: str) -> str:
         f'<span id="irica-maint-health-{service}-status" class="irica-maint-badge">بررسی نشده</span></div>'
         f'<p id="irica-maint-health-{service}-message" class="irica-maint-copy">برای دیدن نتیجه، بررسی را شروع کنید.</p>'
         f'<p id="irica-maint-health-{service}-scope" class="irica-maint-note">{scope}</p>'
-        f'<p id="irica-maint-health-{service}-readiness" class="irica-maint-note">آمادگی سرویس تأیید نشده است.</p>'
+        f'<p id="irica-maint-health-{service}-readiness" class="irica-maint-note irica-maint-readiness">آمادگی سرویس تأیید نشده است.</p>'
         '</section>'
     )
 
@@ -53,8 +53,9 @@ def dialogs_html() -> str:
     return (
         '<dialog id="irica-maint-updates" class="irica-maint-dialog" lang="fa" dir="rtl" '
         'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-updates-title" aria-describedby="irica-maint-updates-description">'
-        '<div class="irica-maint-dialog-header"><h2 id="irica-maint-updates-title" class="irica-maint-title">به‌روزرسانی‌ها</h2>'
-        '<button type="button" id="irica-maint-updates-close" class="irica-maint-button">'
+        '<div class="irica-maint-dialog-header"><div class="irica-maint-heading"><span class="irica-maint-emblem">'
+        + _UPDATE_ICON + '</span><h2 id="irica-maint-updates-title" class="irica-maint-title">به‌روزرسانی‌ها</h2></div>'
+        '<button type="button" id="irica-maint-updates-close" class="irica-maint-button irica-maint-quiet">'
         + _CLOSE_ICON + '<span>بستن</span></button></div>'
         '<div class="irica-maint-body">'
         '<p id="irica-maint-updates-description" class="irica-maint-note">بررسی نسخه، نصب را شروع نمی‌کند. پیش از تأیید نصب، نسخهٔ پیشنهادی را بررسی کنید.</p>'
@@ -63,8 +64,8 @@ def dialogs_html() -> str:
         '<a id="irica-maint-sign-in" class="irica-maint-button" href="/login">ورود دوباره</a></div>'
         '<div id="irica-maint-products" class="irica-maint-products">'
         '<section class="irica-maint-product" aria-labelledby="irica-maint-app-title">'
-        '<div class="irica-maint-product-head"><h3 id="irica-maint-app-title" class="irica-maint-section-title"><bdi dir="ltr">IRICA</bdi></h3>'
-        '<span id="irica-maint-app-status" class="irica-maint-badge">بررسی نشده</span></div>'
+        '<div class="irica-maint-product-head"><div><h3 id="irica-maint-app-title" class="irica-maint-section-title"><bdi dir="ltr">IRICA</bdi></h3>'
+        '<p class="irica-maint-note">نرم‌افزار ایریکا</p></div><span id="irica-maint-app-status" class="irica-maint-badge">بررسی نشده</span></div>'
         '<dl class="irica-maint-versions"><div class="irica-maint-version-item"><dt class="irica-maint-label">نسخهٔ نصب‌شده</dt><dd class="irica-maint-value"><bdi id="irica-maint-app-current" dir="ltr">نامشخص</bdi></dd></div>'
         '<div class="irica-maint-version-item"><dt class="irica-maint-label">نسخهٔ پیشنهادی</dt><dd class="irica-maint-value"><bdi id="irica-maint-app-offer" dir="ltr">نامشخص</bdi></dd></div></dl>'
         '<p id="irica-maint-app-message" class="irica-maint-copy">وضعیت به‌روزرسانی هنوز بررسی نشده است.</p>'
@@ -72,48 +73,49 @@ def dialogs_html() -> str:
         '<p id="irica-maint-app-progress-label" class="irica-maint-note" hidden></p>'
         '<p id="irica-maint-app-manual" class="irica-maint-notice" hidden>در این نسخه، نصب خودکار در دسترس نیست. نسخهٔ رسمی برنامه را دستی نصب کنید؛ این بخش هیچ نصابی را اجرا نمی‌کند.</p>'
         '<p id="irica-maint-app-cleanup" class="irica-maint-note" hidden>پاک‌سازی فایل‌های موقت به‌روزرسانی هنوز تمام نشده است. این وضعیت نشانهٔ نصب نسخهٔ جدید نیست.</p>'
-        '<button type="button" id="irica-maint-app-install" class="irica-maint-button" disabled>بررسی به‌روزرسانی برنامه</button></section>'
+        '<button type="button" id="irica-maint-app-install" class="irica-maint-button irica-maint-review" disabled>بررسی به‌روزرسانی برنامه</button></section>'
         '<section class="irica-maint-product" aria-labelledby="irica-maint-driver-title">'
-        '<div class="irica-maint-product-head"><h3 id="irica-maint-driver-title" class="irica-maint-section-title"><bdi dir="ltr">ChromeDriver</bdi></h3>'
-        '<span id="irica-maint-driver-status" class="irica-maint-badge">بررسی نشده</span></div>'
+        '<div class="irica-maint-product-head"><div><h3 id="irica-maint-driver-title" class="irica-maint-section-title"><bdi dir="ltr">ChromeDriver</bdi></h3>'
+        '<p class="irica-maint-note">درایور مرورگر</p></div><span id="irica-maint-driver-status" class="irica-maint-badge">بررسی نشده</span></div>'
         '<dl class="irica-maint-versions"><div class="irica-maint-version-item"><dt class="irica-maint-label">درایور نصب‌شده</dt><dd class="irica-maint-value"><bdi id="irica-maint-driver-current" dir="ltr">نامشخص</bdi></dd></div>'
         '<div class="irica-maint-version-item"><dt class="irica-maint-label">نسخهٔ کروم</dt><dd class="irica-maint-value"><bdi id="irica-maint-browser-version" dir="ltr">نامشخص</bdi></dd></div>'
         '<div class="irica-maint-version-item"><dt class="irica-maint-label">درایور پیشنهادی</dt><dd class="irica-maint-value"><bdi id="irica-maint-driver-offer" dir="ltr">نامشخص</bdi></dd></div></dl>'
         '<p id="irica-maint-driver-message" class="irica-maint-copy">وضعیت درایور هنوز بررسی نشده است.</p>'
-        '<button type="button" id="irica-maint-driver-install" class="irica-maint-button" disabled>بررسی به‌روزرسانی درایور</button></section></div>'
+        '<button type="button" id="irica-maint-driver-install" class="irica-maint-button irica-maint-review" disabled>بررسی به‌روزرسانی درایور</button></section></div>'
         '<section id="irica-maint-confirmation" class="irica-maint-confirmation" aria-labelledby="irica-maint-confirm-title" hidden>'
         '<h3 id="irica-maint-confirm-title" class="irica-maint-section-title">تأیید نصب</h3>'
         '<p class="irica-maint-copy">نسخهٔ <bdi id="irica-maint-confirm-version" dir="ltr">نامشخص</bdi> از <bdi id="irica-maint-confirm-product" dir="ltr">IRICA</bdi> نصب شود؟</p>'
         '<p id="irica-maint-confirm-detail" class="irica-maint-note">با انصراف، هیچ تغییری در نرم‌افزار ایجاد نمی‌شود.</p>'
         '<div class="irica-maint-dialog-footer"><button type="button" id="irica-maint-confirm-cancel" class="irica-maint-button">انصراف</button>'
         '<button type="button" id="irica-maint-confirm-install" class="irica-maint-button irica-maint-primary" disabled>نصب این نسخه</button></div></section>'
-        '<p id="irica-maint-background" class="irica-maint-note" hidden>با بستن این پنجره، نصب در پس‌زمینه ادامه پیدا می‌کند و کار سرور لغو نمی‌شود.</p>'
-        '<div id="irica-maint-update-tools" class="irica-maint-dialog-footer">'
-        '<button type="button" id="irica-maint-refresh" class="irica-maint-button">تازه‌سازی وضعیت</button>'
-        '<button type="button" id="irica-maint-check" class="irica-maint-button">بررسی نسخهٔ جدید</button>'
-        '<button type="button" id="irica-maint-release-open" class="irica-maint-button" '
-        'aria-haspopup="dialog" aria-controls="irica-maint-release" aria-expanded="false">تغییرات این نسخه</button></div>'
-        '</div></dialog>'
+        '<p id="irica-maint-background" class="irica-maint-note" hidden>با بستن این پنجره، نصب در پس‌زمینه ادامه پیدا می‌کند و کار سرور لغو نمی‌شود.</p></div>'
+        '<div id="irica-maint-update-tools" class="irica-maint-dialog-footer irica-maint-toolbar">'
+        '<button type="button" id="irica-maint-refresh" class="irica-maint-button irica-maint-quiet">تازه‌سازی وضعیت</button>'
+        '<button type="button" id="irica-maint-release-open" class="irica-maint-button irica-maint-quiet" '
+        'aria-haspopup="dialog" aria-controls="irica-maint-release" aria-expanded="false">تغییرات این نسخه</button>'
+        '<button type="button" id="irica-maint-check" class="irica-maint-button irica-maint-primary">بررسی نسخهٔ جدید</button></div></dialog>'
         '<dialog id="irica-maint-health" class="irica-maint-dialog" lang="fa" dir="rtl" '
         'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-health-title" aria-describedby="irica-maint-health-description">'
-        '<div class="irica-maint-dialog-header"><h2 id="irica-maint-health-title" class="irica-maint-title">سلامت سرویس‌ها</h2>'
-        '<button type="button" id="irica-maint-health-close" class="irica-maint-button">'
+        '<div class="irica-maint-dialog-header"><div class="irica-maint-heading"><span class="irica-maint-emblem">'
+        + _HEALTH_ICON + '</span><h2 id="irica-maint-health-title" class="irica-maint-title">سلامت سرویس‌ها</h2></div>'
+        '<button type="button" id="irica-maint-health-close" class="irica-maint-button irica-maint-quiet">'
         + _CLOSE_ICON + '<span>بستن</span></button></div>'
         '<div class="irica-maint-body"><p id="irica-maint-health-description" class="irica-maint-note">بررسی‌ها فقط با انتخاب «شروع بررسی» اجرا می‌شوند و پیامی در تلگرام ارسال نمی‌شود. در دسترس بودن سرویس، ثبت اطلاعات یا آمادگی ارسال پیام را تأیید نمی‌کند.</p>'
         '<p id="irica-maint-health-notice" class="irica-maint-notice" role="status" aria-live="polite" aria-atomic="true" hidden></p>'
         '<div id="irica-maint-health-auth" class="irica-maint-auth" hidden><p class="irica-maint-copy">برای بررسی سرویس‌ها دوباره وارد شوید.</p>'
         '<a id="irica-maint-health-sign-in" class="irica-maint-button" href="/login">ورود دوباره</a></div>'
+        '<div class="irica-maint-services">'
         + _health_row("cloud", "سرور ابری", "فقط ارتباط با سرور ابری بررسی می‌شود؛ ورود و همگام‌سازی بررسی نمی‌شوند.")
         + _health_row("telegram", "ارتباط تلگرام", "فقط ارتباط با تلگرام بررسی می‌شود؛ آمادگی ارسال پیام یا درستی تنظیمات ربات و گفت‌وگو تأیید نمی‌شود.")
         + _health_row("proxy", "پروکسی اختیاری", "پروکسی اختیاری است و فقط ارتباط آن بررسی می‌شود. تنظیم نبودن آن خطا نیست.")
-        + '<p class="irica-maint-note">آخرین بررسی: <time id="irica-maint-health-time" dir="rtl">بررسی نشده</time></p>'
-        '<div class="irica-maint-dialog-footer"><button type="button" id="irica-maint-health-run" class="irica-maint-button">شروع بررسی</button></div>'
-        '</div></dialog>'
+        + '</div></div><div id="irica-maint-health-tools" class="irica-maint-dialog-footer irica-maint-toolbar">'
+        '<p class="irica-maint-note">آخرین بررسی: <time id="irica-maint-health-time" dir="rtl">بررسی نشده</time></p>'
+        '<button type="button" id="irica-maint-health-run" class="irica-maint-button irica-maint-primary">شروع بررسی</button></div></dialog>'
         '<dialog id="irica-maint-release" class="irica-maint-dialog irica-maint-release" lang="fa" dir="rtl" '
         'aria-modal="true" tabindex="-1" aria-labelledby="irica-maint-release-title" aria-describedby="irica-maint-release-intro">'
         '<div class="irica-maint-dialog-header"><div><h2 id="irica-maint-release-title" class="irica-maint-title">تازه‌های ایریکا</h2>'
         '<p class="irica-maint-note irica-maint-release-meta">نسخهٔ نصب‌شده <bdi id="irica-maint-release-version" dir="ltr">—</bdi></p></div>'
-        '<button type="button" id="irica-maint-release-close" class="irica-maint-button">'
+        '<button type="button" id="irica-maint-release-close" class="irica-maint-button irica-maint-quiet">'
         + _CLOSE_ICON + '<span>بستن</span></button></div>'
         '<div class="irica-maint-body"><p id="irica-maint-release-intro" class="irica-maint-copy">در حال آماده‌سازی خلاصهٔ تغییرات…</p>'
         '<div id="irica-maint-release-content" class="irica-maint-release-content"></div>'
@@ -126,64 +128,110 @@ def dialogs_html() -> str:
 
 
 _STYLE = r"""<style id="irica-maint-style">
+.irica-maint-actions,.irica-maint-dialog{
+  --irica-maint-surface:#FFFFFF;--irica-maint-canvas:#F4F7FB;--irica-maint-text:#172A43;--irica-maint-muted:#53657D;
+  --irica-maint-line:#D7E1EF;--irica-maint-control-border:#7A8CA5;
+  --irica-maint-accent:#2458C6;--irica-maint-accent-hover:#1947AA;--irica-maint-on-accent:#FFFFFF;--irica-maint-accent-soft:#ECF2FE;
+  --irica-maint-success:#0D6B52;--irica-maint-success-soft:#EAF6F0;--irica-maint-warning:#885600;--irica-maint-warning-soft:#FFF6E6;
+  --irica-maint-danger:#AF2F45;--irica-maint-danger-soft:#FFF0F2;--irica-maint-neutral:#53657D;--irica-maint-neutral-soft:#EEF2F7;
+}
+.irica-maint-actions:where(html[data-theme="dark"] *),.irica-maint-dialog:where(html[data-theme="dark"] *){
+  --irica-maint-surface:#19263B;--irica-maint-canvas:#121D30;--irica-maint-text:#EAF0FA;--irica-maint-muted:#A9B8CE;
+  --irica-maint-line:#33465F;--irica-maint-control-border:#7087A4;
+  --irica-maint-accent:#9DBFFF;--irica-maint-accent-hover:#BDD3FF;--irica-maint-on-accent:#11213A;--irica-maint-accent-soft:#24395C;
+  --irica-maint-success:#8ADFC0;--irica-maint-success-soft:#173C34;--irica-maint-warning:#F5CD84;--irica-maint-warning-soft:#3E321D;
+  --irica-maint-danger:#FFB0BF;--irica-maint-danger-soft:#482936;--irica-maint-neutral:#B4C2D6;--irica-maint-neutral-soft:#26354D;
+}
 .irica-maint-host{flex-wrap:wrap;min-inline-size:0;max-inline-size:100%}
 .irica-maint-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-inline-size:0;max-inline-size:100%}
-.irica-maint-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-block-size:44px;min-inline-size:44px;max-inline-size:100%;padding:8px 12px;border:1px solid var(--line-strong,rgba(27,32,54,.16));border-radius:10px;background:var(--card,#fff);color:var(--txt,#1b2036);font:inherit;font-size:13px;font-weight:600;line-height:1.5;text-decoration:none;white-space:normal;overflow-wrap:anywhere;cursor:pointer;touch-action:manipulation;transition:background .15s,border-color .15s,color .15s}
-.irica-maint-button:hover:not(:disabled){border-color:var(--brand,#4460e3);background:var(--brand-soft,rgba(68,96,227,.10))}
-.irica-maint-button:active:not(:disabled){background:var(--card2,#f7f8fd)}
-.irica-maint-button:focus-visible{outline:3px solid var(--brand,#4460e3);outline-offset:2px;box-shadow:none}
-.irica-maint-button:disabled{opacity:.65;cursor:not-allowed}
-.irica-maint-primary{background:var(--brand,#4460e3);border-color:var(--brand,#4460e3);color:var(--on-brand,#fff)}
-.irica-maint-primary:hover:not(:disabled){background:var(--brand-hover,var(--brand,#4460e3));color:var(--on-brand,#fff)}
-.irica-maint-primary:active:not(:disabled){background:var(--brand-hover,var(--brand,#4460e3));color:var(--on-brand,#fff)}
+.irica-maint-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-block-size:44px;min-inline-size:44px;max-inline-size:100%;padding:10px 16px;border:1px solid var(--irica-maint-control-border);border-radius:8px;background:var(--irica-maint-surface);color:var(--irica-maint-text);font:inherit;font-size:13px;font-weight:600;line-height:1.6;text-decoration:none;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer;touch-action:manipulation;transition:background .15s,border-color .15s,color .15s}
+.irica-maint-button:hover:not(:disabled){border-color:var(--irica-maint-accent);background:var(--irica-maint-accent-soft)}
+.irica-maint-button:active:not(:disabled){background:var(--irica-maint-canvas)}
+.irica-maint-button:focus-visible{outline:3px solid var(--irica-maint-accent);outline-offset:3px;box-shadow:none}
+.irica-maint-launcher{background:var(--irica-maint-accent-soft);border-color:transparent;color:var(--irica-maint-accent)}
+.irica-maint-review{border-color:var(--irica-maint-accent);color:var(--irica-maint-accent)}
+.irica-maint-quiet{background:transparent;border-color:transparent;color:var(--irica-maint-muted)}
+.irica-maint-quiet:hover:not(:disabled){background:var(--irica-maint-canvas);border-color:transparent;color:var(--irica-maint-text)}
+.irica-maint-primary{background:var(--irica-maint-accent);border-color:var(--irica-maint-accent);color:var(--irica-maint-on-accent)}
+.irica-maint-primary:hover:not(:disabled){background:var(--irica-maint-accent-hover);color:var(--irica-maint-on-accent)}
+.irica-maint-primary:active:not(:disabled){background:var(--irica-maint-accent-hover);color:var(--irica-maint-on-accent)}
+.irica-maint-button:disabled{background:var(--irica-maint-canvas);border-color:var(--irica-maint-line);color:var(--irica-maint-muted);opacity:1;cursor:not-allowed}
 .irica-maint-icon{flex:none;inline-size:16px;block-size:16px}
-.irica-maint-indicator{font-size:12px;color:var(--muted,#5c6484);max-inline-size:15ch;overflow-wrap:anywhere;line-height:1.5}
-.irica-maint-dialog{box-sizing:border-box;position:fixed;inset:0;margin:auto;block-size:fit-content;inline-size:min(680px,calc(100% - 24px));max-inline-size:calc(100vw - 24px);max-block-size:calc(100vh - 32px);max-block-size:calc(100dvh - 32px);padding:0;overflow:auto;overscroll-behavior:contain;scroll-padding-block:20px;border:1px solid var(--line-strong,rgba(27,32,54,.16));border-radius:16px;background:var(--card,#fff);color:var(--txt,#1b2036);font:inherit;font-size:14px;line-height:1.65;text-align:start;box-shadow:var(--shadow-2,0 8px 28px rgba(16,20,40,.20))}
+.irica-maint-indicator{display:inline-flex;align-items:center;gap:6px;max-inline-size:18ch;padding:4px 9px;border-radius:999px;background:var(--irica-maint-neutral-soft);color:var(--irica-maint-neutral);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.irica-maint-dialog{box-sizing:border-box;display:flex;flex-direction:column;position:fixed;inset:0;margin:auto;block-size:fit-content;inline-size:min(700px,calc(100% - 24px));max-inline-size:calc(100vw - 24px);max-block-size:calc(100vh - 32px);max-block-size:calc(100dvh - 32px);padding:0;overflow:hidden;border:1px solid var(--irica-maint-line);border-radius:18px;background:var(--irica-maint-surface);color:var(--irica-maint-text);font:inherit;font-size:14px;line-height:1.8;text-align:start;box-shadow:0 24px 80px rgba(8,20,42,.24)}
+.irica-maint-dialog *{box-sizing:border-box}
 .irica-maint-dialog:not([open]){display:none}
-.irica-maint-dialog::backdrop{background:rgba(8,10,25,.62)}
+.irica-maint-dialog::backdrop{background:rgba(10,20,38,.58)}
 .irica-maint-dialog [hidden],.irica-maint-actions [hidden]{display:none!important}
-.irica-maint-dialog-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 20px 0;min-inline-size:0}
-.irica-maint-title{margin:4px 0 0;padding:0;font-size:20px;font-weight:750;line-height:1.5;overflow-wrap:anywhere}
-.irica-maint-body{display:grid;gap:16px;padding:16px 20px 20px;min-inline-size:0}
-.irica-maint-products{display:grid;gap:20px;min-inline-size:0}
-.irica-maint-product{padding-block-end:20px;border-block-end:1px solid var(--line,rgba(27,32,54,.10));min-inline-size:0}
-.irica-maint-product-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-inline-size:0}
-.irica-maint-section-title{margin:0;padding:0;font-size:16px;font-weight:700;line-height:1.6;overflow-wrap:anywhere}
-.irica-maint-badge{display:inline-block;padding:3px 9px;border:1px solid var(--line-strong,rgba(27,32,54,.16));border-radius:999px;background:var(--card2,#f7f8fd);color:var(--txt,#1b2036);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
-.irica-maint-versions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0;min-inline-size:0}
+.irica-maint-dialog-header{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-block-end:1px solid var(--irica-maint-line);min-inline-size:0}
+.irica-maint-heading{display:flex;align-items:center;gap:12px;min-inline-size:0}
+.irica-maint-emblem{display:grid;place-items:center;flex:none;inline-size:40px;block-size:40px;border-radius:12px;background:var(--irica-maint-accent-soft);color:var(--irica-maint-accent)}
+.irica-maint-emblem .irica-maint-icon{inline-size:22px;block-size:22px}
+.irica-maint-title{margin:0;padding:0;font-size:21px;font-weight:750;line-height:1.6;overflow-wrap:anywhere}
+.irica-maint-body{display:grid;flex:0 1 auto;gap:16px;min-block-size:0;min-inline-size:0;padding:20px 24px;overflow:auto;overscroll-behavior:contain;scroll-padding-block:16px;background:var(--irica-maint-canvas)}
+.irica-maint-products,.irica-maint-services{display:grid;gap:0;min-inline-size:0;border:1px solid var(--irica-maint-line);border-radius:12px;background:var(--irica-maint-surface)}
+.irica-maint-product{display:grid;gap:12px;padding:20px;min-inline-size:0;border-block-end:1px solid var(--irica-maint-line)}
+.irica-maint-product:last-child,.irica-maint-health-row:last-child{border-block-end:0}
+.irica-maint-product>.irica-maint-button{justify-self:start;margin-block-start:4px}
+.irica-maint-product-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;min-inline-size:0}
+.irica-maint-section-title{margin:0;padding:0;color:var(--irica-maint-text);font-size:16px;font-weight:700;line-height:1.6;overflow-wrap:anywhere}
+.irica-maint-badge{display:inline-flex;align-items:center;gap:6px;max-inline-size:100%;padding:4px 10px;border:0;border-radius:999px;background:var(--irica-maint-neutral-soft);color:var(--irica-maint-neutral);font-size:12px;font-weight:600;line-height:1.7;overflow-wrap:anywhere}
+.irica-maint-badge::before,.irica-maint-indicator::before{content:"";flex:none;inline-size:6px;block-size:6px;border-radius:50%;background:currentColor}
+.irica-maint-badge[data-tone="success"],.irica-maint-indicator[data-tone="success"]{background:var(--irica-maint-success-soft);color:var(--irica-maint-success)}
+.irica-maint-badge[data-tone="info"],.irica-maint-indicator[data-tone="info"]{background:var(--irica-maint-accent-soft);color:var(--irica-maint-accent)}
+.irica-maint-badge[data-tone="warning"],.irica-maint-indicator[data-tone="warning"]{background:var(--irica-maint-warning-soft);color:var(--irica-maint-warning)}
+.irica-maint-badge[data-tone="danger"],.irica-maint-indicator[data-tone="danger"]{background:var(--irica-maint-danger-soft);color:var(--irica-maint-danger)}
+.irica-maint-versions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:0;padding:12px 14px;min-inline-size:0;border-radius:8px;background:var(--irica-maint-canvas)}
 .irica-maint-version-item{min-inline-size:0}
-.irica-maint-label{font-size:12px;color:var(--muted,#5c6484)}
-.irica-maint-value{margin:2px 0 0;font-weight:650;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
-.irica-maint-copy{margin:8px 0;overflow-wrap:anywhere}
-.irica-maint-note{margin:0;color:var(--muted,#5c6484);font-size:13px;line-height:1.7;overflow-wrap:anywhere;max-inline-size:75ch}
-.irica-maint-notice{margin:0;padding:10px 12px;border-inline-start:3px solid var(--brand,#4460e3);background:var(--card2,#f7f8fd);color:var(--txt,#1b2036);border-radius:6px;font-size:13px;overflow-wrap:anywhere}
-.irica-maint-auth{display:grid;justify-items:start;gap:8px}
-.irica-maint-progress{inline-size:100%;block-size:10px;margin-block:12px 4px;accent-color:var(--brand,#4460e3)}
-.irica-maint-confirmation{display:grid;gap:12px;min-inline-size:0}
+.irica-maint-label{font-size:12px;color:var(--irica-maint-muted)}
+.irica-maint-value{margin:4px 0 0;color:var(--irica-maint-text);font-size:16px;font-weight:650;line-height:1.6;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.irica-maint-copy{margin:0;color:var(--irica-maint-text);overflow-wrap:anywhere}
+.irica-maint-note{margin:0;color:var(--irica-maint-muted);font-size:13px;line-height:1.8;overflow-wrap:anywhere;max-inline-size:75ch}
+.irica-maint-notice{margin:0;padding:12px 14px;border:1px solid var(--irica-maint-line);border-radius:8px;background:var(--irica-maint-accent-soft);color:var(--irica-maint-accent);font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+.irica-maint-notice[data-tone="danger"]{background:var(--irica-maint-danger-soft);color:var(--irica-maint-danger)}
+.irica-maint-notice[data-tone="warning"]{background:var(--irica-maint-warning-soft);color:var(--irica-maint-warning)}
+.irica-maint-auth{display:grid;justify-items:start;gap:12px}
+.irica-maint-progress{inline-size:100%;block-size:8px;margin:0;accent-color:var(--irica-maint-accent)}
+.irica-maint-confirmation{display:grid;gap:16px;min-inline-size:0;padding:20px;border:1px solid var(--irica-maint-line);border-radius:12px;background:var(--irica-maint-surface)}
 .irica-maint-dialog-footer{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-inline-size:0}
-.irica-maint-health-row{display:grid;gap:8px;min-inline-size:0;padding-block-end:16px;border-block-end:1px solid var(--line,rgba(27,32,54,.10))}
-.irica-maint-release{inline-size:min(640px,calc(100% - 24px));font-size:14px}
-.irica-maint-release .irica-maint-dialog-header{padding-block-end:16px;border-block-end:1px solid var(--line,rgba(27,32,54,.10))}
-.irica-maint-release .irica-maint-body{gap:20px}
-.irica-maint-release .irica-maint-copy{margin:0;line-height:1.9}
+.irica-maint-toolbar{flex:none;padding:16px 24px;border-block-start:1px solid var(--irica-maint-line);background:var(--irica-maint-surface)}
+.irica-maint-toolbar>.irica-maint-primary{margin-inline-start:auto}
+.irica-maint-health-row{display:grid;gap:8px;min-inline-size:0;padding:18px 20px;border-block-end:1px solid var(--irica-maint-line)}
+.irica-maint-readiness{padding-inline-start:10px;border-inline-start:2px solid var(--irica-maint-line)}
+.irica-maint-release{inline-size:min(640px,calc(100% - 24px))}
+.irica-maint-release .irica-maint-body{gap:20px;background:var(--irica-maint-surface)}
+.irica-maint-release .irica-maint-copy{line-height:1.9}
 .irica-maint-release-meta{margin-block-start:6px;display:flex;align-items:center;gap:8px}
-.irica-maint-release-meta bdi{color:var(--brand,#4460e3);font-weight:700;font-variant-numeric:tabular-nums}
+.irica-maint-release-meta bdi{color:var(--irica-maint-accent);font-weight:700;font-variant-numeric:tabular-nums}
 .irica-maint-release-content{display:grid;gap:24px;min-inline-size:0}
 .irica-maint-release-section{display:grid;gap:14px;min-inline-size:0}
-.irica-maint-release-section-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0;color:var(--muted,#5c6484);font-size:12px;font-weight:600;line-height:1.7}
+.irica-maint-release-section-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0;color:var(--irica-maint-muted);font-size:12px;font-weight:600;line-height:1.8}
 .irica-maint-release-list{display:grid;gap:16px;margin:0;padding:0;list-style:none;min-inline-size:0}
-.irica-maint-release-item{display:grid;gap:5px;padding-inline-start:14px;border-inline-start:2px solid var(--line-strong,rgba(27,32,54,.16));min-inline-size:0}
-.irica-maint-release-section:first-child .irica-maint-release-item{border-color:var(--brand,#4460e3)}
-.irica-maint-release-item h4{margin:0;color:var(--txt,#1b2036);font-size:15px;font-weight:700;line-height:1.6}
-.irica-maint-release-item p{margin:0;color:var(--muted,#5c6484);line-height:1.9;overflow-wrap:anywhere}
-.irica-maint-release-footer{position:sticky;inset-block-end:0;padding:14px 20px;background:var(--card,#fff);border-block-start:1px solid var(--line,rgba(27,32,54,.10));justify-content:flex-end}
+.irica-maint-release-item{display:grid;gap:5px;padding-inline-start:14px;border-inline-start:2px solid var(--irica-maint-line);min-inline-size:0}
+.irica-maint-release-section:first-child .irica-maint-release-item{border-color:var(--irica-maint-accent)}
+.irica-maint-release-item h4{margin:0;color:var(--irica-maint-text);font-size:15px;font-weight:700;line-height:1.6}
+.irica-maint-release-item p{margin:0;color:var(--irica-maint-muted);line-height:1.9;overflow-wrap:anywhere}
+.irica-maint-release-footer{flex:none;padding:16px 24px;background:var(--irica-maint-surface);border-block-start:1px solid var(--irica-maint-line);justify-content:flex-end}
 .irica-maint-release-footer .irica-maint-primary{min-inline-size:148px}
 .irica-maint-release-feedback{flex-basis:100%}
 @media(max-width:480px){
-.irica-maint-dialog-header{padding:16px 16px 0;gap:8px}
-.irica-maint-body{padding:12px 16px 16px}
-.irica-maint-versions{grid-template-columns:minmax(0,1fr)}
+.irica-maint-dialog{max-block-size:calc(100dvh - 16px);inline-size:calc(100% - 16px);max-inline-size:calc(100vw - 16px);border-radius:14px}
+.irica-maint-dialog-header{padding:16px;gap:8px}
+.irica-maint-heading{gap:8px}
+.irica-maint-emblem{inline-size:32px;block-size:32px;border-radius:10px}
+.irica-maint-title{font-size:18px}
+.irica-maint-body{padding:16px}
+.irica-maint-product,.irica-maint-health-row{padding:16px}
+.irica-maint-versions{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px;gap:12px}
+.irica-maint-version-item:last-child:nth-child(odd){grid-column:1 / -1}
 .irica-maint-dialog-footer .irica-maint-button{flex:1 1 130px}
+.irica-maint-toolbar,.irica-maint-release-footer{padding:12px 16px}
+.irica-maint-toolbar>.irica-maint-primary{flex-basis:100%;margin-inline-start:0}
+.irica-maint-toolbar>.irica-maint-note{flex-basis:100%}
+}
+@media(max-height:480px){
+.irica-maint-dialog{display:block;overflow:auto;overscroll-behavior:contain;scroll-padding-block:16px}
+.irica-maint-body{overflow:visible}
 }
 @media(prefers-reduced-motion:reduce){
 .irica-maint-button{transition:none}
@@ -207,6 +255,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
   const progressStates = new Set(['downloading', 'verifying', 'waiting_for_idle', 'installing']);
   const knownStates = new Set(['not_checked', 'checking', 'current', 'available', 'downloading', 'verifying', 'waiting_for_idle', 'installing', 'failed']);
   const labels = {not_checked: 'بررسی نشده', checking: 'در حال بررسی', current: 'به‌روز', available: 'نسخهٔ جدید', downloading: 'در حال دریافت', verifying: 'در حال اعتبارسنجی', waiting_for_idle: 'منتظر پایان کارها', installing: 'در حال نصب', failed: 'نیاز به بررسی'};
+  const updateTones = {not_checked: 'neutral', checking: 'info', current: 'success', available: 'info', downloading: 'info', verifying: 'info', waiting_for_idle: 'info', installing: 'info', failed: 'danger'};
   const descriptions = {
     not_checked: 'وضعیت به‌روزرسانی هنوز بررسی نشده است.',
     checking: 'فقط اطلاعات نسخه بررسی می‌شود؛ هیچ نرم‌افزاری نصب نمی‌شود.',
@@ -262,9 +311,10 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     const next = String(value);
     if (element.textContent !== next) element.textContent = next;
   }
-  function notice(suffix, value) {
+  function notice(suffix, value, tone = 'info') {
     text(suffix, value);
     byId(suffix).hidden = !value;
+    byId(suffix).dataset.tone = tone;
   }
   function persianDigits(value) {
     return String(value).replace(/[0-9]/g, digit => '۰۱۲۳۴۵۶۷۸۹'[Number(digit)]);
@@ -314,6 +364,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     byId('products').hidden = false;
     byId('update-tools').hidden = false;
     byId('confirm-install').disabled = true;
+    render();
     if (restore && old && updates.open) byId(old.kind + '-install').focus();
   }
   function render() {
@@ -324,6 +375,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
       const state = stateFor(kind);
       const offer = offerFor(kind);
       text(kind + '-status', installRequest === kind ? 'در حال شروع نصب' : labels[state]);
+      byId(kind + '-status').dataset.tone = installRequest === kind ? 'info' : updateTones[state];
       text(kind + '-current', version(data && data[kind === 'app' ? 'current_version' : 'installed_version']));
       text(kind + '-offer', offer ? offer.version : 'نامشخص');
       text(kind + '-message', descriptions[state]);
@@ -357,16 +409,20 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     byId('release-open').disabled = authExpired || mutationBusy || Boolean(pending);
     text('check', mutationBusy && !installRequest ? 'در حال بررسی نسخه‌ها' : 'بررسی نسخهٔ جدید');
     text('health-run', healthBusy ? 'در حال بررسی' : 'شروع بررسی');
+    byId('check').setAttribute('aria-busy', String(mutationBusy && !installRequest));
+    byId('health-run').setAttribute('aria-busy', String(healthBusy));
     byId('confirm-install').disabled = !pending || authExpired || mutationBusy || readError || !sameOffer(pending, candidate(pending.kind));
     let indicator = 'بررسی نشده';
-    if (authExpired) indicator = 'نیاز به ورود';
-    else if (readError) indicator = 'ارتباط قطع است';
-    else if (installRequest || (snapshot && (progressStates.has(stateFor('app')) || ['waiting_for_idle', 'installing'].includes(stateFor('driver'))))) indicator = 'در حال انجام';
-    else if (mutationBusy || (snapshot && (snapshot.checking || stateFor('app') === 'checking' || stateFor('driver') === 'checking'))) indicator = 'در حال بررسی';
-    else if (snapshot && (stateFor('app') === 'available' || stateFor('driver') === 'available')) indicator = 'نسخهٔ جدید';
-    else if (snapshot && (stateFor('app') === 'failed' || stateFor('driver') === 'failed')) indicator = 'نیاز به بررسی';
-    else if (snapshot && stateFor('app') === 'current' && stateFor('driver') === 'current') indicator = 'به‌روز';
+    let indicatorTone = 'neutral';
+    if (authExpired) { indicator = 'نیاز به ورود'; indicatorTone = 'warning'; }
+    else if (readError) { indicator = 'ارتباط قطع است'; indicatorTone = 'danger'; }
+    else if (installRequest || (snapshot && (progressStates.has(stateFor('app')) || ['waiting_for_idle', 'installing'].includes(stateFor('driver'))))) { indicator = 'در حال انجام'; indicatorTone = 'info'; }
+    else if (mutationBusy || (snapshot && (snapshot.checking || stateFor('app') === 'checking' || stateFor('driver') === 'checking'))) { indicator = 'در حال بررسی'; indicatorTone = 'info'; }
+    else if (snapshot && (stateFor('app') === 'available' || stateFor('driver') === 'available')) { indicator = 'نسخهٔ جدید'; indicatorTone = 'info'; }
+    else if (snapshot && (stateFor('app') === 'failed' || stateFor('driver') === 'failed')) { indicator = 'نیاز به بررسی'; indicatorTone = 'danger'; }
+    else if (snapshot && stateFor('app') === 'current' && stateFor('driver') === 'current') { indicator = 'به‌روز'; indicatorTone = 'success'; }
     text('indicator', indicator);
+    byId('indicator').dataset.tone = indicatorTone;
     wakeRelease();
   }
   function expireAuth() {
@@ -426,7 +482,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
     if (error && error.maintenanceFailure === 'auth') { expireAuth(); return; }
     if (error && error.maintenanceFailure === 'paused') return;
     if (suffix === 'notice') { readError = true; stopPolling(); }
-    notice(suffix, 'سرویس در دسترس نیست. ارتباط را بررسی کنید و دوباره تلاش کنید.');
+    notice(suffix, 'سرویس در دسترس نیست. ارتباط را بررسی کنید و دوباره تلاش کنید.', 'danger');
     render();
   }
   function applySnapshot(body) {
@@ -764,12 +820,14 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
       if (authExpired) return;
       if (!Array.isArray(body.steps)) throw failure('service');
       const statusLabels = {ok: 'ارتباط برقرار است', reachable: 'سرویس در دسترس است', unknown: 'آمادگی نامشخص', auth_denied: 'دسترسی رد شد', not_configured: 'تنظیم نشده', timeout: 'پایان مهلت', error: 'بررسی ناموفق'};
+      const statusTones = {ok: 'success', reachable: 'success', unknown: 'warning', auth_denied: 'danger', not_configured: 'neutral', timeout: 'danger', error: 'danger'};
       const statusMessages = {ok: 'ارتباط این سرویس تأیید شد؛ قابلیت‌های دیگر بررسی نشده‌اند.', reachable: 'سرویس پاسخ می‌دهد، اما آمادگی ارسال پیام تأیید نشده است.', unknown: 'آمادگی سرویس مشخص نشد.', auth_denied: 'حساب یا تنظیمات این سرویس را بررسی کنید؛ ورود دوباره به پنل ممکن است کافی نباشد.', not_configured: 'این سرویس تنظیم نشده است.', timeout: 'سرویس در مهلت تعیین‌شده پاسخ نداد.', error: 'بررسی ارتباط ناموفق بود. پیش از تلاش دوباره، تنظیمات سرویس را بررسی کنید.'};
       for (const id of ['cloud', 'telegram', 'proxy']) {
         const matches = body.steps.filter(step => step && step.id === id);
         const step = matches.length === 1 ? matches[0] : null;
         const status = step && Object.hasOwn(statusLabels, step.status) ? step.status : null;
         text('health-' + id + '-status', status ? statusLabels[status] : 'نتیجه گزارش نشده');
+        byId('health-' + id + '-status').dataset.tone = status ? statusTones[status] : 'neutral';
         text('health-' + id + '-message', status ? statusMessages[status] : 'نتیجهٔ معتبری برای این سرویس گزارش نشده است.');
         text('health-' + id + '-scope', serviceScopes[id]);
         text('health-' + id + '-readiness', serviceReadiness[id]);
@@ -779,7 +837,7 @@ _CONTROLLER = r"""<script id="irica-maint-controller">
       text('health-time', displayDate(timestamp));
       byId('health-time').dateTime = timestamp;
       const summary = {ok: 'بررسی ارتباط تمام شد. محدودهٔ هر نتیجه را بخوانید؛ در دسترس بودن سرویس، آمادگی ارسال پیام را تأیید نمی‌کند.', warning: 'بعضی سرویس‌ها نیاز به بررسی دارند. نتیجه و محدودهٔ هر بررسی را بخوانید.', error: 'بررسی ارتباط یک یا چند سرویس ناموفق بود. تنظیمات سرویس‌ها را بررسی کنید.'};
-      notice('health-notice', Object.hasOwn(summary, body.overall) ? summary[body.overall] : 'بررسی تمام شد، اما وضعیت کلی نامشخص است. نتیجهٔ هر سرویس را جداگانه بخوانید.');
+      notice('health-notice', Object.hasOwn(summary, body.overall) ? summary[body.overall] : 'بررسی تمام شد، اما وضعیت کلی نامشخص است. نتیجهٔ هر سرویس را جداگانه بخوانید.', body.overall === 'error' ? 'danger' : body.overall === 'warning' ? 'warning' : 'info');
     } catch (error) { handleError(error, 'health-notice'); }
     finally { healthBusy = false; render(); }
   }

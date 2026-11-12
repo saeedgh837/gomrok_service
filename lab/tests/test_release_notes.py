@@ -19,10 +19,10 @@ class ReleaseNotesTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.session = {"mode": "standalone", "user": "fixture_user"}
 
-    def snapshot(self, session=None, version="1.20.0"):
+    def snapshot(self, session=None, version="1.21.0"):
         return self.notes.snapshot(self.root, session or self.session, version)
 
-    def acknowledge(self, snapshot=None, session=None, version="1.20.0"):
+    def acknowledge(self, snapshot=None, session=None, version="1.21.0"):
         result = snapshot or self.snapshot(session, version)
         return self.notes.acknowledge(
             self.root, session or self.session, version,
@@ -39,7 +39,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["seen"])
         self.assertFalse(result["storage_warning"])
-        self.assertEqual(result["notes"]["version"], "1.20.0")
+        self.assertEqual(result["notes"]["version"], "1.21.0")
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_acknowledgment_survives_another_session_and_repeated_reads(self):
@@ -52,14 +52,14 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertLess(markers[0].stat().st_size, 512)
 
     def test_curated_copy_is_bound_to_installed_version_and_not_mutable(self):
-        content = self.notes.notes_for("1.20.0")
+        content = self.notes.notes_for("1.21.0")
         self.assertTrue(content["intro"].strip())
         self.assertGreaterEqual(len(content["sections"]), 2)
         self.assertTrue(all(section["items"] for section in content["sections"]))
         original = copy.deepcopy(content)
         content["sections"][0]["items"][0]["title"] = "changed fixture"
-        self.assertEqual(self.notes.notes_for("1.20.0"), original)
-        for version in ("1.19.0", "99.0.0", "../1.20.0", None):
+        self.assertEqual(self.notes.notes_for("1.21.0"), original)
+        for version in ("1.19.0", "99.0.0", "../1.21.0", None):
             self.assertIsNone(self.notes.notes_for(version))
 
     def test_unsupported_release_has_no_automatic_notice(self):
@@ -98,7 +98,7 @@ class ReleaseNotesTests(unittest.TestCase):
         invalid.append({**cloud, "profile_key": "0" * 64})
         for session in invalid:
             with self.subTest(session=session), self.assertRaises(ValueError):
-                self.notes.snapshot(self.root, session, "1.20.0")
+                self.notes.snapshot(self.root, session, "1.21.0")
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_stale_account_acknowledgment_cannot_mark_the_new_account(self):
@@ -111,15 +111,15 @@ class ReleaseNotesTests(unittest.TestCase):
 
     def test_acknowledgment_rejects_unknown_fields_forgery_and_old_versions(self):
         initial = self.snapshot()
-        valid = {"version": "1.20.0", "notice_id": initial["notice_id"]}
-        invalid = [None, [], {}, {"version": "1.20.0"},
+        valid = {"version": "1.21.0", "notice_id": initial["notice_id"]}
+        invalid = [None, [], {}, {"version": "1.21.0"},
                    {**valid, "user": "other_user"}, {**valid, "path": "../outside"},
                    {**valid, "notice_id": "0" * 64}, {**valid, "notice_id": None},
                    {**valid, "notice_id": "نادرست"},
                    {**valid, "version": "1.19.0"}, {**valid, "version": "../../outside"}]
         for payload in invalid:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
-                self.notes.acknowledge(self.root, self.session, "1.20.0", payload)
+                self.notes.acknowledge(self.root, self.session, "1.21.0", payload)
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_new_release_does_not_inherit_old_acknowledgment(self):
@@ -134,7 +134,7 @@ class ReleaseNotesTests(unittest.TestCase):
         subjects = [self.notes.subject_from_session({**self.session, "user": "fixture_" + str(i)})
                     for i in range(4)]
         work = [(subject, version) for _ in range(20) for subject in subjects
-                for version in ("1.19.0", "1.20.0")]
+                for version in ("1.19.0", "1.21.0")]
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda item: self.notes.mark_seen(self.root, *item), work))
         self.assertEqual(len(list(self.root.rglob("*.json"))), 8)
@@ -195,8 +195,8 @@ class ReleaseNotesTests(unittest.TestCase):
 
     def test_marker_paths_reject_untrusted_subjects_and_release_identifiers(self):
         subject = self.notes.subject_from_session(self.session)
-        for bad_subject, bad_version in (("../outside", "1.20.0"), (subject, "../outside"),
-                                         ("A" * 64, "1.20.0"), (subject, "01.20.0")):
+        for bad_subject, bad_version in (("../outside", "1.21.0"), (subject, "../outside"),
+                                         ("A" * 64, "1.21.0"), (subject, "01.21.0")):
             with self.subTest(subject=bad_subject, version=bad_version), self.assertRaises(ValueError):
                 self.notes.mark_seen(self.root, bad_subject, bad_version)
         self.assertEqual(list(self.root.iterdir()), [])

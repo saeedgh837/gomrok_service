@@ -130,17 +130,17 @@ class PreviewReleaseNotes:
         self.session = {"mode": "standalone", "user": self.user}
         if name in {"seen", "new_version"}:
             release_notes.mark_seen(self.root, release_notes.subject_from_session(self.session),
-                                    "1.20.0" if name == "seen" else "1.19.0")
+                                    "1.21.0" if name == "seen" else "1.19.0")
 
     def snapshot(self):
         import release_notes
-        return release_notes.snapshot(self.root, self.session, "1.20.0")
+        return release_notes.snapshot(self.root, self.session, "1.21.0")
 
     def acknowledge(self, payload):
         import release_notes
         if self.scenario == "storage_error":
             raise release_notes.StorageError("Synthetic acknowledgment storage failure")
-        release_notes.acknowledge(self.root, self.session, "1.20.0", payload)
+        release_notes.acknowledge(self.root, self.session, "1.21.0", payload)
 
 
 def main():
@@ -291,10 +291,11 @@ def main():
                 for token in tokens:
                     panel_auth.destroy_session(token)
                 self._json({"ok": True})
-            elif route in {"/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/api/release-notes/seen"}:
+            elif route in {"/api/maintenance/check", "/api/update-app", "/api/update-chromedriver", "/api/release-notes/seen",
+                           "/new", "/save", "/activate", "/delete"}:
                 super()._do_post_body()
             else:
-                self._json({"ok": False, "errors": ["Only synthetic maintenance actions are enabled in this preview."]}, 403)
+                self._json({"ok": False, "errors": ["Only synthetic maintenance and profile-editing actions are enabled in this preview."]}, 403)
 
     server = panel.PanelHTTPServer(("127.0.0.1", arguments.port), PreviewHandler)
     print("Synthetic maintenance preview ready; no external requests or executable launches are permitted.", flush=True)

@@ -330,6 +330,31 @@ class TestRegistrationAttempts(AttemptFixture):
         self.assertEqual(attempt["passport"], "PP0000002")
         self.assertEqual(attempt["claimed_identity_fingerprint"], attempt["identity_fingerprint"])
 
+    def test_copied_default_never_replaces_a_missing_crm_passport(self):
+        self.profile["passport"] = "A"
+        self.owner["passport"] = ""
+        self.seed()
+        with patch.object(self.panel, "start_profile_process") as spawn:
+            self.assertEqual(self.panel.start_profile("profile1")[0], 422)
+            spawn.assert_not_called()
+        self.assertIsNone(self.panel.claim_profile("profile1"))
+
+    def test_manual_creation_default_and_saved_passport_reach_claimed_identity(self):
+        for submitted, expected in (({}, "A"), ({"passport": " ab1234567 "}, "AB1234567")):
+            with self.subTest(submitted=submitted):
+                store = self.panel.update_profile_collection("new")
+                profile_id = store["active_id"]
+                self.panel.save_profile_update({
+                    "id": profile_id, "national": "0012345679", "birth": "1375/04/29",
+                    "mobile": "09121234567", "imeis": ["356938035640009"], **submitted,
+                })
+                attempt = self.panel.claim_profile(profile_id)
+                self.assertIsNotNone(attempt)
+                self.assertEqual(attempt["passport"], expected)
+                self.assertEqual(self.read_profile(profile_id)["passport"], expected)
+                self.assertTrue(attempt["claimed_identity_fingerprint"])
+                self.assertTrue(self.panel.release_profile(profile_id, attempt["runner_id"]))
+
     def test_invalid_passport_never_starts_or_claims(self):
         for passport in ("", "PP-1", "P" * 21):
             with self.subTest(passport=passport):

@@ -20,7 +20,7 @@ class ReleaseNotesApiTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.start_patch(app_paths, "data_dir", return_value=str(self.root))
-        self.start_patch(panel, "app_version_text", return_value="1.20.0")
+        self.start_patch(panel, "app_version_text", return_value="1.21.0")
         self.start_patch(panel, "load_store", side_effect=AssertionError("Business store must not be loaded"))
         self.start_patch(panel, "maintenance_status", side_effect=AssertionError("Maintenance must not run"))
         self.start_patch(panel, "check_services_health", side_effect=AssertionError("Health check must not run"))
@@ -86,7 +86,7 @@ class ReleaseNotesApiTests(unittest.TestCase):
         status, body, headers = self.request()
         self.assertEqual(status, 200)
         self.assertFalse(body["seen"])
-        self.assertEqual(body["notes"]["version"], "1.20.0")
+        self.assertEqual(body["notes"]["version"], "1.21.0")
         self.assertEqual(headers.get("Cache-Control"), "no-store")
         self.assertEqual(list(self.root.iterdir()), [])
 
@@ -127,7 +127,7 @@ class ReleaseNotesApiTests(unittest.TestCase):
 
     def test_malformed_or_stale_payload_never_writes_a_marker(self):
         payload = self.notice()
-        invalid = ([], {}, {"version": "1.20.0"}, {**payload, "version": "1.19.0"},
+        invalid = ([], {}, {"version": "1.21.0"}, {**payload, "version": "1.19.0"},
                    {**payload, "subject": "other_user"}, {**payload, "notice_id": "نادرست"},
                    {**payload, "notice_id": "x" * 2000})
         for body in invalid:
@@ -165,7 +165,7 @@ class ReleaseNotesApiTests(unittest.TestCase):
             status, body, _ = self.request()
             self.assertEqual(status, 200)
             self.assertIsNone(body["notes"])
-            self.assertEqual(self.ack({"version": "1.20.0", "notice_id": "x" * 64})[0], 409)
+            self.assertEqual(self.ack({"version": "1.21.0", "notice_id": "x" * 64})[0], 409)
 
 
 if __name__ == "__main__":

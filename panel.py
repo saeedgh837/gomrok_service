@@ -288,8 +288,7 @@ def _locked_store(timeout=None):
 PROFILE_DEFAULTS = {
     "id": "", "title": "", "national": "", "birth": "", "mobile": "", "telegram_chat_id": "",
     "first_name": "", "last_name": "", "father_name": "", "birth_certificate_no": "",
-    # Draft profiles may be incomplete; automated registration requires the
-    # actual passport, never a placeholder.
+    # Normalization must not invent a passport for persisted drafts.
     "passport": "",
     # Local-only attempt metadata. These fields are not part of the cloud schema.
     "crm_device_id": "", "identity_fingerprint": "",
@@ -631,7 +630,7 @@ def load_store():
         except (OSError, ValueError):
             pass
     if not profs:
-        profs = [_clean_profile({})]
+        profs = [_clean_profile({"passport": "A"})]
     store = {"profiles": profs, "active_id": profs[0]["id"]}
     save_store(store)
     return store
@@ -1081,7 +1080,7 @@ def save_profile_update(submitted):
     with _registration_transaction() as (crm_mod, data, store):
         profile_id = str(submitted.get("id") or "").strip()
         current = next((p for p in store["profiles"] if p.get("id") == profile_id), None)
-        candidate = _clean_profile({**(current or {}),
+        candidate = _clean_profile({**({"passport": "A"} if current is None else current),
                                     **{k: v for k, v in submitted.items() if k in editable},
                                     "id": profile_id or _new_id()})
         if candidate["passport"] and not re.fullmatch(r"[A-Z0-9]{1,20}", candidate["passport"]):
@@ -1116,7 +1115,7 @@ def update_profile_collection(action, fields=None):
             if profile and profile.get("run_status") != "busy":
                 profile["enabled"] = bool(fields.get("enabled"))
         elif action == "new":
-            profile = _clean_profile({})
+            profile = _clean_profile({"passport": "A"})
             store["profiles"].append(profile)
             store["active_id"] = profile["id"]
         elif action == "delete":
@@ -1124,7 +1123,7 @@ def update_profile_collection(action, fields=None):
                 raise RegistrationIdentityError("Stop the active robot before deleting its profile")
             store["profiles"] = [p for p in store["profiles"] if p.get("id") != profile_id]
             if not store["profiles"]:
-                store["profiles"] = [_clean_profile({})]
+                store["profiles"] = [_clean_profile({"passport": "A"})]
             if store.get("active_id") == profile_id:
                 store["active_id"] = store["profiles"][0]["id"]
         else:
@@ -6130,6 +6129,7 @@ function buildProfileOverview(p){
     '<div id="view-base"><div class="readonly-grid">'+
       readonlyField('عنوان پروفایل',p.title||'')+readonlyField('کد ملی',p.national||'','ltr')+
       readonlyField('تاریخ تولد',p.birth||'','ltr')+readonlyField('شماره موبایل',p.mobile||'','ltr')+
+      readonlyField('شمارهٔ گذرنامه',p.passport||'','ltr')+
       '<div class="readonly-field wide"><span class="readonly-label">سریال‌های IMEI</span><div class="readonly-imeis">'+imeis+'</div></div>'+
     '</div><div class="readonly-flags"><span class="readonly-flag">'+(p.no_confirm_check?'تأیید خودکار خاموش':'تأیید خودکار روشن')+'</span><span class="readonly-flag">'+(p.debugging?'حالت دیباگ روشن':'حالت دیباگ خاموش')+'</span><span class="readonly-flag">'+(p.manual_manage?'مدیریت دستی روشن':'مدیریت دستی خاموش')+'</span></div></div>'+
     '<div id="view-identity" class="hidden"><div class="section-title">اطلاعات هویتی</div><div class="readonly-grid">'+
@@ -6151,6 +6151,7 @@ function viewProfile(id){
 
 function buildForm(p){
   var imeis=(p.imeis&&p.imeis.length)?p.imeis:[''];
+  var passportInput='<input type="text" id="profile-passport" name="passport" class="ltr" dir="ltr" style="min-height:44px" aria-describedby="profile-passport-hint" value="'+escHtml(p.passport||'')+'"'+(p.crm_device_id?' readonly':'')+'>';
   return '<form id="f" onsubmit="saveProfile(event)">'+
     '<div class="section-title">اطلاعات پایه</div>'+
     '<div class="profile-tabs">'+
@@ -6166,6 +6167,9 @@ function buildForm(p){
     withPaste('<input type="text" name="birth" class="ltr" value="'+escHtml(p.birth||'')+'" placeholder="۱۳۶۶/۱۰/۱" oninput="syncSharedField(\'identity_birth\',this.value)">')+
     '<label>شماره موبایل</label>'+
     withPaste('<input type="text" name="mobile" class="ltr" value="'+escHtml(p.mobile||'')+'" placeholder="۰۹۱۴...">')+
+    '<label for="profile-passport">شمارهٔ گذرنامه</label>'+
+    (p.crm_device_id?passportInput:withPaste(passportInput))+
+    '<div class="hint" id="profile-passport-hint">'+(p.crm_device_id?'شمارهٔ گذرنامه از مسافرِ متصل در مدیریت پرونده‌ها گرفته می‌شود؛ برای اصلاح، اطلاعات همان مسافر را ویرایش کنید.':'در پروفایل جدید، مقدار اولیه A است. پیش از اجرای ربات، شمارهٔ گذرنامهٔ مسافر را بررسی کنید؛ فقط حروف و ارقام انگلیسی، حداکثر ۲۰ نویسه.')+'</div>'+
     '<label>کدهای IMEI</label>'+
     '<div id="imeis"></div>'+
     '<button type="button" class="add-btn" onclick="addImei(\'\')">+افزودن IMEI</button>'+
@@ -6186,8 +6190,6 @@ function buildForm(p){
     '<label>تاریخ تولد</label>'+withPaste('<input type="text" name="identity_birth" class="ltr" value="'+escHtml(p.birth||'')+'" oninput="syncSharedField(\'birth\',this.value)">')+
     '<label>شماره شناسنامه</label>'+withPaste('<input type="text" name="birth_certificate_no" class="ltr" value="'+escHtml(p.birth_certificate_no||'')+'">')+
     '<label>کد ملی</label>'+withPaste('<input type="text" name="identity_national" class="ltr" value="'+escHtml(p.national||'')+'" oninput="syncSharedField(\'national\',this.value)">')+
-    '<label>شمارهٔ گذرنامه</label>'+withPaste('<input type="text" name="passport" class="ltr" value="'+escHtml(p.passport||'')+'">')+
-    '<div class="hint">شمارهٔ گذرنامهٔ مسافر — برای فرآیند ثبت (اختیاری)</div>'+
     '</div>'+
     '<div id="view-profile-inquiries" class="hidden">'+
       buildDeviceInquiryPanel(p)+

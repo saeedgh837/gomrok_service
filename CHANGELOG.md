@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.21.0] - 2026-11-12
+
+### Changed
+
+- Surface the single passport input in Customs Management profile base information and display its saved value in the read-only overview. Linked passports are read-only and identify CRM as their editing source.
+- Initialize newly created unlinked profiles with `A`, including first startup and last-profile replacement. Preserve existing missing or blank values, explicit blank drafts, legacy input migration and saved real passports; normalization does not backfill.
+- Refresh shared Updates and Service Health styling with scoped light/dark tokens, distinct primary/review/quiet actions, semantic status text, readable disabled states and responsive dialog scrolling.
+- Bundle curated v1.21.0 highlights and align synthetic preview and release-summary fixtures with the current release.
+
+### Fixed
+
+- Keep maintenance actions reachable at very short viewport heights and re-enable release-summary rereading after canceling update confirmation.
+
+### Verification
+
+- New-profile defaults, persistence and frozen registration identities are exercised using isolated synthetic stores. Missing canonical CRM passports still block linked registration; copied defaults never replace source data.
+- Release verification records focused and complete guarded results, browser coverage and packaged/installed byte checks. Known environment-restricted errors and skips are reported separately, not presented as passing.
+
 ## [1.20.0] - 2026-11-11
 
 ### Added

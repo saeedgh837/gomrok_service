@@ -378,11 +378,57 @@ class TestSavePassportValidation(ProfileReadyHttpHarness):
         self.assertEqual(status, 200, body)
         self.assertEqual(self._read_profiles()[0]["passport"], "")
 
-    def test_missing_passport_key_passes(self):
-        """Legacy payloads without the key keep saving (field optional)."""
+    def test_missing_passport_on_new_profile_uses_creation_default(self):
         status, body = self._post("/save", self._new_profile_payload())
         self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_profiles()[0]["passport"], "A")
+
+    def test_new_profile_defaults_without_backfilling_existing_blank(self):
+        status, body = self._post("/save", self._new_profile_payload(passport=""))
+        self.assertEqual(status, 200, body)
+        existing_id = self._read_profiles()[0]["id"]
+        status, body = self._post("/new", {})
+        self.assertEqual(status, 200, body)
+        profiles = {profile["id"]: profile for profile in self._read_profiles()}
+        self.assertEqual(profiles[existing_id]["passport"], "")
+        self.assertNotEqual(body["active_id"], existing_id)
+        self.assertEqual(profiles[body["active_id"]]["passport"], "A")
+
+    def test_last_profile_replacement_gets_creation_default(self):
+        status, body = self._post("/save", self._new_profile_payload(passport="PP0000009"))
+        self.assertEqual(status, 200, body)
+        old_id = self._read_profiles()[0]["id"]
+        status, body = self._post("/delete", {"id": old_id})
+        self.assertEqual(status, 200, body)
+        profiles = self._read_profiles()
+        self.assertEqual(len(profiles), 1)
+        self.assertNotEqual(profiles[0]["id"], old_id)
+        self.assertEqual(profiles[0]["passport"], "A")
+
+    def test_first_launch_gets_creation_default(self):
+        os.unlink(self.profiles)
+        store = panel.load_store()
+        self.assertEqual(store["profiles"][0]["passport"], "A")
+        self.assertEqual(self._read_profiles()[0]["passport"], "A")
+
+    def test_legacy_input_migration_does_not_invent_a_passport(self):
+        os.unlink(self.profiles)
+        with open(panel.INPUTS_PATH, "w", encoding="utf-8") as handle:
+            json.dump({"title": "Legacy manual profile"}, handle)
+        self.assertEqual(panel.load_store()["profiles"][0]["passport"], "")
         self.assertEqual(self._read_profiles()[0]["passport"], "")
+
+    def test_existing_omitted_passports_preserve_blank_and_real_values(self):
+        for fields, expected in (({}, ""), ({"passport": None}, ""),
+                                 ({"passport": ""}, ""), ({"passport": "  "}, ""),
+                                 ({"passport": " pp0000009 "}, "PP0000009")):
+            with self.subTest(fields=fields):
+                with open(self.profiles, "w", encoding="utf-8") as handle:
+                    json.dump({"active_id": "legacy", "profiles": [
+                        {"id": "legacy", "title": "Legacy profile", **fields}]}, handle)
+                status, body = self._post("/save", {"id": "legacy", "title": "Renamed profile"})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(self._read_profiles()[0]["passport"], expected)
 
     def test_malformed_passports_rejected_400_with_english_diagnostic(self):
         for bad in ("ab1!", "A B", "way-too-long-passport-number-1234", "K1"):
@@ -423,11 +469,26 @@ class TestProfileReadySourceMarkers(unittest.TestCase):
         chunk = src[start:src.index("\n    def ", start + 10)]
         self.assertIn("start_crm_payment(device_id", chunk)
 
-    def test_build_form_has_passport_input(self):
+    def test_build_form_has_one_labeled_passport_in_base(self):
         body = fn_body_js(panel.PAGE_JS, "buildForm")
-        self.assertIn('name="passport"', body)
-        self.assertIn("class=\"ltr\"", body)
-        self.assertIn("اختیاری", body)             # never a required marker
+        self.assertEqual(body.count('name="passport"'), 1)
+        self.assertIn('id="profile-passport"', body)
+        self.assertIn('for="profile-passport"', body)
+        self.assertIn('dir="ltr"', body)
+        self.assertIn('aria-describedby="profile-passport-hint"', body)
+        self.assertLess(body.index('name="passport"'), body.index('id="view-identity"'))
+        self.assertNotIn("اختیاری", body)
+
+    def test_hidden_tab_passport_defers_validation_until_server_normalization(self):
+        body = fn_body_js(panel.PAGE_JS, "buildForm")
+        passport_input = body.split("var passportInput=", 1)[1].split(";", 1)[0]
+        self.assertNotIn("pattern=", passport_input)
+        self.assertNotIn("maxlength=", passport_input)
+
+    def test_profile_overview_includes_the_saved_passport(self):
+        body = fn_body_js(panel.PAGE_JS, "buildProfileOverview")
+        self.assertIn("p.passport", body)
+        self.assertLess(body.index("p.passport"), body.index('id="view-identity"'))
 
     def test_save_profile_posts_passport_and_checks_r_ok(self):
         body = fn_body_js(panel.PAGE_JS, "saveProfile")

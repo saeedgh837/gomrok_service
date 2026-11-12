@@ -48,8 +48,8 @@ class MaintenancePackagingTests(unittest.TestCase):
 
     def test_release_requires_curated_content_matching_the_packaged_version(self):
         with patch.object(self.builder, "ROOT", ROOT):
-            self.builder.validate_release_notes("1.20.0")
-            for version in ("1.19.0", "1.21.0"):
+            self.builder.validate_release_notes("1.21.0")
+            for version in ("1.20.0", "1.22.0"):
                 with self.subTest(version=version), self.assertRaises(ValueError):
                     self.builder.validate_release_notes(version)
 

@@ -56,7 +56,7 @@ class MaintenancePreviewTests(unittest.TestCase):
         before = self.fixture.audit()
         initial = notes.snapshot()
         self.assertFalse(initial["seen"])
-        notes.acknowledge({"version": "1.20.0", "notice_id": initial["notice_id"]})
+        notes.acknowledge({"version": "1.21.0", "notice_id": initial["notice_id"]})
         self.assertTrue(notes.snapshot()["seen"])
         self.assertEqual(self.fixture.audit(), before)
 
@@ -68,7 +68,7 @@ class MaintenancePreviewTests(unittest.TestCase):
         initial = notes.snapshot()
         notes.set_scenario("unseen")
         with self.assertRaises(ValueError):
-            notes.acknowledge({"version": "1.20.0", "notice_id": initial["notice_id"]})
+            notes.acknowledge({"version": "1.21.0", "notice_id": initial["notice_id"]})
 
     def test_release_preview_storage_failure_never_marks_seen(self):
         import release_notes
@@ -76,7 +76,7 @@ class MaintenancePreviewTests(unittest.TestCase):
         notes.set_scenario("storage_error")
         snapshot = notes.snapshot()
         with self.assertRaises(release_notes.StorageError):
-            notes.acknowledge({"version": "1.20.0", "notice_id": snapshot["notice_id"]})
+            notes.acknowledge({"version": "1.21.0", "notice_id": snapshot["notice_id"]})
         self.assertFalse(notes.snapshot()["seen"])
 
     def test_preview_policy_keeps_the_read_only_callback_default(self):

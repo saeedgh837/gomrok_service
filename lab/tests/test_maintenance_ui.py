@@ -241,8 +241,65 @@ class MaintenanceRenderTests(unittest.TestCase):
 
     def test_primary_keyboard_active_state_retains_high_contrast(self):
         css = _DOM(self.rendered()).styles["irica-maint-style"]
-        self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*background:var\(--brand")
-        self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*color:var\(--on-brand")
+        self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*background:var\(--irica-maint-accent-hover")
+        self.assertRegex(css, r"\.irica-maint-primary:active:not\(:disabled\)\s*\{[^}]*color:var\(--irica-maint-on-accent")
+
+    def test_each_visible_maintenance_task_has_one_primary_action(self):
+        dom = _DOM(self.rendered())
+        for name, expected in (("updates", "check"), ("health", "health-run")):
+            dialog = dom.by_id("irica-maint-" + name)
+            primary = []
+            for node in dom.descendants(dialog):
+                if "irica-maint-primary" not in node["attrs"].get("class", "").split():
+                    continue
+                current = node
+                while current is not dialog and "hidden" not in current["attrs"]:
+                    current = dom.nodes[current["parent"]]
+                if current is dialog:
+                    primary.append(node["attrs"].get("id"))
+            self.assertEqual(primary, ["irica-maint-" + expected])
+        for suffix in ("app-install", "driver-install"):
+            self.assertNotIn("irica-maint-primary", dom.by_id("irica-maint-" + suffix)["attrs"]["class"].split())
+
+    def test_maintenance_actions_are_outside_the_scrolling_body(self):
+        dom = _DOM(self.rendered())
+        for dialog_id, action_id in (("updates", "update-tools"), ("health", "health-tools")):
+            dialog = dom.by_id("irica-maint-" + dialog_id)
+            toolbar = dom.by_id("irica-maint-" + action_id)
+            self.assertIs(dom.nodes[toolbar["parent"]], dialog)
+            self.assertIn("irica-maint-toolbar", toolbar["attrs"].get("class", "").split())
+        self.assertIn(dom.by_id("irica-maint-health-time"), dom.descendants(dom.by_id("irica-maint-health-tools")))
+
+    def test_light_and_dark_palette_text_pairs_meet_wcag_aa(self):
+        css = _DOM(self.rendered()).styles["irica-maint-style"]
+        palettes = {}
+        for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            tokens = dict(re.findall(r"--irica-maint-([\w-]+)\s*:\s*(#[\da-fA-F]{6})\s*;", declarations))
+            if "surface" in tokens and "on-accent" in tokens:
+                palettes["dark" if 'data-theme="dark"' in selector else "light"] = tokens
+        self.assertEqual(set(palettes), {"light", "dark"})
+
+        def luminance(color):
+            channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [channel / 12.92 if channel <= .04045 else ((channel + .055) / 1.055) ** 2.4 for channel in channels]
+            return sum(channel * weight for channel, weight in zip(linear, (.2126, .7152, .0722)))
+
+        pairs = [("text", "surface"), ("muted", "surface"), ("muted", "canvas"),
+                 ("on-accent", "accent"), ("on-accent", "accent-hover"), ("accent", "accent-soft")]
+        pairs += [(tone, tone + "-soft") for tone in ("success", "warning", "danger", "neutral")]
+        for theme, tokens in palettes.items():
+            for foreground, background in pairs:
+                with self.subTest(theme=theme, foreground=foreground, background=background):
+                    levels = sorted((luminance(tokens[foreground]), luminance(tokens[background])))
+                    self.assertGreaterEqual((levels[1] + .05) / (levels[0] + .05), 4.5)
+
+    def test_short_viewports_allow_scrolling_past_the_dialog_chrome(self):
+        css = _DOM(self.rendered()).styles["irica-maint-style"]
+        fallback = re.search(r"@media\s*\(max-height:\s*(\d+)px\)\s*\{(.*?)\n\}", css, re.S)
+        self.assertIsNotNone(fallback, "Fixed dialog chrome must not clip actions at high zoom")
+        self.assertGreaterEqual(int(fallback.group(1)), 200)
+        self.assertRegex(fallback.group(2), r"\.irica-maint-dialog\s*\{[^}]*overflow:auto")
+        self.assertRegex(fallback.group(2), r"\.irica-maint-body\s*\{[^}]*overflow:visible")
 
     def test_release_summary_can_be_reread_from_updates_without_an_extra_header_button(self):
         dom = _DOM(self.rendered())
