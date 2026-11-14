@@ -1,10 +1,11 @@
 """Regression checks for the isolated runner; execute through that runner."""
 from contextlib import contextmanager
 import importlib.util
+import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import socket
 import subprocess
@@ -42,6 +43,96 @@ class IsolatedRunnerTests(unittest.TestCase):
             migrate.assert_not_called()
         import panel
         self.assertEqual(panel.DATA_DIR, os.environ["IRICA_DATA_DIR"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_windows_final_path_race_preserves_owned_write(self):
+        import ntpath
+        target = self.policy.scratch / "namespace-race.json"
+        target.write_text("before", encoding="ascii")
+        original = ntpath._getfinalpathname
+        calls = 0
+
+        def replaced_during_validation(value):
+            nonlocal calls
+            if ntpath.normcase(value) == ntpath.normcase(str(target)):
+                calls += 1
+                if calls % 2 == 0:
+                    error = FileNotFoundError("Synthetic concurrent replacement")
+                    error.winerror = 2
+                    raise error
+            return original(value)
+
+        allowed = True
+        with self.policy.expect_denial(), patch.object(
+                ntpath, "_getfinalpathname", side_effect=replaced_during_validation):
+            try:
+                target.write_text("after", encoding="ascii")
+            except PermissionError:
+                allowed = False
+        self.assertTrue(allowed, "An owned write was rejected after a namespace-only resolution change")
+        self.assertEqual(target.read_text(encoding="ascii"), "after")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_windows_extended_scratch_keeps_owned_write(self):
+        target = self.policy.scratch / "extended-scratch.json"
+        extended = Path("\\\\?\\" + str(self.policy.scratch))
+        allowed = True
+        with self.policy.expect_denial(), patch.object(self.policy, "scratch", extended):
+            try:
+                target.write_text("synthetic", encoding="ascii")
+            except PermissionError:
+                allowed = False
+        self.assertTrue(allowed, "Equivalent scratch namespace must not reject an owned write")
+        self.assertEqual(target.read_text(encoding="ascii"), "synthetic")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_windows_namespace_equivalence_preserves_path_boundaries(self):
+        cases = (
+            (r"\\?\C:\fixture\scratch\marker.json", r"C:\fixture\scratch", True),
+            (r"C:\fixture\scratch\marker.json", r"\\?\C:\fixture\scratch", True),
+            (r"\\?\C:\fixture\scratch", r"C:\fixture\scratch", True),
+            (r"\\?\UNC\fixture.invalid\share\scratch\marker.json", r"\\fixture.invalid\share\scratch", True),
+            (r"\\fixture.invalid\share\scratch\marker.json", r"\\?\UNC\fixture.invalid\share\scratch", True),
+            (r"\\?\C:\fixture\scratch-other\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\C:\fixture\outside\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\D:\fixture\scratch\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\UNC\fixture.invalid\other-share\scratch\marker.json", r"\\fixture.invalid\share\scratch", False),
+            (r"\\?\UNC\other.invalid\share\scratch\marker.json", r"\\fixture.invalid\share\scratch", False),
+            (r"\\?\UNC\fixture.invalid\share\scratch-other\marker.json", r"\\fixture.invalid\share\scratch", False),
+            (r"\\.\C:\fixture\scratch\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\GLOBALROOT\Device\HarddiskVolume1\fixture\scratch\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\Volume{00000000-0000-0000-0000-000000000000}\fixture\scratch\marker.json", r"C:\fixture\scratch", False),
+            (r"C:fixture\scratch\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\C:\fixture\scratch\..\outside\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\C:\fixture\scratch.\marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\C:\fixture\scratch \marker.json", r"C:\fixture\scratch", False),
+            (r"\\?\C:\fixture\scratch:stream\marker.json", r"C:\fixture\scratch", False),
+        )
+        for candidate, root, expected in cases:
+            with self.subTest(candidate=candidate, root=root):
+                self.assertEqual(runner._within(PureWindowsPath(candidate), PureWindowsPath(root)), expected)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_windows_canonical_namespace_does_not_allow_outside_writes(self):
+        candidates = (
+            self.policy.scratch / ".." / "outside-namespace.json",
+            self.policy.scratch.parent / (self.policy.scratch.name + "-other") / "marker.json",
+            runner.ROOT / "namespace-forbidden.json",
+            self.policy.runtime / "namespace-forbidden.json",
+        )
+        for candidate in candidates:
+            for value in (candidate, Path("\\\\?\\" + str(candidate))):
+                with self.subTest(path=str(value)), self.policy.expect_denial(), self.assertRaises(PermissionError):
+                    self.policy.path(value, write=True)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_windows_resolved_outside_target_is_not_allowed_by_raw_location(self):
+        target = self.policy.scratch / "synthetic-junction" / "marker.json"
+        outside = runner.ROOT / "namespace-forbidden.json"
+        for resolved in (outside, Path("\\\\?\\" + str(outside))):
+            with self.subTest(resolved=str(resolved)), self.policy.expect_denial(), \
+                    patch.object(Path, "resolve", return_value=resolved), self.assertRaises(PermissionError):
+                self.policy.path(target, write=True)
 
     def test_external_dns_is_denied_without_resolving(self):
         with self.policy.expect_denial(), self.assertRaises(PermissionError):
@@ -312,7 +403,8 @@ class IsolatedChildLifecycleTests(unittest.TestCase):
 
     @contextmanager
     def child_report(self, *, daemon, leak, name="Thread-9001 (fixture_wait)",
-                     expected_name="Thread-9001 (fixture_wait)", empty=False):
+                     expected_name="Thread-9001 (fixture_wait)", empty=False,
+                     extended_source=False):
         """Exercise the real child/report flow and always release our own waiter."""
         import app_paths
         from types import ModuleType
@@ -325,6 +417,8 @@ class IsolatedChildLifecycleTests(unittest.TestCase):
         scratch.mkdir(parents=True, exist_ok=True)
         fixture_name = "_isolated_thread_lifecycle_fixture"
         fixture = ModuleType(fixture_name)
+        if extended_source:
+            fixture.__file__ = "\\\\?\\" + str(runner.ROOT / "gomrok.py")
 
         def run_fixture(_test):
             worker.start()
@@ -403,6 +497,17 @@ class IsolatedChildLifecycleTests(unittest.TestCase):
             else:
                 sys.modules[fixture_name] = previous_module
             self.assertFalse(worker.is_alive(), "The regression test leaked its own waiter")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path namespaces")
+    def test_extended_source_namespace_produces_relative_source_hash(self):
+        try:
+            with self.child_report(daemon=True, leak=False, extended_source=True) as report:
+                self.assertTrue(report["ok"])
+                self.assertEqual(report["source_sha256"]["gomrok.py"],
+                                 hashlib.sha256((runner.ROOT / "gomrok.py").read_bytes()).hexdigest())
+                self.assertFalse(any(Path(name).is_absolute() for name in report["source_sha256"]))
+        except ValueError:
+            self.fail("An equivalent source namespace prevented child result reporting")
 
     def test_waiting_daemon_cannot_produce_a_green_child_report(self):
         with self.child_report(daemon=True, leak=True) as report:

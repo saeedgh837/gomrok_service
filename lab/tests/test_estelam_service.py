@@ -261,9 +261,10 @@ def test_runtime_and_stop_lifecycle():
                 data["runs"] = data["runs"][:1]
                 panel.estelam_save(data)
                 with patch.object(panel, "start_estelam_process",
-                                  return_value={"pid": proc.pid + 5000}):
+                                  return_value={"pid": fillers[0].pid}):
                     parallel = panel.estelam_start()
                 assert parallel["ok"] is True, parallel
+                assert parallel["pid"] in workers, "Synthetic runs must retain an owned process handle"
 
                 data = panel.estelam_load()
                 data["runs"] = [{"pid": f.pid, "device_id": "", "service": "gomrok",

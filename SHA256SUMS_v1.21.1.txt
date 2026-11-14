@@ -1,0 +1,5 @@
+1faf0a8ef87eda82697df22ff0a9caa2c682ccace52e629bc19acf0552c9e2e7  IRICA-Setup-v1.21.1.exe
+8b9ff35817d8116459b7f1d9b46f3b63d763f8d15ae11f310cf7a1387f6e0c75  irica-v1.21.1-win64.zip
+6fed1c5f821f1fbb71d904cd9bcde6b2a937d1a3b818b675a0988faa752b52bc  verification-v1.21.1.json
+7df37cd793448fe8f0d27dcad434d82d7a1fd79eb5a661a978a76a13bcf798d9  verification-offline-v1.21.1.json
+65c4e76c322641c8bf27f5c583cdbf43bd90ed5557a169d00dbe9644a81fdcf1  RELEASE_NOTES_v1.21.1.md

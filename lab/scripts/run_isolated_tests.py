@@ -41,9 +41,25 @@ DEFAULT = (
 _POLICY = None
 
 
+def _relative_to(path, parent):
+    if os.name == "nt":
+        normalized = []
+        for value in (path, parent):
+            if ".." in value.parts:
+                raise ValueError("Unresolved parent traversal")
+            # Concurrent replacement can leave realpath's equivalent extended anchor intact.
+            if re.fullmatch(r"[A-Za-z]:", value.drive) and value.root == "\\":
+                value = Path("\\\\?\\" + str(value))
+            elif value.drive.startswith("\\\\") and not value.drive.startswith(("\\\\?\\", "\\\\.\\")):
+                value = Path("\\\\?\\UNC\\" + str(value)[2:])
+            normalized.append(value)
+        path, parent = normalized
+    return path.relative_to(parent)
+
+
 def _within(path, parent):
     try:
-        path.relative_to(parent)
+        _relative_to(path, parent)
         return True
     except ValueError:
         return False
@@ -472,7 +488,7 @@ def _child(name, scratch, fixture_worker=None):
         if file and str(file).endswith(".py"):
             path = Path(file).resolve()
             if _within(path, ROOT):
-                sources[str(path.relative_to(ROOT))] = hashlib.sha256(path.read_bytes()).hexdigest()
+                sources[str(_relative_to(path, ROOT))] = hashlib.sha256(path.read_bytes()).hexdigest()
     summary = {
         "module": name, "tests": result.testsRun, "failures": len(result.failures),
         "errors": len(result.errors), "skipped": len(result.skipped),

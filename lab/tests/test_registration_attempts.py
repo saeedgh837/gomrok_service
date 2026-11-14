@@ -1,6 +1,8 @@
 """Registration attempts use synthetic stores and mocked external boundaries only."""
+import ast
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -668,6 +670,168 @@ class TestRobotAttemptBoundaries(AttemptFixture):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
+
+    def first_page(self, birth):
+        fields = {self.robot.WP_NATIONAL: self.owner["national"],
+                  self.robot.WP_BIRTH: birth}
+        serials = list(self.attempt["imeis"])
+        events = []
+        button = object()
+
+        def element(value):
+            return types.SimpleNamespace(get_attribute=lambda name: value if name == "value" else None)
+
+        def find_element(by, selector):
+            self.assertEqual(by, self.robot.By.CSS_SELECTOR)
+            if selector == f'[wicketpath="{self.robot.WP_CONTINUE}"]':
+                return button
+            for wp, value in fields.items():
+                if selector == f'[wicketpath="{wp}"]':
+                    return element(value)
+            raise LookupError("Fixture field is absent")
+
+        def find_elements(by, selector):
+            self.assertEqual(by, self.robot.By.CSS_SELECTOR)
+            self.assertEqual(selector, 'input[wicketpath*="imeiListView"][wicketpath$="codeField"]')
+            return [element(value) for value in serials]
+
+        driver = types.SimpleNamespace(
+            find_element=find_element, find_elements=find_elements,
+            execute_script=lambda script, target: events.append(("scroll", target)))
+        return driver, fields, serials, events, button
+
+    def first_page_continue(self, driver):
+        path = Path(self.robot.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        callbacks = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                     and node.name == "_do_click" and any(
+                         isinstance(child, ast.Name) and child.id == "verify_first_page_identity"
+                         for child in ast.walk(node))]
+        self.assertEqual(len(callbacks), 1)
+        namespace = dict(vars(self.robot), driver=driver, inputs=self.attempt)
+        exec(compile(ast.Module(body=callbacks, type_ignores=[]), str(path), "exec"), namespace)
+        return namespace["_do_click"]
+
+    def test_first_page_accepts_birth_padding_changes(self):
+        for expected, actual in (("1375/04/09", "1375/4/9"),
+                                 ("1375/4/9", "1375/04/09"),
+                                 ("1375/04/09", "1375/4/09"),
+                                 ("1375/04/09", "1375/04/9"),
+                                 ("1375/04/9", "1375/4/09")):
+            with self.subTest(expected=expected, actual=actual):
+                driver, *_ = self.first_page(actual)
+                identity = dict(self.attempt, birth=expected)
+                self.assertTrue(self.robot.verify_first_page_identity(driver, identity))
+                self.assertEqual(identity["birth"], expected)
+
+    def test_first_page_accepts_valid_jalali_month_boundaries(self):
+        for expected, actual in (("1400/01/31", "1400/1/31"),
+                                 ("1400/06/31", "1400/6/31"),
+                                 ("1400/07/30", "1400/7/30"),
+                                 ("1337/12/30", "1337/12/30"),
+                                 ("1399/12/30", "1399/12/30"),
+                                 ("1400/12/29", "1400/12/29")):
+            with self.subTest(birth=expected):
+                driver, *_ = self.first_page(actual)
+                self.assertTrue(self.robot.verify_first_page_identity(
+                    driver, dict(self.attempt, birth=expected)))
+
+    def test_first_page_rejects_invalid_birth_even_when_strings_match(self):
+        for birth in (None, "", "1375/4", "1375/04/09x", "1375-04-09", "04/09/1375",
+                      "1375//09", "1375/004/09", "1375/+4/9", "1375/0/9", "1375/13/9",
+                      "1375/4/0", "1375/4/32", "1400/7/31", "1400/12/30", "0000/1/1",
+                      "۱۳۷۵/۴/۹", "١٣٧٥/٤/٩"):
+            with self.subTest(birth=birth):
+                driver, *_ = self.first_page(birth)
+                self.assertFalse(self.robot.verify_first_page_identity(
+                    driver, dict(self.attempt, birth=birth)))
+
+    def test_first_page_rejects_real_identity_changes(self):
+        for field, value in (("birth", "1374/04/29"), ("birth", "1375/05/29"),
+                             ("birth", "1375/04/28"), ("birth", ""),
+                             ("national", "12345679"), ("national", "0012345678")):
+            with self.subTest(field=field, value=value):
+                driver, fields, *_ = self.first_page(self.owner["birth"])
+                fields[getattr(self.robot, "WP_" + field.upper())] = value
+                self.assertFalse(self.robot.verify_first_page_identity(driver, self.attempt))
+        for index in (0, 1):
+            with self.subTest(imei=index):
+                driver, _, serials, *_ = self.first_page(self.owner["birth"])
+                serials[index] = "356938035640009"
+                self.assertFalse(self.robot.verify_first_page_identity(driver, self.attempt))
+        driver, _, serials, *_ = self.first_page(self.owner["birth"])
+        serials.pop()
+        self.assertFalse(self.robot.verify_first_page_identity(driver, self.attempt))
+
+    def test_first_page_rejects_missing_identity_fields(self):
+        for wp in (self.robot.WP_NATIONAL, self.robot.WP_BIRTH):
+            with self.subTest(field=wp):
+                driver, fields, *_ = self.first_page(self.owner["birth"])
+                del fields[wp]
+                self.assertFalse(self.robot.verify_first_page_identity(driver, self.attempt))
+        driver, *_ = self.first_page(self.owner["birth"])
+        self.assertFalse(self.robot.verify_first_page_identity(
+            driver, dict(self.attempt, birth=None)))
+
+    def test_first_page_continue_accepts_equivalent_birth(self):
+        driver, _, _, events, button = self.first_page("1375/4/29")
+        callback = self.first_page_continue(driver)
+        with patch.object(self.robot.cc, "fire_refresh_events",
+                          side_effect=lambda page, target: events.append(("continue", target))):
+            try:
+                callback()
+            except self.panel.ProfileIdentityStopped as error:
+                self.fail(f"Equivalent birth date stopped a current claim: {error}")
+        self.assertEqual(events, [("scroll", button), ("continue", button)])
+
+    def test_first_page_continue_stops_changed_birth_before_browser_action(self):
+        driver, _, _, events, _ = self.first_page("1375/04/28")
+        with self.assertRaisesRegex(self.panel.ProfileIdentityStopped, "Initial form fields"):
+            self.first_page_continue(driver)()
+        self.assertEqual(events, [])
+
+    def test_first_page_continue_stops_stale_claim_with_equivalent_birth(self):
+        driver, _, _, events, _ = self.first_page("1375/4/29")
+        self.correction(passport="PP0000002")
+        with self.assertRaises(self.panel.ProfileIdentityStopped):
+            self.first_page_continue(driver)()
+        self.assertEqual(events, [])
+        self.assertTrue(self.read_profile()["identity_review_required"])
+
+    def test_first_page_answer_keeps_reference_without_diagnostic_error_or_extra_files(self):
+        path = Path(self.robot.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        blocks = []
+        for node in ast.walk(tree):
+            body = getattr(node, "body", [])
+            if not isinstance(body, list):
+                continue
+            for start, statement in enumerate(body):
+                if (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call)
+                        and isinstance(statement.value.func, ast.Name)
+                        and statement.value.func.id == "solve_confidently"):
+                    end = next(index for index in range(start + 1, len(body))
+                               if isinstance(body[index], ast.FunctionDef) and body[index].name == "val")
+                    blocks.append(body[start:end])
+        self.assertEqual(len(blocks), 1)
+        capture_dir = self.root / "diagnostic"
+        capture_dir.mkdir()
+        reference = object()
+        entered = []
+        output = io.StringIO()
+        with patch.object(self.robot, "solve_confidently", return_value=("abcde", 0.95)), \
+                patch.object(self.robot, "type_and_verify", side_effect=lambda page, wp, text:
+                             entered.append((wp, text)) or True), \
+                patch.object(self.robot.cc, "snapshot_captcha", return_value=reference), \
+                redirect_stdout(output):
+            namespace = dict(vars(self.robot), driver=object(), captcha=object(), solver=object(),
+                             wait=object(), _HERE=str(capture_dir))
+            exec(compile(ast.Module(body=blocks[0], type_ignores=[]), str(path), "exec"), namespace)
+        self.assertEqual(entered, [(self.robot.WP_CAPTCHA, "abcde")])
+        self.assertIs(namespace["submitted_captcha_ref"], reference)
+        self.assertEqual(namespace["answer"], "abcde")
+        self.assertNotIn("not defined", output.getvalue())
+        self.assertEqual(list(capture_dir.iterdir()), [])
 
     def test_linked_cli_overrides_cannot_replace_claimed_identity(self):
         args = types.SimpleNamespace(national="0084575948", birth="1374/05/21",

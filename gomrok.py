@@ -154,13 +154,36 @@ def _registration_inputs(claimed, args):
     return result
 
 
+def _birth_date_parts(value):
+    if not re.fullmatch(r"[0-9]{4}/[0-9]{1,2}/[0-9]{1,2}", value):
+        return None
+    year, month, day = map(int, value.split("/"))
+    if year < 1 or not 1 <= month <= 12:
+        return None
+    last_day = 31 if month <= 6 else 30
+    if month == 12:
+        from jalali import gregorian_to_jalali
+        leap = any(tuple(gregorian_to_jalali(year + 622, 3, march_day)) == (year, 12, 30)
+                   for march_day in (19, 20, 21))
+        last_day = 30 if leap else 29
+    if not 1 <= day <= last_day:
+        return None
+    return year, month, day
+
+
 def verify_first_page_identity(driver, identity):
     for field, wicketpath in (("national", WP_NATIONAL), ("birth", WP_BIRTH)):
         try:
             actual = (find(driver, wicketpath).get_attribute("value") or "").strip()
         except Exception:
             return False
-        if actual != str(identity.get(field) or "").strip():
+        expected = str(identity.get(field) or "").strip()
+        if field == "birth":
+            expected = _birth_date_parts(expected)
+            actual = _birth_date_parts(actual)
+            if expected is None:
+                return False
+        if actual != expected:
             return False
     return verify_imeis(driver, identity.get("imeis") or [])[0]
 
@@ -2336,15 +2359,6 @@ def main():
                 submitted_captcha_ref = cc.snapshot_captcha(driver, captcha)
             except Exception:
                 submitted_captcha_ref = None
-            # ZAKHIRE-ye axe-e daghigh-e captcha ke model khand -> baraye moghayese
-            # ba cheshm (agar submit shekast khord, mifahmim model khata dad ya
-            # site captcha ra avaz karde).
-            shot_path = os.path.join(_HERE, f"_last_captcha_{answer}.png")
-            try:
-                crop.save(shot_path)
-                print(f">>> Axe-e captcha zakhire shod: {shot_path}")
-            except Exception as _e:
-                print(f">>> (zakhire-ye axe captcha na-shod: {_e})")
             print(f">>> Javab-e captcha (model, ba'd az por kardan-e baghiye): {answer!r}")
 
             # 5) VERIFY-e nahayi: dobare hame-ye meghdar-ha ra chap kon

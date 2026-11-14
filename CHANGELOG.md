@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project uses [Semantic Versioning](https://semver.org/).
 
+## [1.21.1] - 2026-11-14
+
+### Fixed
+
+- Compare first-page birth dates by valid Jalali calendar components so equivalent month/day zero padding does not stop the payment robot before Continue. Keep national ID leading zeros, exact IMEI checks, frozen claims and genuine identity-change safe stops intact.
+- Reject malformed or impossible birth dates even when their raw strings match, including non-leap Esfand 30.
+- Remove an already-broken optional image-save diagnostic that referenced an inaccessible local variable. Preserve the shared solver return contract, confidence/retry behavior and submitted snapshot reference; do not add image persistence.
+
+### Distribution
+
+- Publish the correction through the existing in-service updater with an exact official versioned installer and hash-first checksums. Registered Windows installations retain explicit version-specific consent, hash verification, idle-safe native handoff and safe reopening; parallel unregistered or portable copies remain manual-install-only.
+- Bundle current release highlights and matching synthetic release-summary fixtures without changing the updater protocol or cloud schema.
+
+### Verification
+
+- Synthetic regressions exercise the actual first-page identity comparator, Continue callback and post-read diagnostic boundary. Release evidence records guarded regression, updater/consent checks, copied-runtime and installer verification without live customs, payment or real-account tests.
+- Normalize equivalent Windows path namespaces only in isolated-runner containment comparisons, preventing false scratch-write denials during concurrent marker replacement. Preserve resolved-target, component-boundary and outside-write restrictions; production acknowledgment persistence is unchanged.
+- Bind inquiry lifecycle fixtures to retained owned worker PIDs instead of numeric guesses, preventing accidental collisions with unrelated host process IDs during verification.
+- Existing environment-restricted errors and skipped checks are reported separately; they are not presented as passing.
+
 ## [1.21.0] - 2026-11-12
 
 ### Changed

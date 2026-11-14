@@ -39,9 +39,9 @@ class PreviewMaintenance:
             available = self._checked and self.scenario != "current"
             app = {"state": "available" if available else "current", "code": "available" if available else "current",
                    "message": "Synthetic official-release offer; no installer can run in this preview.",
-                   "current_version": "1.18.3", "checked": self._checked,
+                   "current_version": "1.21.0", "checked": self._checked,
                    "can_install": self.scenario != "manual", "cleanup_pending": False,
-                   "offer": {"offer_id": "preview-app-offer", "version": "99.0.0"} if available else None,
+                   "offer": {"offer_id": "preview-app-offer", "version": "1.21.1"} if available else None,
                    "downloaded": 0, "total": 100}
             driver = {"state": "available" if available else "current", "checked": self._checked,
                       "message": "Synthetic ChromeDriver offer; no executable can change.",
@@ -54,7 +54,7 @@ class PreviewMaintenance:
                 app["state"] = "downloading" if elapsed < 4 else "verifying" if elapsed < 6 else "installing" if elapsed < 9 else "current"
                 app["downloaded"] = min(100, int(elapsed * 25))
                 if elapsed >= 9:
-                    app.update(current_version="99.0.0", offer=None, message="Synthetic update completed; no files were changed.")
+                    app.update(current_version="1.21.1", offer=None, message="Synthetic update completed; no files were changed.")
             if self._driver_waiting:
                 driver.update(state="waiting_for_idle", message="Finish active work, then retry the confirmed driver update.")
             if self._driver_started is not None:
@@ -130,17 +130,17 @@ class PreviewReleaseNotes:
         self.session = {"mode": "standalone", "user": self.user}
         if name in {"seen", "new_version"}:
             release_notes.mark_seen(self.root, release_notes.subject_from_session(self.session),
-                                    "1.21.0" if name == "seen" else "1.19.0")
+                                    "1.21.1" if name == "seen" else "1.21.0")
 
     def snapshot(self):
         import release_notes
-        return release_notes.snapshot(self.root, self.session, "1.21.0")
+        return release_notes.snapshot(self.root, self.session, "1.21.1")
 
     def acknowledge(self, payload):
         import release_notes
         if self.scenario == "storage_error":
             raise release_notes.StorageError("Synthetic acknowledgment storage failure")
-        release_notes.acknowledge(self.root, self.session, "1.21.0", payload)
+        release_notes.acknowledge(self.root, self.session, "1.21.1", payload)
 
 
 def main():
